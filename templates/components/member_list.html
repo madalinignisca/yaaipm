@@ -1,0 +1,52 @@
+{{$canManage := .CanManage}}
+{{$currentUserID := .CurrentUserID}}
+{{$orgSlug := .OrgSlug}}
+
+{{range .Members}}
+<div class="member-row" id="member-{{.User.ID}}">
+    <div class="member-info">
+        <p>{{.User.Name}}</p>
+        <p>{{.User.Email}}</p>
+    </div>
+    <div class="flex items-center gap-md">
+        {{if $canManage}}
+            {{if ne .User.ID $currentUserID}}
+                <form class="flex items-center gap-xs">
+                    <select class="form-select" style="width:auto; padding:.325rem .5rem; font-size:var(--text-xs);"
+                            name="role"
+                            hx-patch="/orgs/{{$orgSlug}}/members/{{.User.ID}}/role"
+                            hx-target="#member-list"
+                            hx-swap="innerHTML">
+                        <option value="owner" {{if eq .Membership.Role "owner"}}selected{{end}}>owner</option>
+                        <option value="admin" {{if eq .Membership.Role "admin"}}selected{{end}}>admin</option>
+                        <option value="member" {{if eq .Membership.Role "member"}}selected{{end}}>member</option>
+                    </select>
+                </form>
+            {{else}}
+                <span class="badge badge-pill badge-gray">{{.Membership.Role}}</span>
+            {{end}}
+        {{else}}
+            <span class="badge badge-pill badge-gray">{{.Membership.Role}}</span>
+        {{end}}
+
+        <span class="badge badge-pill badge-indigo">{{.User.Role}}</span>
+
+        {{if $canManage}}
+            {{if ne .User.ID $currentUserID}}
+                <button class="btn btn-ghost btn-sm"
+                        style="color:var(--red-600);"
+                        hx-delete="/orgs/{{$orgSlug}}/members/{{.User.ID}}"
+                        hx-target="#member-list"
+                        hx-swap="innerHTML"
+                        hx-confirm="Remove {{.User.Name}} from this organization?">
+                    Remove
+                </button>
+            {{end}}
+        {{end}}
+    </div>
+</div>
+{{else}}
+<div class="empty-state" style="padding:1.5rem;">
+    <p>No members yet</p>
+</div>
+{{end}}

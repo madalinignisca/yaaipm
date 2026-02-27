@@ -1,0 +1,38 @@
+{{define "content"}}
+<div class="container-medium">
+    <h1 class="mb-lg">{{.Org.Name}} — Settings</h1>
+
+    {{with .Data}}
+
+    {{if .CanManage}}
+    <div class="card mb-lg">
+        <h2 class="mb-md">Add Member</h2>
+        <form class="flex items-center gap-md"
+              hx-post="/orgs/{{.OrgSlug}}/members"
+              hx-target="#member-list"
+              hx-swap="innerHTML"
+              hx-on::after-request="if(event.detail.successful) this.reset()">
+            <div class="flex-1">
+                <input type="email" name="email" class="form-input" placeholder="user@example.com" required>
+            </div>
+            <div>
+                <select name="role" class="form-select" style="width:auto;">
+                    <option value="member">Member</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">Add</button>
+        </form>
+    </div>
+    {{end}}
+
+    <div class="card">
+        <h2 class="mb-md">Members</h2>
+        <div class="divide-y" id="member-list">
+            {{template "member_list.html" .}}
+        </div>
+    </div>
+
+    {{end}}
+</div>
+{{end}}
