@@ -120,6 +120,7 @@ func (h *CostHandler) ProjectCosts(w http.ResponseWriter, r *http.Request) {
 			"GrandTotal":        infraTotal + aiTotalWithMargin,
 			"AIMargin":          margin,
 			"CanEdit":           canEdit,
+			"IsStaff":           canEdit,
 		},
 	})
 }

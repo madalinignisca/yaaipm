@@ -25,6 +25,7 @@ type projectPageData struct {
 	Projects []models.Project
 	Tab      string
 	Tickets  []models.Ticket
+	IsStaff  bool
 }
 
 func (h *ProjectHandler) getOrgAndProject(r *http.Request, user *models.User) (*models.Organization, *models.Project, error) {
@@ -64,7 +65,7 @@ func (h *ProjectHandler) ProjectBrief(w http.ResponseWriter, r *http.Request) {
 	h.engine.Render(w, "project_brief.html", render.PageData{
 		Title: proj.Name + " — Brief", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		ProjectID: proj.ID,
-		Data:      projectPageData{Project: proj, Projects: projects, Tab: "brief"},
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "brief", IsStaff: auth.IsStaffOrAbove(user.Role)},
 	})
 }
 
@@ -107,7 +108,7 @@ func (h *ProjectHandler) ProjectFeatures(w http.ResponseWriter, r *http.Request)
 	h.engine.Render(w, "project_features.html", render.PageData{
 		Title: proj.Name + " — Features", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		ProjectID: proj.ID,
-		Data:      projectPageData{Project: proj, Projects: projects, Tab: "features", Tickets: epics},
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "features", Tickets: epics, IsStaff: auth.IsStaffOrAbove(user.Role)},
 	})
 }
 
@@ -126,7 +127,7 @@ func (h *ProjectHandler) ProjectBugs(w http.ResponseWriter, r *http.Request) {
 	h.engine.Render(w, "project_bugs.html", render.PageData{
 		Title: proj.Name + " — Bugs", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		ProjectID: proj.ID,
-		Data:      projectPageData{Project: proj, Projects: projects, Tab: "bugs", Tickets: bugs},
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "bugs", Tickets: bugs, IsStaff: auth.IsStaffOrAbove(user.Role)},
 	})
 }
 
@@ -145,7 +146,7 @@ func (h *ProjectHandler) ProjectGantt(w http.ResponseWriter, r *http.Request) {
 	h.engine.Render(w, "project_gantt.html", render.PageData{
 		Title: proj.Name + " — Timeline", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		ProjectID: proj.ID,
-		Data:      projectPageData{Project: proj, Projects: projects, Tab: "gantt", Tickets: tickets},
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "gantt", Tickets: tickets, IsStaff: auth.IsStaffOrAbove(user.Role)},
 	})
 }
 
@@ -182,6 +183,30 @@ func (h *ProjectHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/orgs/"+orgSlug+"/projects/"+slug+"/brief", http.StatusSeeOther)
+}
+
+func (h *ProjectHandler) ProjectArchived(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	org, proj, err := h.getOrgAndProject(r, user)
+	if err != nil {
+		h.engine.RenderError(w, http.StatusNotFound, "Not found")
+		return
+	}
+
+	archived, _ := h.db.ListArchivedTickets(r.Context(), proj.ID)
+	projects, _ := h.db.ListProjects(r.Context(), org.ID)
+	orgs := h.loadOrgs(r, user)
+
+	h.engine.Render(w, "project_archived.html", render.PageData{
+		Title: proj.Name + " — Archived", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		ProjectID: proj.ID,
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "archived", Tickets: archived, IsStaff: true},
+	})
 }
 
 func (h *ProjectHandler) loadOrgs(r *http.Request, user *models.User) []models.Organization {

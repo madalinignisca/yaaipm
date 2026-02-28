@@ -13,6 +13,7 @@
                     <span class="badge badge-gray badge-uppercase">{{.Ticket.Type}}</span>
                     <span class="badge badge-{{statusColor .Ticket.Status}}">{{.Ticket.Status}}</span>
                     <span class="badge badge-{{priorityColor .Ticket.Priority}}">{{.Ticket.Priority}}</span>
+                    {{if .Ticket.ArchivedAt}}<span class="badge badge-red">archived</span>{{end}}
                 </div>
                 <div class="ticket-title">{{.Ticket.Title}}</div>
             </div>
@@ -53,6 +54,21 @@
                             </select>
                             <button type="submit" class="btn btn-primary btn-sm btn-block">Set Agent</button>
                         </form>
+                    </div>
+                    <div class="dropdown-section">
+                        <div class="dropdown-section-label">Actions</div>
+                        {{if .Ticket.ArchivedAt}}
+                        <button hx-post="/tickets/{{.Ticket.ID}}/restore"
+                                hx-confirm="Restore this ticket and its children?"
+                                class="dropdown-item">Restore</button>
+                        {{else}}
+                        <button hx-post="/tickets/{{.Ticket.ID}}/archive"
+                                hx-confirm="Archive this ticket?"
+                                class="dropdown-item">Archive</button>
+                        {{end}}
+                        <button hx-delete="/tickets/{{.Ticket.ID}}"
+                                hx-confirm="Permanently delete this ticket? This cannot be undone."
+                                class="dropdown-item text-danger">Delete</button>
                     </div>
                 </div>
             </div>

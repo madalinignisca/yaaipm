@@ -155,6 +155,7 @@ func main() {
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/features", projH.ProjectFeatures)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/bugs", projH.ProjectBugs)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/gantt", projH.ProjectGantt)
+		r.Get("/orgs/{orgSlug}/projects/{projSlug}/archived", projH.ProjectArchived)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.ProjectCosts)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.AddCostItem)
 		r.Get("/orgs/{orgSlug}/costs", costH.OrgCosts)
@@ -166,6 +167,9 @@ func main() {
 		r.Get("/tickets/{ticketID}", ticketH.TicketDetail)
 		r.Patch("/tickets/{ticketID}/status", ticketH.UpdateStatus)
 		r.Patch("/tickets/{ticketID}/agent", ticketH.UpdateAgentMode)
+		r.Post("/tickets/{ticketID}/archive", ticketH.ArchiveTicket)
+		r.Post("/tickets/{ticketID}/restore", ticketH.RestoreTicket)
+		r.Delete("/tickets/{ticketID}", ticketH.DeleteTicket)
 
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)

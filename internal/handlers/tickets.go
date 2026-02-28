@@ -160,6 +160,105 @@ func (h *TicketHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (h *TicketHandler) ArchiveTicket(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	ticketID := r.PathValue("ticketID")
+	ticket, err := h.db.GetTicket(r.Context(), ticketID)
+	if err != nil {
+		http.Error(w, "Ticket not found", http.StatusNotFound)
+		return
+	}
+
+	if err := h.db.ArchiveTicket(r.Context(), ticketID); err != nil {
+		log.Printf("archiving ticket: %v", err)
+		http.Error(w, "Failed to archive", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Ticket %s archived by user %s (%s)", ticketID, user.ID, user.Email)
+
+	// Redirect back to the project page
+	proj, _ := h.db.GetProjectByID(r.Context(), ticket.ProjectID)
+	if proj != nil {
+		org, _ := h.db.GetOrgByID(r.Context(), proj.OrgID)
+		if org != nil {
+			tab := "features"
+			if ticket.Type == "bug" {
+				tab = "bugs"
+			}
+			w.Header().Set("HX-Redirect", "/orgs/"+org.Slug+"/projects/"+proj.Slug+"/"+tab)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *TicketHandler) RestoreTicket(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	ticketID := r.PathValue("ticketID")
+	if err := h.db.RestoreTicket(r.Context(), ticketID); err != nil {
+		log.Printf("restoring ticket: %v", err)
+		http.Error(w, "Failed to restore", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Ticket %s restored by user %s (%s)", ticketID, user.ID, user.Email)
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *TicketHandler) DeleteTicket(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	ticketID := r.PathValue("ticketID")
+	ticket, err := h.db.GetTicket(r.Context(), ticketID)
+	if err != nil {
+		http.Error(w, "Ticket not found", http.StatusNotFound)
+		return
+	}
+
+	log.Printf("Ticket %s (%s) permanently deleted by user %s (%s)", ticketID, ticket.Title, user.ID, user.Email)
+
+	if err := h.db.DeleteTicket(r.Context(), ticketID); err != nil {
+		log.Printf("deleting ticket: %v", err)
+		http.Error(w, "Failed to delete", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect back to the project page
+	proj, _ := h.db.GetProjectByID(r.Context(), ticket.ProjectID)
+	if proj != nil {
+		org, _ := h.db.GetOrgByID(r.Context(), proj.OrgID)
+		if org != nil {
+			tab := "features"
+			if ticket.Type == "bug" {
+				tab = "bugs"
+			}
+			w.Header().Set("HX-Redirect", "/orgs/"+org.Slug+"/projects/"+proj.Slug+"/"+tab)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusOK)
+}
+
 func (h *TicketHandler) UpdateAgentMode(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 	if !auth.IsStaffOrAbove(user.Role) {

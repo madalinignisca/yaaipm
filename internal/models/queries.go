@@ -464,17 +464,17 @@ func (db *DB) CreateTicket(ctx context.Context, t *Ticket) error {
 	return db.Pool.QueryRow(ctx,
 		`INSERT INTO tickets (project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		 RETURNING id, created_at, updated_at`,
+		 RETURNING id, archived_at, created_at, updated_at`,
 		t.ProjectID, t.ParentID, t.Type, t.Title, t.DescriptionMarkdown, t.Status, t.Priority, t.DateStart, t.DateEnd, t.AgentMode, t.AgentName, t.AssignedTo, t.CreatedBy,
-	).Scan(&t.ID, &t.CreatedAt, &t.UpdatedAt)
+	).Scan(&t.ID, &t.ArchivedAt, &t.CreatedAt, &t.UpdatedAt)
 }
 
 func (db *DB) GetTicket(ctx context.Context, id string) (*Ticket, error) {
 	t := &Ticket{}
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, created_at, updated_at
+		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, archived_at, created_at, updated_at
 		 FROM tickets WHERE id = $1`, id,
-	).Scan(&t.ID, &t.ProjectID, &t.ParentID, &t.Type, &t.Title, &t.DescriptionMarkdown, &t.Status, &t.Priority, &t.DateStart, &t.DateEnd, &t.AgentMode, &t.AgentName, &t.AssignedTo, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt)
+	).Scan(&t.ID, &t.ProjectID, &t.ParentID, &t.Type, &t.Title, &t.DescriptionMarkdown, &t.Status, &t.Priority, &t.DateStart, &t.DateEnd, &t.AgentMode, &t.AgentName, &t.AssignedTo, &t.CreatedBy, &t.ArchivedAt, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -482,8 +482,8 @@ func (db *DB) GetTicket(ctx context.Context, id string) (*Ticket, error) {
 }
 
 func (db *DB) ListTickets(ctx context.Context, projectID, ticketType string) ([]Ticket, error) {
-	query := `SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, created_at, updated_at
-		 FROM tickets WHERE project_id = $1`
+	query := `SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, archived_at, created_at, updated_at
+		 FROM tickets WHERE project_id = $1 AND archived_at IS NULL`
 	args := []any{projectID}
 
 	if ticketType != "" {
@@ -502,8 +502,8 @@ func (db *DB) ListTickets(ctx context.Context, projectID, ticketType string) ([]
 
 func (db *DB) ListTicketsByParent(ctx context.Context, parentID string) ([]Ticket, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, created_at, updated_at
-		 FROM tickets WHERE parent_id = $1 ORDER BY created_at`, parentID)
+		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, archived_at, created_at, updated_at
+		 FROM tickets WHERE parent_id = $1 AND archived_at IS NULL ORDER BY created_at`, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -521,8 +521,8 @@ func (db *DB) ListBugs(ctx context.Context, projectID string) ([]Ticket, error) 
 
 func (db *DB) ListGanttTickets(ctx context.Context, projectID string) ([]Ticket, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, created_at, updated_at
-		 FROM tickets WHERE project_id = $1 AND date_start IS NOT NULL AND date_end IS NOT NULL
+		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, archived_at, created_at, updated_at
+		 FROM tickets WHERE project_id = $1 AND archived_at IS NULL AND date_start IS NOT NULL AND date_end IS NOT NULL
 		 ORDER BY date_start`, projectID)
 	if err != nil {
 		return nil, err
@@ -553,8 +553,8 @@ func (db *DB) UpdateTicket(ctx context.Context, t *Ticket) error {
 // ListAgentReady returns tickets that are ready for agent processing.
 func (db *DB) ListAgentReady(ctx context.Context) ([]Ticket, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, created_at, updated_at
-		 FROM tickets WHERE agent_mode IS NOT NULL AND status IN ('ready', 'plan_review')
+		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, archived_at, created_at, updated_at
+		 FROM tickets WHERE agent_mode IS NOT NULL AND archived_at IS NULL AND status IN ('ready', 'plan_review')
 		 ORDER BY priority DESC, created_at`)
 	if err != nil {
 		return nil, err
@@ -567,12 +567,51 @@ func scanTickets(rows pgx.Rows) ([]Ticket, error) {
 	var tickets []Ticket
 	for rows.Next() {
 		var t Ticket
-		if err := rows.Scan(&t.ID, &t.ProjectID, &t.ParentID, &t.Type, &t.Title, &t.DescriptionMarkdown, &t.Status, &t.Priority, &t.DateStart, &t.DateEnd, &t.AgentMode, &t.AgentName, &t.AssignedTo, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.ParentID, &t.Type, &t.Title, &t.DescriptionMarkdown, &t.Status, &t.Priority, &t.DateStart, &t.DateEnd, &t.AgentMode, &t.AgentName, &t.AssignedTo, &t.CreatedBy, &t.ArchivedAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		tickets = append(tickets, t)
 	}
 	return tickets, rows.Err()
+}
+
+// ── Ticket Archive / Delete ───────────────────────────────────────
+
+func (db *DB) ArchiveTicket(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE tickets SET archived_at = now(), updated_at = now() WHERE id = $1 OR parent_id = $1`, id)
+	return err
+}
+
+func (db *DB) RestoreTicket(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE tickets SET archived_at = NULL, updated_at = now() WHERE id = $1 OR parent_id = $1`, id)
+	return err
+}
+
+func (db *DB) DeleteTicket(ctx context.Context, id string) error {
+	// Delete children first (comments/activities cascade via FK)
+	_, err := db.Pool.Exec(ctx, `DELETE FROM tickets WHERE parent_id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deleting child tickets: %w", err)
+	}
+	_, err = db.Pool.Exec(ctx, `DELETE FROM tickets WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("deleting ticket: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) ListArchivedTickets(ctx context.Context, projectID string) ([]Ticket, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, archived_at, created_at, updated_at
+		 FROM tickets WHERE project_id = $1 AND archived_at IS NOT NULL AND parent_id IS NULL
+		 ORDER BY archived_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTickets(rows)
 }
 
 // ── Comments ──────────────────────────────────────────────────────
@@ -802,8 +841,8 @@ func (db *DB) DeleteAIConversation(ctx context.Context, id string) error {
 
 // SearchTickets searches tickets by title matching a query within a project.
 func (db *DB) SearchTickets(ctx context.Context, projectID, query string, ticketType, status *string) ([]Ticket, error) {
-	sql := `SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, created_at, updated_at
-		 FROM tickets WHERE project_id = $1 AND (title ILIKE '%' || $2 || '%' OR description_markdown ILIKE '%' || $2 || '%')`
+	sql := `SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, archived_at, created_at, updated_at
+		 FROM tickets WHERE project_id = $1 AND archived_at IS NULL AND (title ILIKE '%' || $2 || '%' OR description_markdown ILIKE '%' || $2 || '%')`
 	args := []any{projectID, query}
 	n := 3
 

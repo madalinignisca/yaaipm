@@ -1,0 +1,38 @@
+{{define "content"}}
+{{with .Data}}
+{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
+
+<div class="mt-lg">
+    <h2 class="mb-md">Archived Tickets</h2>
+
+    {{if .Tickets}}
+    <div class="stack-sm">
+        {{range .Tickets}}
+        <div class="card card-compact">
+            <div class="ticket-row">
+                <a href="/tickets/{{.ID}}" class="ticket-row-title" style="flex:1">{{.Title}}</a>
+                <div class="ticket-row-badges">
+                    <span class="badge badge-gray badge-uppercase">{{.Type}}</span>
+                    <span class="badge badge-{{statusColor .Status}}">{{.Status}}</span>
+                    <span class="badge badge-{{priorityColor .Priority}}">{{.Priority}}</span>
+                </div>
+                <div class="flex gap-sm" style="margin-left:auto">
+                    <button hx-post="/tickets/{{.ID}}/restore"
+                            hx-confirm="Restore this ticket and its children?"
+                            class="btn btn-secondary btn-sm">Restore</button>
+                    <button hx-delete="/tickets/{{.ID}}"
+                            hx-confirm="Permanently delete? This cannot be undone."
+                            class="btn btn-ghost btn-sm text-danger">Delete</button>
+                </div>
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <p>No archived tickets.</p>
+    </div>
+    {{end}}
+</div>
+{{end}}
+{{end}}

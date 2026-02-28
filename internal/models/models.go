@@ -83,6 +83,7 @@ type Ticket struct {
 	AgentName           *string    `db:"agent_name"`
 	AssignedTo          *string    `db:"assigned_to"`
 	CreatedBy           string     `db:"created_by"`
+	ArchivedAt          *time.Time `db:"archived_at"`
 	CreatedAt           time.Time  `db:"created_at"`
 	UpdatedAt           time.Time  `db:"updated_at"`
 }

@@ -10,5 +10,9 @@
        class="tab-link {{if eq .Tab "gantt"}}active{{end}}">Timeline</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/costs"
        class="tab-link {{if eq .Tab "costs"}}active{{end}}">Costs</a>
+    {{if .IsStaff}}
+    <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/archived"
+       class="tab-link {{if eq .Tab "archived"}}active{{end}}">Archived</a>
+    {{end}}
 </nav>
 {{end}}

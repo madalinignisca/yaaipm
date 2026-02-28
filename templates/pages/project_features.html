@@ -1,6 +1,6 @@
 {{define "content"}}
 {{with .Data}}
-{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab}}
+{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
 
 <div class="mt-lg">
     <div class="flex items-center justify-between mb-md">
