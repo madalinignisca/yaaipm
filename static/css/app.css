@@ -956,6 +956,15 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   flex-direction: column;
   z-index: 91;
   overflow: hidden;
+  transition: width .2s ease, height .2s ease, bottom .2s ease, right .2s ease, border-radius .2s ease;
+}
+
+.chat-panel-enlarged {
+  right: 1.5rem;
+  left: calc(var(--sidebar-width) + 1.5rem);
+  width: auto;
+  height: calc(100vh - 7rem);
+  bottom: 5.5rem;
 }
 
 .chat-header {
@@ -1271,6 +1280,175 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   transition: background .15s;
 }
 .reaction-emoji-btn:hover { background: var(--bg-hover, #f0f4ff); }
+
+/* ── Brief empty state ─────────────────────────────────────── */
+.brief-empty-state {
+  text-align: center;
+  padding: 3rem 2rem;
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+}
+
+.brief-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 4rem;
+  height: 4rem;
+  border-radius: var(--radius-lg);
+  background: var(--brand-50);
+  color: var(--brand-600);
+  margin-bottom: 1rem;
+}
+
+.brief-empty-state h3 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--gray-900);
+  margin-bottom: .5rem;
+}
+
+.brief-empty-state p {
+  font-size: var(--text-sm);
+  color: var(--gray-500);
+  max-width: 28rem;
+  margin: 0 auto .75rem;
+  line-height: 1.6;
+}
+
+.brief-empty-hint {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: .5rem;
+  text-align: left;
+  padding: .75rem 1rem;
+  background: var(--brand-50);
+  border: 1px solid var(--brand-100);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--brand-700);
+  max-width: 28rem;
+  line-height: 1.5;
+}
+
+.brief-empty-hint svg {
+  flex-shrink: 0;
+  margin-top: .125rem;
+}
+
+/* ── Revision history ─────────────────────────────────────── */
+.revision-list {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.revision-item {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .75rem 1rem;
+}
+
+.revision-item + .revision-item {
+  border-top: 1px solid var(--gray-100);
+}
+
+.revision-icon {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.revision-icon-edit {
+  background: var(--blue-100);
+  color: var(--blue-800);
+}
+
+.revision-icon-reviewed {
+  background: var(--green-100);
+  color: var(--green-800);
+}
+
+.revision-content {
+  display: flex;
+  align-items: center;
+  gap: .375rem;
+  font-size: var(--text-sm);
+  flex-wrap: wrap;
+}
+
+.revision-author {
+  font-weight: 600;
+  color: var(--gray-900);
+}
+
+.revision-action {
+  color: var(--gray-500);
+}
+
+.revision-time {
+  color: var(--gray-400);
+  font-size: var(--text-xs);
+}
+
+/* ── EasyMDE overrides ────────────────────────────────────── */
+.EasyMDEContainer .CodeMirror {
+  border: 1px solid var(--gray-300);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--gray-900);
+  padding: .5rem;
+}
+
+.EasyMDEContainer .CodeMirror-focused {
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, .15);
+}
+
+.EasyMDEContainer .editor-toolbar {
+  border: 1px solid var(--gray-300);
+  border-bottom: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--gray-50);
+}
+
+.EasyMDEContainer .editor-toolbar button {
+  color: var(--gray-600) !important;
+  border-radius: var(--radius-sm);
+}
+
+.EasyMDEContainer .editor-toolbar button:hover,
+.EasyMDEContainer .editor-toolbar button.active {
+  background: var(--gray-200);
+  border-color: transparent;
+}
+
+.EasyMDEContainer .editor-toolbar i.separator {
+  border-left-color: var(--gray-300);
+}
+
+.EasyMDEContainer .editor-preview {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--gray-700);
+  padding: 1rem;
+}
+
+.EasyMDEContainer .editor-preview-side {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--gray-700);
+  border: 1px solid var(--gray-300);
+  border-left: none;
+}
 
 /* ── Responsive ────────────────────────────────────────────── */
 @media (max-width: 768px) {

@@ -465,6 +465,40 @@ func (db *DB) UpdateProjectBrief(ctx context.Context, projectID, brief string) e
 	return err
 }
 
+// ── Brief Revisions ──────────────────────────────────────────────
+
+func (db *DB) CreateBriefRevision(ctx context.Context, projectID, userID, action, previousBrief string) error {
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO brief_revisions (project_id, user_id, action, previous_brief) VALUES ($1, $2, $3, $4)`,
+		projectID, userID, action, previousBrief)
+	return err
+}
+
+func (db *DB) ListBriefRevisions(ctx context.Context, projectID string) ([]BriefRevision, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT r.id, r.project_id, r.user_id, r.action, r.previous_brief, r.created_at,
+		        COALESCE(u.name, 'Unknown') AS user_name
+		 FROM brief_revisions r
+		 LEFT JOIN users u ON u.id = r.user_id
+		 WHERE r.project_id = $1
+		 ORDER BY r.created_at DESC
+		 LIMIT 50`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var revs []BriefRevision
+	for rows.Next() {
+		var r BriefRevision
+		if err := rows.Scan(&r.ID, &r.ProjectID, &r.UserID, &r.Action, &r.PreviousBrief, &r.CreatedAt, &r.UserName); err != nil {
+			return nil, err
+		}
+		revs = append(revs, r)
+	}
+	return revs, rows.Err()
+}
+
 // ── Tickets ───────────────────────────────────────────────────────
 
 func (db *DB) CreateTicket(ctx context.Context, t *Ticket) error {

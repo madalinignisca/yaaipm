@@ -107,6 +107,17 @@ type TicketActivity struct {
 	CreatedAt   time.Time `db:"created_at"`
 }
 
+type BriefRevision struct {
+	ID            string    `db:"id"`
+	ProjectID     string    `db:"project_id"`
+	UserID        string    `db:"user_id"`
+	Action        string    `db:"action"`
+	PreviousBrief string    `db:"previous_brief"`
+	CreatedAt     time.Time `db:"created_at"`
+	// Joined fields (not in table)
+	UserName string `db:"user_name"`
+}
+
 type WebAuthnCredential struct {
 	ID                string     `db:"id"`
 	UserID            string     `db:"user_id"`

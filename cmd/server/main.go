@@ -157,6 +157,7 @@ func main() {
 		r.Post("/orgs/{orgSlug}/projects", projH.CreateProject)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/brief", projH.ProjectBrief)
 		r.Put("/orgs/{orgSlug}/projects/{projSlug}/brief", projH.UpdateBrief)
+		r.Post("/orgs/{orgSlug}/projects/{projSlug}/brief/reviewed", projH.MarkBriefReviewed)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/features", projH.ProjectFeatures)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/bugs", projH.ProjectBugs)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/gantt", projH.ProjectGantt)

@@ -21,11 +21,12 @@ func NewProjectHandler(db *models.DB, engine *render.Engine) *ProjectHandler {
 }
 
 type projectPageData struct {
-	Project  *models.Project
-	Projects []models.Project
-	Tab      string
-	Tickets  []models.Ticket
-	IsStaff  bool
+	Project   *models.Project
+	Projects  []models.Project
+	Tab       string
+	Tickets   []models.Ticket
+	IsStaff   bool
+	Revisions []models.BriefRevision
 }
 
 func (h *ProjectHandler) getOrgAndProject(r *http.Request, user *models.User) (*models.Organization, *models.Project, error) {
@@ -61,11 +62,12 @@ func (h *ProjectHandler) ProjectBrief(w http.ResponseWriter, r *http.Request) {
 
 	projects, _ := h.db.ListProjects(r.Context(), org.ID)
 	orgs := h.loadOrgs(r, user)
+	revisions, _ := h.db.ListBriefRevisions(r.Context(), proj.ID)
 
 	h.engine.Render(w, "project_brief.html", render.PageData{
 		Title: proj.Name + " — Brief", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		ProjectID: proj.ID,
-		Data:      projectPageData{Project: proj, Projects: projects, Tab: "brief", IsStaff: auth.IsStaffOrAbove(user.Role)},
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "brief", IsStaff: auth.IsStaffOrAbove(user.Role), Revisions: revisions},
 	})
 }
 
@@ -77,15 +79,34 @@ func (h *ProjectHandler) UpdateBrief(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
+	brief := r.FormValue("brief")
+
+	// Save revision before overwriting
+	if err := h.db.CreateBriefRevision(r.Context(), proj.ID, user.ID, "edit", proj.BriefMarkdown); err != nil {
+		log.Printf("saving brief revision: %v", err)
 	}
 
-	brief := r.FormValue("brief")
 	if err := h.db.UpdateProjectBrief(r.Context(), proj.ID, brief); err != nil {
 		log.Printf("updating brief: %v", err)
 		http.Error(w, "Failed to update", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("HX-Redirect", r.URL.Path)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *ProjectHandler) MarkBriefReviewed(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	_, proj, err := h.getOrgAndProject(r, user)
+	if err != nil {
+		h.engine.RenderError(w, http.StatusNotFound, "Not found")
+		return
+	}
+
+	if err := h.db.CreateBriefRevision(r.Context(), proj.ID, user.ID, "reviewed", ""); err != nil {
+		log.Printf("saving brief review: %v", err)
+		http.Error(w, "Failed to save", http.StatusInternalServerError)
 		return
 	}
 
