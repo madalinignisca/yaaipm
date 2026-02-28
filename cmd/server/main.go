@@ -81,7 +81,7 @@ func main() {
 
 	authH := handlers.NewAuthHandler(db, sessions, engine, cfg.AESKey, secureCookie)
 	dashH := handlers.NewDashboardHandler(db, engine)
-	orgH := handlers.NewOrgHandler(db, engine, mailer, cfg.BaseURL)
+	orgH := handlers.NewOrgHandler(db, engine, mailer, cfg.BaseURL, cfg.ProtectedSuperadmins)
 	projH := handlers.NewProjectHandler(db, engine)
 	ticketH := handlers.NewTicketHandler(db, engine)
 	commentH := handlers.NewCommentHandler(db, engine)

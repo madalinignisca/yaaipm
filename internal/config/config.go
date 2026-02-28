@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 type Config struct {
@@ -24,6 +25,9 @@ type Config struct {
 	RPDisplayName string
 	RPID          string
 	RPOrigins     []string
+
+	// Protected superadmins (comma-separated emails) — cannot be removed or demoted by anyone
+	ProtectedSuperadmins []string
 
 	// AI / Gemini (optional — if GeminiAPIKey is empty, assistant is hidden)
 	GeminiAPIKey      string
@@ -76,6 +80,15 @@ func Load() (*Config, error) {
 		smtpUsername = smtpFrom
 	}
 
+	var protectedSuperadmins []string
+	if raw := os.Getenv("PROTECTED_SUPERADMINS"); raw != "" {
+		for _, email := range strings.Split(raw, ",") {
+			if e := strings.TrimSpace(email); e != "" {
+				protectedSuperadmins = append(protectedSuperadmins, strings.ToLower(e))
+			}
+		}
+	}
+
 	rpID := os.Getenv("WEBAUTHN_RPID")
 	if rpID == "" {
 		rpID = "smart.madalin.me"
@@ -92,8 +105,9 @@ func Load() (*Config, error) {
 		SMTPUsername:  smtpUsername,
 		SMTPPassword:  os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:      smtpFrom,
-		SMTPSSL:       isSSL,
-		RPDisplayName: "ForgeDesk",
+		SMTPSSL:              isSSL,
+		ProtectedSuperadmins: protectedSuperadmins,
+		RPDisplayName:        "ForgeDesk",
 		RPID:          rpID,
 		RPOrigins:     []string{baseURL},
 		GeminiAPIKey:      os.Getenv("GEMINI_API_KEY"),

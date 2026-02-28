@@ -16,14 +16,26 @@ import (
 )
 
 type OrgHandler struct {
-	db      *models.DB
-	engine  *render.Engine
-	mailer  *mail.Mailer
-	baseURL string
+	db                   *models.DB
+	engine               *render.Engine
+	mailer               *mail.Mailer
+	baseURL              string
+	protectedSuperadmins []string
 }
 
-func NewOrgHandler(db *models.DB, engine *render.Engine, mailer *mail.Mailer, baseURL string) *OrgHandler {
-	return &OrgHandler{db: db, engine: engine, mailer: mailer, baseURL: baseURL}
+func NewOrgHandler(db *models.DB, engine *render.Engine, mailer *mail.Mailer, baseURL string, protectedSuperadmins []string) *OrgHandler {
+	return &OrgHandler{db: db, engine: engine, mailer: mailer, baseURL: baseURL, protectedSuperadmins: protectedSuperadmins}
+}
+
+// isProtectedSuperadmin checks if an email is in the protected superadmins list.
+func (h *OrgHandler) isProtectedSuperadmin(email string) bool {
+	lower := strings.ToLower(email)
+	for _, e := range h.protectedSuperadmins {
+		if e == lower {
+			return true
+		}
+	}
+	return false
 }
 
 var slugRegex = regexp.MustCompile(`[^a-z0-9]+`)
@@ -276,10 +288,14 @@ func (h *OrgHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only superadmins can remove other superadmins
+	// Protected superadmins cannot be removed by anyone
 	targetUser, err := h.db.GetUserByID(r.Context(), targetID)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	if h.isProtectedSuperadmin(targetUser.Email) {
+		http.Error(w, "This user is protected and cannot be removed", http.StatusForbidden)
 		return
 	}
 	if targetUser.Role == auth.RoleSuperAdmin && user.Role != auth.RoleSuperAdmin {
@@ -332,10 +348,14 @@ func (h *OrgHandler) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only superadmins can change roles of other superadmins
+	// Protected superadmins cannot have their role changed by anyone
 	targetUser, err := h.db.GetUserByID(r.Context(), targetID)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	if h.isProtectedSuperadmin(targetUser.Email) {
+		http.Error(w, "This user is protected and cannot be modified", http.StatusForbidden)
 		return
 	}
 	if targetUser.Role == auth.RoleSuperAdmin && user.Role != auth.RoleSuperAdmin {
