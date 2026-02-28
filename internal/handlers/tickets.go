@@ -23,10 +23,12 @@ func NewTicketHandler(db *models.DB, engine *render.Engine) *TicketHandler {
 }
 
 type ticketDetailData struct {
-	Ticket   *models.Ticket
-	Children []models.Ticket
-	Comments []models.Comment
-	IsStaff  bool
+	Ticket           *models.Ticket
+	Children         []models.Ticket
+	Comments         []models.Comment
+	IsStaff          bool
+	TicketReactions  []models.ReactionGroup
+	CommentReactions map[string][]models.ReactionGroup
 }
 
 func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +43,22 @@ func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
 
 	children, _ := h.db.ListTicketsByParent(r.Context(), ticket.ID)
 	comments, _ := h.db.ListComments(r.Context(), ticket.ID)
+
+	// Load reactions for ticket
+	ticketReactions, _ := h.db.ListReactionGroups(r.Context(), "ticket", ticket.ID, user.ID)
+
+	// Load reactions for all comments in one batch query
+	var commentIDs []string
+	for _, c := range comments {
+		commentIDs = append(commentIDs, c.ID)
+	}
+	commentReactions := make(map[string][]models.ReactionGroup)
+	if len(commentIDs) > 0 {
+		commentReactions, _ = h.db.ListReactionGroupsBatch(r.Context(), "comment", commentIDs, user.ID)
+		if commentReactions == nil {
+			commentReactions = make(map[string][]models.ReactionGroup)
+		}
+	}
 
 	proj, _ := h.db.GetProjectByID(r.Context(), ticket.ProjectID)
 
@@ -59,10 +77,12 @@ func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
 		Title: ticket.Title, User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		ProjectID: ticket.ProjectID,
 		Data: ticketDetailData{
-			Ticket:   ticket,
-			Children: children,
-			Comments: comments,
-			IsStaff:  auth.IsStaffOrAbove(user.Role),
+			Ticket:           ticket,
+			Children:         children,
+			Comments:         comments,
+			IsStaff:          auth.IsStaffOrAbove(user.Role),
+			TicketReactions:  ticketReactions,
+			CommentReactions: commentReactions,
 		},
 	})
 }

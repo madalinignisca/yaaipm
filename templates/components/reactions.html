@@ -1,0 +1,32 @@
+<div class="reactions" id="reactions-{{.TargetType}}-{{.TargetID}}">
+    {{range .Groups}}
+    <button class="reaction-pill{{if .UserReacted}} reaction-active{{end}}"
+            hx-post="/reactions/{{$.TargetType}}/{{$.TargetID}}"
+            hx-vals='{"emoji":"{{.Emoji}}"}'
+            hx-target="#reactions-{{$.TargetType}}-{{$.TargetID}}"
+            hx-swap="outerHTML">
+        <span class="reaction-emoji">{{.Emoji}}</span>
+        <span class="reaction-count">{{.Count}}</span>
+    </button>
+    {{end}}
+    <div class="reaction-picker" x-data="{ open: false }">
+        <button @click="open = !open" class="reaction-add" title="Add reaction">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
+                <line x1="9" y1="9" x2="9.01" y2="9"/>
+                <line x1="15" y1="9" x2="15.01" y2="9"/>
+            </svg>
+        </button>
+        <div x-show="open" @click.outside="open = false" x-transition class="reaction-popup">
+            {{range $emoji := strList "👍" "👎" "😄" "🎉" "😕" "❤️" "🚀" "👀"}}
+            <button class="reaction-emoji-btn"
+                    hx-post="/reactions/{{$.TargetType}}/{{$.TargetID}}"
+                    hx-vals='{"emoji":"{{$emoji}}"}'
+                    hx-target="#reactions-{{$.TargetType}}-{{$.TargetID}}"
+                    hx-swap="outerHTML"
+                    @click="open = false">{{$emoji}}</button>
+            {{end}}
+        </div>
+    </div>
+</div>

@@ -101,14 +101,14 @@ func (h *ProjectHandler) ProjectFeatures(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	epics, _ := h.db.ListEpics(r.Context(), proj.ID)
+	features, _ := h.db.ListFeatures(r.Context(), proj.ID)
 	projects, _ := h.db.ListProjects(r.Context(), org.ID)
 	orgs := h.loadOrgs(r, user)
 
 	h.engine.Render(w, "project_features.html", render.PageData{
 		Title: proj.Name + " — Features", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		ProjectID: proj.ID,
-		Data:      projectPageData{Project: proj, Projects: projects, Tab: "features", Tickets: epics, IsStaff: auth.IsStaffOrAbove(user.Role)},
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "features", Tickets: features, IsStaff: auth.IsStaffOrAbove(user.Role)},
 	})
 }
 

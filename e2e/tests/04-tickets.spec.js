@@ -32,7 +32,7 @@ test.describe('Tickets & Comments', () => {
     await page.close();
   });
 
-  test('create epic ticket', async ({ page }) => {
+  test('create feature ticket', async ({ page }) => {
     test.skip(!projectId, 'Project ID not found');
 
     await fullLogin(page, { ...testUser, totpSecret });
@@ -41,9 +41,9 @@ test.describe('Tickets & Comments', () => {
       form: {
         project_id: projectId,
         title: 'E2E Epic Feature',
-        type: 'epic',
+        type: 'feature',
         priority: 'high',
-        description: 'This is an E2E test epic',
+        description: 'This is an E2E test feature',
       },
       headers: { Referer: '/orgs/ticket-org/projects/ticket-project/features' },
     });
@@ -70,7 +70,7 @@ test.describe('Tickets & Comments', () => {
     expect(response.status()).toBeLessThan(400);
   });
 
-  test('features page shows epics', async ({ page }) => {
+  test('features page shows features', async ({ page }) => {
     test.skip(!projectId, 'Project ID not found');
 
     await fullLogin(page, { ...testUser, totpSecret });
@@ -96,7 +96,7 @@ test.describe('Tickets & Comments', () => {
     await fullLogin(page, { ...testUser, totpSecret });
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
 
-    // Click on the epic ticket link
+    // Click on the feature ticket link
     const ticketLink = page.locator('a:has-text("E2E Epic Feature")');
     if (await ticketLink.isVisible()) {
       await ticketLink.click();

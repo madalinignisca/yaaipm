@@ -68,12 +68,12 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 	return []*genai.FunctionDeclaration{
 		{
 			Name:        "search_tickets",
-			Description: "Search tickets in the current project by title or description. Use when the user asks about existing tickets, tasks, bugs, or epics.",
+			Description: "Search tickets in the current project by title or description. Use when the user asks about existing tickets, tasks, bugs, or features.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"query":  {Type: genai.TypeString, Description: "Search query to match against ticket titles and descriptions"},
-					"type":   {Type: genai.TypeString, Description: "Filter by ticket type", Enum: []string{"epic", "task", "subtask", "bug"}},
+					"type":   {Type: genai.TypeString, Description: "Filter by ticket type", Enum: []string{"feature", "task", "subtask", "bug"}},
 					"status": {Type: genai.TypeString, Description: "Filter by ticket status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
 				},
 				Required: []string{"query"},
@@ -92,16 +92,16 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 		},
 		{
 			Name:        "create_ticket",
-			Description: "Create a new ticket in a project. Ticket hierarchy: epics are top-level features, tasks are children of epics (require parent_id), bugs are top-level. When asked to add tasks to an epic, first search for the epic to get its ID, then create tasks with that epic ID as parent_id.",
+			Description: "Create a new ticket in a project. Ticket hierarchy: features are top-level, tasks are children of features (require parent_id), bugs are top-level. When asked to add tasks to a feature, first search for the feature to get its ID, then create tasks with that feature ID as parent_id.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"project_id":  {Type: genai.TypeString, Description: "UUID of the project"},
 					"title":       {Type: genai.TypeString, Description: "Ticket title"},
-					"type":        {Type: genai.TypeString, Description: "Ticket type: 'epic' for top-level features, 'task' for work items under an epic, 'subtask' for sub-items under a task, 'bug' for top-level bugs", Enum: []string{"epic", "task", "subtask", "bug"}},
+					"type":        {Type: genai.TypeString, Description: "Ticket type: 'feature' for top-level features, 'task' for work items under a feature, 'subtask' for sub-items under a task, 'bug' for top-level bugs", Enum: []string{"feature", "task", "subtask", "bug"}},
 					"priority":    {Type: genai.TypeString, Description: "Ticket priority", Enum: []string{"low", "medium", "high", "critical"}},
 					"description": {Type: genai.TypeString, Description: "Detailed description in markdown"},
-					"parent_id":   {Type: genai.TypeString, Description: "UUID of the parent ticket. Required for tasks (parent is an epic) and subtasks (parent is a task). Must not be set for epics or bugs."},
+					"parent_id":   {Type: genai.TypeString, Description: "UUID of the parent ticket. Required for tasks (parent is a feature) and subtasks (parent is a task). Must not be set for features or bugs."},
 				},
 				Required: []string{"project_id", "title", "type", "priority"},
 			},

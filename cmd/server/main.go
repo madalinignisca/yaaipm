@@ -22,6 +22,7 @@ import (
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
 	"github.com/madalin/forgedesk/internal/static"
+	"github.com/madalin/forgedesk/internal/ws"
 )
 
 func main() {
@@ -88,7 +89,10 @@ func main() {
 	accountH := handlers.NewAccountHandler(db, sessions, engine)
 	inviteH := handlers.NewInviteHandler(db, sessions, engine, mailer, cfg.AESKey, cfg.BaseURL, secureCookie)
 	costH := handlers.NewCostHandler(db, engine)
-	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient)
+	reactionH := handlers.NewReactionHandler(db, engine)
+	chatHub := ws.NewHub()
+	go chatHub.Run()
+	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient, chatHub)
 
 	r := chi.NewRouter()
 
@@ -174,10 +178,11 @@ func main() {
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
 
-		// AI Assistant
-		r.Post("/assistant/conversations", assistantH.CreateConversation)
-		r.Get("/assistant/conversations/{convID}/messages", assistantH.ListMessages)
-		r.Post("/assistant/conversations/{convID}/messages", assistantH.SendMessage)
+		// Reactions
+		r.Post("/reactions/{targetType}/{targetID}", reactionH.ToggleReaction)
+
+		// AI Assistant (WebSocket)
+		r.Get("/ws/assistant/{projectID}", assistantH.HandleWebSocket)
 		r.Delete("/assistant/conversations/{convID}", assistantH.DeleteConversation)
 
 		// Admin

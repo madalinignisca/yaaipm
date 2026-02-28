@@ -40,6 +40,7 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 
 	// Clean all tables (order matters due to foreign keys)
 	tables := []string{
+		"reactions",
 		"ai_messages",
 		"ai_conversations",
 		"ticket_activities",

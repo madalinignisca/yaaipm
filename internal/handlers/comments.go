@@ -38,9 +38,10 @@ func (h *CommentHandler) CreateComment(w http.ResponseWriter, r *http.Request) {
 
 	h.db.CreateActivity(r.Context(), ticketID, &user.ID, nil, "comment", "{}")
 
-	// Return the new comment as an HTMX partial
+	// Return the new comment as an HTMX partial (no reactions yet on a brand-new comment)
 	h.engine.RenderPartial(w, "comment.html", map[string]any{
-		"Comment":  comment,
-		"UserName": user.Name,
+		"Comment":          comment,
+		"UserName":         user.Name,
+		"CommentReactions": []models.ReactionGroup(nil),
 	})
 }

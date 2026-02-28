@@ -134,6 +134,8 @@ type AIMessage struct {
 	ConversationID string    `db:"conversation_id"`
 	Role           string    `db:"role"`
 	Content        string    `db:"content"`
+	UserID         *string   `db:"user_id"`
+	UserName       string    `db:"user_name"`
 	CreatedAt      time.Time `db:"created_at"`
 }
 
@@ -177,4 +179,19 @@ type AIUsageSummary struct {
 	OutputTokens int64
 	TotalCents   int64
 	EntryCount   int
+}
+
+type Reaction struct {
+	ID         string    `db:"id"`
+	TargetType string    `db:"target_type"`
+	TargetID   string    `db:"target_id"`
+	UserID     string    `db:"user_id"`
+	Emoji      string    `db:"emoji"`
+	CreatedAt  time.Time `db:"created_at"`
+}
+
+type ReactionGroup struct {
+	Emoji       string
+	Count       int
+	UserReacted bool
 }

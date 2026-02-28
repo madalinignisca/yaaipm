@@ -299,9 +299,9 @@ func TestTicketCRUD(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Error("expected 1 task")
 	}
-	epics, _ := db.ListEpics(ctx, proj.ID)
-	if len(epics) != 0 {
-		t.Error("expected 0 epics")
+	features, _ := db.ListFeatures(ctx, proj.ID)
+	if len(features) != 0 {
+		t.Error("expected 0 features")
 	}
 }
 
@@ -314,7 +314,7 @@ func TestTicketParentChild(t *testing.T) {
 	proj, _ := db.CreateProject(ctx, org.ID, "PC Project", "pc-proj")
 	user, _ := db.CreateUser(ctx, "pc@test.com", "hash", "PC", "client")
 
-	parent := &Ticket{ProjectID: proj.ID, Type: "epic", Title: "Epic", Status: "backlog", Priority: "high", CreatedBy: user.ID}
+	parent := &Ticket{ProjectID: proj.ID, Type: "feature", Title: "Feature", Status: "backlog", Priority: "high", CreatedBy: user.ID}
 	db.CreateTicket(ctx, parent)
 
 	child := &Ticket{ProjectID: proj.ID, ParentID: &parent.ID, Type: "task", Title: "Child Task", Status: "backlog", Priority: "medium", CreatedBy: user.ID}

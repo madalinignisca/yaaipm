@@ -511,8 +511,8 @@ func (db *DB) ListTicketsByParent(ctx context.Context, parentID string) ([]Ticke
 	return scanTickets(rows)
 }
 
-func (db *DB) ListEpics(ctx context.Context, projectID string) ([]Ticket, error) {
-	return db.ListTickets(ctx, projectID, "epic")
+func (db *DB) ListFeatures(ctx context.Context, projectID string) ([]Ticket, error) {
+	return db.ListTickets(ctx, projectID, "feature")
 }
 
 func (db *DB) ListBugs(ctx context.Context, projectID string) ([]Ticket, error) {
@@ -803,10 +803,23 @@ func (db *DB) ListAIConversations(ctx context.Context, userID string, limit int)
 func (db *DB) CreateAIMessage(ctx context.Context, conversationID, role, content string) (*AIMessage, error) {
 	m := &AIMessage{}
 	err := db.Pool.QueryRow(ctx,
-		`INSERT INTO ai_messages (conversation_id, role, content) VALUES ($1, $2, $3)
-		 RETURNING id, conversation_id, role, content, created_at`,
+		`INSERT INTO ai_messages (conversation_id, role, content, user_id, user_name) VALUES ($1, $2, $3, NULL, '')
+		 RETURNING id, conversation_id, role, content, user_id, user_name, created_at`,
 		conversationID, role, content,
-	).Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.CreatedAt)
+	).Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.UserID, &m.UserName, &m.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("creating ai message: %w", err)
+	}
+	return m, nil
+}
+
+func (db *DB) CreateAIMessageWithUser(ctx context.Context, conversationID, role, content string, userID *string, userName string) (*AIMessage, error) {
+	m := &AIMessage{}
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO ai_messages (conversation_id, role, content, user_id, user_name) VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, conversation_id, role, content, user_id, user_name, created_at`,
+		conversationID, role, content, userID, userName,
+	).Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.UserID, &m.UserName, &m.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("creating ai message: %w", err)
 	}
@@ -815,7 +828,7 @@ func (db *DB) CreateAIMessage(ctx context.Context, conversationID, role, content
 
 func (db *DB) ListAIMessages(ctx context.Context, conversationID string) ([]AIMessage, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, conversation_id, role, content, created_at
+		`SELECT id, conversation_id, role, content, user_id, user_name, created_at
 		 FROM ai_messages WHERE conversation_id = $1 ORDER BY created_at`,
 		conversationID)
 	if err != nil {
@@ -826,12 +839,28 @@ func (db *DB) ListAIMessages(ctx context.Context, conversationID string) ([]AIMe
 	var msgs []AIMessage
 	for rows.Next() {
 		var m AIMessage
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.UserID, &m.UserName, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()
+}
+
+func (db *DB) GetOrCreateProjectConversation(ctx context.Context, projectID, createdByUserID string) (*AIConversation, error) {
+	c := &AIConversation{}
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO ai_conversations (user_id, project_id)
+		 VALUES ($1, $2)
+		 ON CONFLICT (project_id) WHERE project_id IS NOT NULL
+		 DO UPDATE SET updated_at = now()
+		 RETURNING id, user_id, project_id, title, created_at, updated_at`,
+		createdByUserID, projectID,
+	).Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get or create project conversation: %w", err)
+	}
+	return c, nil
 }
 
 func (db *DB) DeleteAIConversation(ctx context.Context, id string) error {
@@ -1125,4 +1154,85 @@ func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 		users = append(users, u)
 	}
 	return users, rows.Err()
+}
+
+// ── Reactions ─────────────────────────────────────────────────────
+
+// ToggleReaction adds or removes an emoji reaction. Returns true if added, false if removed.
+func (db *DB) ToggleReaction(ctx context.Context, targetType, targetID, userID, emoji string) (bool, error) {
+	// Try to delete first
+	tag, err := db.Pool.Exec(ctx,
+		`DELETE FROM reactions WHERE target_type = $1 AND target_id = $2 AND user_id = $3 AND emoji = $4`,
+		targetType, targetID, userID, emoji)
+	if err != nil {
+		return false, fmt.Errorf("toggling reaction: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return false, nil // removed
+	}
+	// Not found — insert
+	_, err = db.Pool.Exec(ctx,
+		`INSERT INTO reactions (target_type, target_id, user_id, emoji) VALUES ($1, $2, $3, $4)`,
+		targetType, targetID, userID, emoji)
+	if err != nil {
+		return false, fmt.Errorf("adding reaction: %w", err)
+	}
+	return true, nil
+}
+
+// ListReactionGroups returns grouped emoji counts for a target, including whether the current user reacted.
+func (db *DB) ListReactionGroups(ctx context.Context, targetType, targetID, currentUserID string) ([]ReactionGroup, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT emoji, COUNT(*) AS cnt,
+		        bool_or(user_id = $3) AS user_reacted
+		 FROM reactions
+		 WHERE target_type = $1 AND target_id = $2
+		 GROUP BY emoji
+		 ORDER BY MIN(created_at)`,
+		targetType, targetID, currentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("listing reactions: %w", err)
+	}
+	defer rows.Close()
+
+	var groups []ReactionGroup
+	for rows.Next() {
+		var g ReactionGroup
+		if err := rows.Scan(&g.Emoji, &g.Count, &g.UserReacted); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
+}
+
+// ListReactionGroupsBatch returns reaction groups for multiple targets of the same type.
+func (db *DB) ListReactionGroupsBatch(ctx context.Context, targetType string, targetIDs []string, currentUserID string) (map[string][]ReactionGroup, error) {
+	result := make(map[string][]ReactionGroup)
+	if len(targetIDs) == 0 {
+		return result, nil
+	}
+
+	rows, err := db.Pool.Query(ctx,
+		`SELECT target_id, emoji, COUNT(*) AS cnt,
+		        bool_or(user_id = $3) AS user_reacted
+		 FROM reactions
+		 WHERE target_type = $1 AND target_id = ANY($2)
+		 GROUP BY target_id, emoji
+		 ORDER BY target_id, MIN(created_at)`,
+		targetType, targetIDs, currentUserID)
+	if err != nil {
+		return nil, fmt.Errorf("batch listing reactions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var targetID string
+		var g ReactionGroup
+		if err := rows.Scan(&targetID, &g.Emoji, &g.Count, &g.UserReacted); err != nil {
+			return nil, err
+		}
+		result[targetID] = append(result[targetID], g)
+	}
+	return result, rows.Err()
 }

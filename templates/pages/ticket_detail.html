@@ -79,6 +79,8 @@
         <div class="ticket-description">{{.Ticket.DescriptionMarkdown}}</div>
         {{end}}
 
+        {{template "reactions.html" dict "TargetType" "ticket" "TargetID" .Ticket.ID "Groups" .TicketReactions}}
+
         {{if or .Ticket.DateStart .Ticket.DateEnd}}
         <div class="ticket-dates">
             {{if .Ticket.DateStart}}<span>Start: {{formatDateInput .Ticket.DateStart}}</span>{{end}}
@@ -106,6 +108,7 @@
     <div class="card">
         <h3 class="mb-md">Comments</h3>
         <div id="comments" class="stack-lg mb-lg">
+            {{$cr := .CommentReactions}}
             {{range .Comments}}
             <div class="comment">
                 <div class="comment-meta">
@@ -113,6 +116,7 @@
                     <span class="comment-time">{{formatDateTime .CreatedAt}}</span>
                 </div>
                 <div class="comment-body">{{.BodyMarkdown}}</div>
+                {{template "reactions.html" dict "TargetType" "comment" "TargetID" .ID "Groups" (index $cr .ID)}}
             </div>
             {{end}}
         </div>

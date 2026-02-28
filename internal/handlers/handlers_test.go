@@ -16,6 +16,7 @@ import (
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
 	"github.com/madalin/forgedesk/internal/testutil"
+	"github.com/madalin/forgedesk/internal/ws"
 )
 
 func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *render.Engine) {
@@ -48,7 +49,9 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	adminH := NewAdminHandler(db, engine)
 	accountH := NewAccountHandler(db, sessions, engine)
 	inviteH := NewInviteHandler(db, sessions, engine, mailer, aesKey, baseURL, false)
-	assistantH := NewAssistantHandler(db, engine, nil) // nil gemini client — feature disabled in tests
+	chatHub := ws.NewHub()
+	go chatHub.Run()
+	assistantH := NewAssistantHandler(db, engine, nil, chatHub) // nil gemini client — feature disabled in tests
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recover)
@@ -90,9 +93,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Patch("/tickets/{ticketID}/status", ticketH.UpdateStatus)
 		r.Patch("/tickets/{ticketID}/agent", ticketH.UpdateAgentMode)
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
-		r.Post("/assistant/conversations", assistantH.CreateConversation)
-		r.Get("/assistant/conversations/{convID}/messages", assistantH.ListMessages)
-		r.Post("/assistant/conversations/{convID}/messages", assistantH.SendMessage)
+		r.Get("/ws/assistant/{projectID}", assistantH.HandleWebSocket)
 		r.Delete("/assistant/conversations/{convID}", assistantH.DeleteConversation)
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireRole(auth.RoleSuperAdmin))
@@ -440,7 +441,7 @@ func TestCreateTicket(t *testing.T) {
 	form := url.Values{
 		"project_id": {proj.ID},
 		"title":      {"New Feature"},
-		"type":       {"epic"},
+		"type":       {"feature"},
 		"priority":   {"high"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/tickets", strings.NewReader(form.Encode()))
