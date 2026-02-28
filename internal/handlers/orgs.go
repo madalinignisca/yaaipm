@@ -276,6 +276,17 @@ func (h *OrgHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only superadmins can remove other superadmins
+	targetUser, err := h.db.GetUserByID(r.Context(), targetID)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	if targetUser.Role == auth.RoleSuperAdmin && user.Role != auth.RoleSuperAdmin {
+		http.Error(w, "Only superadmins can remove other superadmins", http.StatusForbidden)
+		return
+	}
+
 	// Check if target is the last owner
 	targetMembership, err := h.db.GetOrgMembership(r.Context(), targetID, org.ID)
 	if err != nil {
@@ -318,6 +329,17 @@ func (h *OrgHandler) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 	newRole := r.FormValue("role")
 	if newRole != auth.OrgRoleOwner && newRole != auth.OrgRoleAdmin && newRole != auth.OrgRoleMember {
 		http.Error(w, "Invalid role", http.StatusBadRequest)
+		return
+	}
+
+	// Only superadmins can change roles of other superadmins
+	targetUser, err := h.db.GetUserByID(r.Context(), targetID)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	if targetUser.Role == auth.RoleSuperAdmin && user.Role != auth.RoleSuperAdmin {
+		http.Error(w, "Only superadmins can modify other superadmins", http.StatusForbidden)
 		return
 	}
 
