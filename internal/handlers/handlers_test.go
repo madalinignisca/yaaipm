@@ -49,6 +49,8 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	adminH := NewAdminHandler(db, engine)
 	accountH := NewAccountHandler(db, sessions, engine)
 	inviteH := NewInviteHandler(db, sessions, engine, mailer, aesKey, baseURL, false)
+	costH := NewCostHandler(db, engine)
+	reactionH := NewReactionHandler(db, engine)
 	chatHub := ws.NewHub()
 	go chatHub.Run()
 	assistantH := NewAssistantHandler(db, engine, nil, chatHub) // nil gemini client — feature disabled in tests
@@ -93,11 +95,18 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Patch("/tickets/{ticketID}/status", ticketH.UpdateStatus)
 		r.Patch("/tickets/{ticketID}/agent", ticketH.UpdateAgentMode)
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
+		r.Get("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.ProjectCosts)
+		r.Post("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.AddCostItem)
+		r.Get("/orgs/{orgSlug}/costs", costH.OrgCosts)
+		r.Patch("/costs/{costID}", costH.UpdateCostItem)
+		r.Delete("/costs/{costID}", costH.DeleteCostItem)
+		r.Post("/reactions/{targetType}/{targetID}", reactionH.ToggleReaction)
 		r.Get("/ws/assistant/{projectID}", assistantH.HandleWebSocket)
 		r.Delete("/assistant/conversations/{convID}", assistantH.DeleteConversation)
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireRole(auth.RoleSuperAdmin))
 			r.Get("/admin", adminH.AdminPage)
+			r.Post("/admin/pricing", costH.UpdateModelPricing)
 		})
 	})
 

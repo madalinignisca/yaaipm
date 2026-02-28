@@ -43,6 +43,8 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 		"reactions",
 		"ai_messages",
 		"ai_conversations",
+		"ai_usage_entries",
+		"project_costs",
 		"ticket_activities",
 		"comments",
 		"tickets",

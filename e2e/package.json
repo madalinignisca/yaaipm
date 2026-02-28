@@ -11,7 +11,8 @@
     "test:orgs": "npx playwright test 02-dashboard",
     "test:projects": "npx playwright test 03-projects",
     "test:tickets": "npx playwright test 04-tickets",
-    "test:admin": "npx playwright test 05-admin"
+    "test:admin": "npx playwright test 05-admin",
+    "test:org-management": "npx playwright test 07-org-management"
   },
   "keywords": [],
   "author": "",
