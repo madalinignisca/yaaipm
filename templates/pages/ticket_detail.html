@@ -26,10 +26,11 @@
                     </svg>
                 </button>
                 <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:14rem">
+                    {{$ticketID := .Ticket.ID}}
                     <div class="dropdown-section">
                         <div class="dropdown-section-label">Status</div>
                         {{range $s := strList "backlog" "ready" "planning" "plan_review" "implementing" "testing" "review" "done" "cancelled"}}
-                        <button hx-patch="/tickets/{{$.Ticket.ID}}/status"
+                        <button hx-patch="/tickets/{{$ticketID}}/status"
                                 hx-vals='{"status":"{{$s}}"}'
                                 hx-target="#ticket-header"
                                 hx-swap="outerHTML"
