@@ -83,7 +83,7 @@ func main() {
 	dashH := handlers.NewDashboardHandler(db, engine)
 	orgH := handlers.NewOrgHandler(db, engine, mailer, cfg.BaseURL, cfg.ProtectedSuperadmins)
 	projH := handlers.NewProjectHandler(db, engine)
-	ticketH := handlers.NewTicketHandler(db, engine)
+	ticketH := handlers.NewTicketHandler(db, engine, geminiClient)
 	commentH := handlers.NewCommentHandler(db, engine)
 	adminH := handlers.NewAdminHandler(db, engine)
 	accountH := handlers.NewAccountHandler(db, sessions, engine)

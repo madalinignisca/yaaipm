@@ -44,7 +44,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	dashH := NewDashboardHandler(db, engine)
 	orgH := NewOrgHandler(db, engine, mailer, baseURL, nil)
 	projH := NewProjectHandler(db, engine)
-	ticketH := NewTicketHandler(db, engine)
+	ticketH := NewTicketHandler(db, engine, nil)
 	commentH := NewCommentHandler(db, engine)
 	adminH := NewAdminHandler(db, engine)
 	accountH := NewAccountHandler(db, sessions, engine)

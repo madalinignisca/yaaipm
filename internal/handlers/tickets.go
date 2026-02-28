@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -16,10 +17,16 @@ import (
 type TicketHandler struct {
 	db     *models.DB
 	engine *render.Engine
+	ai     titleGenerator
 }
 
-func NewTicketHandler(db *models.DB, engine *render.Engine) *TicketHandler {
-	return &TicketHandler{db: db, engine: engine}
+// titleGenerator generates a ticket title from a description.
+type titleGenerator interface {
+	GenerateTitle(ctx context.Context, ticketType, description string) (string, error)
+}
+
+func NewTicketHandler(db *models.DB, engine *render.Engine, ai titleGenerator) *TicketHandler {
+	return &TicketHandler{db: db, engine: engine, ai: ai}
 }
 
 type ticketDetailData struct {
@@ -96,8 +103,19 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	title := strings.TrimSpace(r.FormValue("title"))
+	description := r.FormValue("description")
+
+	// Auto-generate title from description if not provided
+	if title == "" && description != "" && h.ai != nil {
+		generated, err := h.ai.GenerateTitle(r.Context(), r.FormValue("type"), description)
+		if err != nil {
+			log.Printf("generating title: %v", err)
+		} else {
+			title = generated
+		}
+	}
 	if title == "" {
-		http.Error(w, "Title is required", http.StatusBadRequest)
+		http.Error(w, "Title or description is required", http.StatusBadRequest)
 		return
 	}
 
@@ -129,7 +147,7 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		ParentID:            parentPtr,
 		Type:                ticketType,
 		Title:               title,
-		DescriptionMarkdown: r.FormValue("description"),
+		DescriptionMarkdown: description,
 		Status:              "backlog",
 		Priority:            r.FormValue("priority"),
 		DateStart:           dateStart,

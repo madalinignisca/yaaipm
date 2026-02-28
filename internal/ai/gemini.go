@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"google.golang.org/genai"
 )
@@ -243,4 +244,27 @@ func (g *GeminiClient) streamWithToolLoop(ctx context.Context, chat *genai.Chat,
 		// Continue the loop with function responses
 		parts = responseParts
 	}
+}
+
+// GenerateTitle generates a short ticket title from a description using the default model.
+func (g *GeminiClient) GenerateTitle(ctx context.Context, ticketType, description string) (string, error) {
+	prompt := fmt.Sprintf(
+		"Generate a short, clear title (max 10 words) for this %s ticket based on its description. "+
+			"Return ONLY the title text, nothing else. No quotes, no prefix, no explanation.\n\nDescription:\n%s",
+		ticketType, description,
+	)
+
+	result, err := g.client.Models.GenerateContent(ctx, g.Models.Default,
+		[]*genai.Content{genai.NewContentFromText(prompt, genai.RoleUser)}, nil)
+	if err != nil {
+		return "", fmt.Errorf("generating title: %w", err)
+	}
+
+	if result != nil && len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
+		if text := result.Candidates[0].Content.Parts[0].Text; text != "" {
+			return strings.TrimSpace(text), nil
+		}
+	}
+
+	return "", fmt.Errorf("empty response from model")
 }
