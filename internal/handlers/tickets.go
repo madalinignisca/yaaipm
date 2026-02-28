@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
@@ -22,7 +23,7 @@ type TicketHandler struct {
 
 // titleGenerator generates a ticket title from a description.
 type titleGenerator interface {
-	GenerateTitle(ctx context.Context, ticketType, description string) (string, error)
+	GenerateTitle(ctx context.Context, ticketType, description string) (string, *ai.UsageData, error)
 }
 
 func NewTicketHandler(db *models.DB, engine *render.Engine, ai titleGenerator) *TicketHandler {
@@ -107,11 +108,14 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-generate title from description if not provided
 	if title == "" && description != "" && h.ai != nil {
-		generated, err := h.ai.GenerateTitle(r.Context(), r.FormValue("type"), description)
+		generated, usage, err := h.ai.GenerateTitle(r.Context(), r.FormValue("type"), description)
 		if err != nil {
 			log.Printf("generating title: %v", err)
 		} else {
 			title = generated
+		}
+		if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
+			h.recordAIUsage(r.Context(), user, projectID, usage, "Auto-generated title")
 		}
 	}
 	if title == "" {
@@ -324,4 +328,17 @@ func (h *TicketHandler) UpdateAgentMode(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("HX-Refresh", "true")
 	w.WriteHeader(http.StatusOK)
+}
+
+// recordAIUsage records an AI usage entry for a project-scoped operation.
+func (h *TicketHandler) recordAIUsage(ctx context.Context, user *models.User, projectID string, usage *ai.UsageData, label string) {
+	proj, err := h.db.GetProjectByID(ctx, projectID)
+	if err != nil {
+		log.Printf("ai usage: project %s not found: %v", projectID, err)
+		return
+	}
+	if err := h.db.CreateAIUsageEntry(ctx, proj.OrgID, &projectID, user.ID, usage.Model, label,
+		int(usage.InputTokens), int(usage.OutputTokens), 0); err != nil {
+		log.Printf("recording ai usage: %v", err)
+	}
 }

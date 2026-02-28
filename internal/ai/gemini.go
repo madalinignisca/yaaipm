@@ -247,7 +247,8 @@ func (g *GeminiClient) streamWithToolLoop(ctx context.Context, chat *genai.Chat,
 }
 
 // GenerateTitle generates a short ticket title from a description using the default model.
-func (g *GeminiClient) GenerateTitle(ctx context.Context, ticketType, description string) (string, error) {
+// Returns the title text and usage data for cost tracking.
+func (g *GeminiClient) GenerateTitle(ctx context.Context, ticketType, description string) (string, *UsageData, error) {
 	prompt := fmt.Sprintf(
 		"Generate a short, clear title (max 10 words) for this %s ticket based on its description. "+
 			"Return ONLY the title text, nothing else. No quotes, no prefix, no explanation.\n\nDescription:\n%s",
@@ -257,14 +258,23 @@ func (g *GeminiClient) GenerateTitle(ctx context.Context, ticketType, descriptio
 	result, err := g.client.Models.GenerateContent(ctx, g.Models.Default,
 		[]*genai.Content{genai.NewContentFromText(prompt, genai.RoleUser)}, nil)
 	if err != nil {
-		return "", fmt.Errorf("generating title: %w", err)
+		return "", nil, fmt.Errorf("generating title: %w", err)
+	}
+
+	var usage *UsageData
+	if result != nil && result.UsageMetadata != nil {
+		usage = &UsageData{
+			InputTokens:  result.UsageMetadata.PromptTokenCount,
+			OutputTokens: result.UsageMetadata.CandidatesTokenCount,
+			Model:        g.Models.Default,
+		}
 	}
 
 	if result != nil && len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
 		if text := result.Candidates[0].Content.Parts[0].Text; text != "" {
-			return strings.TrimSpace(text), nil
+			return strings.TrimSpace(text), usage, nil
 		}
 	}
 
-	return "", fmt.Errorf("empty response from model")
+	return "", usage, fmt.Errorf("empty response from model")
 }
