@@ -210,6 +210,13 @@ func (db *DB) UpdateInvitationStatus(ctx context.Context, id, status string) err
 	return err
 }
 
+func (db *DB) ResetInvitationToken(ctx context.Context, id, newTokenHash string, newExpiry time.Time) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE invitations SET token_hash = $1, expires_at = $2, updated_at = now() WHERE id = $3`,
+		newTokenHash, newExpiry, id)
+	return err
+}
+
 func (db *DB) ExpireOldInvitations(ctx context.Context) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE invitations SET status = 'expired', updated_at = now()

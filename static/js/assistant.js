@@ -1,65 +1,70 @@
-// ForgeDesk AI Assistant — Alpine.js chat widget
+// ForgeDesk AI Assistant — WebSocket-based shared project chat
 function chatWidget() {
   return {
     open: false,
-    currentConv: null,
-    currentProjectID: null,
     messages: [],
     input: '',
     loading: false,
     streamingText: '',
+    unreadCount: 0,
 
-    async toggle() {
+    // WebSocket state
+    _ws: null,
+    _projectID: null,
+    _convID: null,
+    _reconnectAttempts: 0,
+    _reconnectTimer: null,
+    _currentUserID: null,
+    _currentUserName: null,
+
+    init() {
+      const widget = this.$el;
+      this._currentUserID = widget.dataset.userId || '';
+      this._currentUserName = widget.dataset.userName || '';
+
+      // Detect project page changes via htmx navigation
+      document.addEventListener('htmx:afterSettle', () => {
+        this._checkProjectChange();
+      });
+    },
+
+    toggle() {
       this.open = !this.open;
       if (this.open) {
-        const pageProjectID = this.getProjectID();
-        if (this.currentConv && this.currentProjectID !== pageProjectID) {
-          this.currentConv = null;
-          this.messages = [];
+        this.unreadCount = 0;
+        const pid = this._getProjectID();
+        if (pid && pid !== this._projectID) {
+          this._disconnect();
+          this._connect(pid);
+        } else if (pid && !this._ws) {
+          this._connect(pid);
         }
-        if (!this.currentConv) {
-          await this.initConversation();
-        }
-        this.$nextTick(() => this.scrollToBottom());
         this.$nextTick(() => {
+          this._scrollToBottom();
           const ta = this.$refs.chatInput;
           if (ta) ta.focus();
         });
       }
     },
 
-    async initConversation() {
-      const projectID = this.getProjectID();
-      this.currentProjectID = projectID;
-      const body = new URLSearchParams();
-      if (projectID) body.set('project_id', projectID);
+    send() {
+      const text = this.input.trim();
+      if (!text || this.loading || !this._ws) return;
 
-      try {
-        const res = await fetch('/assistant/conversations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: body.toString(),
-        });
-        if (!res.ok) return;
-        const conv = await res.json();
-        this.currentConv = conv.ID || conv.id;
+      this.input = '';
+      // Do NOT add message locally — wait for server broadcast
+      this._wsSend({ type: 'send_message', data: { content: text } });
+    },
 
-        const msgRes = await fetch(`/assistant/conversations/${this.currentConv}/messages`);
-        if (msgRes.ok) {
-          const msgs = await msgRes.json();
-          this.messages = msgs.map(m => ({
-            role: m.Role || m.role,
-            content: m.Content || m.content,
-          }));
-        }
-      } catch (e) {
-        console.error('Failed to init conversation:', e);
+    handleKeydown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.send();
       }
     },
 
     renderMd(text, role) {
       if (!text) return '';
-      // User messages: escape HTML only, preserve newlines
       if (role === 'user') {
         return text
           .replace(/&/g, '&amp;')
@@ -67,97 +72,13 @@ function chatWidget() {
           .replace(/>/g, '&gt;')
           .replace(/\n/g, '<br>');
       }
-      // Assistant messages: render markdown
       if (typeof marked !== 'undefined' && marked.parse) {
         return marked.parse(text, { breaks: true });
       }
       return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
     },
 
-    async send() {
-      const text = this.input.trim();
-      if (!text || this.loading) return;
-
-      this.input = '';
-      this.messages.push({ role: 'user', content: text });
-      this.loading = true;
-      this.streamingText = '';
-      this.$nextTick(() => this.scrollToBottom());
-
-      try {
-        const body = new URLSearchParams();
-        body.set('content', text);
-
-        const res = await fetch(`/assistant/conversations/${this.currentConv}/messages`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: body.toString(),
-        });
-
-        if (!res.ok) {
-          this.messages.push({ role: 'assistant', content: 'Sorry, something went wrong.' });
-          this.loading = false;
-          return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            const jsonStr = line.slice(6);
-            try {
-              const data = JSON.parse(jsonStr);
-              if (data.error) {
-                this.streamingText += data.error;
-              } else if (data.done) {
-                if (this.streamingText) {
-                  this.messages.push({ role: 'assistant', content: this.streamingText });
-                  this.streamingText = '';
-                }
-                if (data.reload) {
-                  this.refreshPage();
-                }
-              } else if (data.text) {
-                this.streamingText += data.text;
-                this.$nextTick(() => this.scrollToBottom());
-              }
-            } catch (e) {
-              // skip malformed JSON
-            }
-          }
-        }
-
-        if (this.streamingText) {
-          this.messages.push({ role: 'assistant', content: this.streamingText });
-          this.streamingText = '';
-        }
-      } catch (e) {
-        console.error('Stream error:', e);
-        if (this.streamingText) {
-          this.messages.push({ role: 'assistant', content: this.streamingText });
-          this.streamingText = '';
-        } else {
-          this.messages.push({ role: 'assistant', content: 'Connection lost. Please try again.' });
-        }
-      }
-
-      this.loading = false;
-      this.$nextTick(() => this.scrollToBottom());
-    },
-
     refreshPage() {
-      // Trigger a proper hx-boost navigation to refresh page content
-      // while preserving the chat widget via hx-preserve
       setTimeout(() => {
         const a = document.createElement('a');
         a.href = window.location.pathname;
@@ -168,28 +89,184 @@ function chatWidget() {
       }, 600);
     },
 
-    async newConversation() {
-      this.currentConv = null;
-      this.currentProjectID = null;
+    // ── WebSocket ──────────────────────────────
+
+    _connect(projectID) {
+      if (this._ws) this._disconnect();
+
+      this._projectID = projectID;
       this.messages = [];
       this.streamingText = '';
-      this.input = '';
-      await this.initConversation();
+      this._convID = null;
+
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = proto + '//' + location.host + '/ws/assistant/' + projectID;
+
+      try {
+        this._ws = new WebSocket(url);
+      } catch (e) {
+        console.error('WebSocket connection failed:', e);
+        return;
+      }
+
+      this._ws.onopen = () => {
+        this._reconnectAttempts = 0;
+      };
+
+      this._ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          this._handleWSMessage(msg);
+        } catch (e) {
+          console.error('Failed to parse WS message:', e);
+        }
+      };
+
+      this._ws.onclose = () => {
+        this._ws = null;
+        this._tryReconnect();
+      };
+
+      this._ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+      };
     },
 
-    handleKeydown(e) {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        this.send();
+    _disconnect() {
+      if (this._reconnectTimer) {
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
+      }
+      this._reconnectAttempts = 0;
+      if (this._ws) {
+        this._ws.onclose = null; // prevent reconnect
+        this._ws.close();
+        this._ws = null;
       }
     },
 
-    scrollToBottom() {
+    _tryReconnect() {
+      if (this._reconnectAttempts >= 10) return;
+      if (!this._projectID) return;
+
+      const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), 30000);
+      this._reconnectAttempts++;
+
+      this._reconnectTimer = setTimeout(() => {
+        if (this._projectID) {
+          this._connect(this._projectID);
+        }
+      }, delay);
+    },
+
+    _wsSend(data) {
+      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        this._ws.send(JSON.stringify(data));
+      }
+    },
+
+    _handleWSMessage(msg) {
+      switch (msg.type) {
+        case 'conv_info':
+          this._convID = msg.data.conversation_id;
+          break;
+
+        case 'history':
+          this.messages = (msg.data || []).map(m => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            user_id: m.user_id || null,
+            user_name: m.user_name || '',
+            created_at: m.created_at,
+          }));
+          this.$nextTick(() => this._scrollToBottom());
+          break;
+
+        case 'user_message':
+          this.messages.push({
+            id: msg.data.id,
+            role: 'user',
+            content: msg.data.content,
+            user_id: msg.data.user_id,
+            user_name: msg.data.user_name,
+            created_at: msg.data.created_at,
+          });
+          // Set loading since AI will respond
+          this.loading = true;
+          this._incrementUnread();
+          this.$nextTick(() => this._scrollToBottom());
+          break;
+
+        case 'ai_typing':
+          this.loading = true;
+          this.streamingText = '';
+          break;
+
+        case 'ai_chunk':
+          if (msg.data && msg.data.text) {
+            this.streamingText += msg.data.text;
+            this.$nextTick(() => this._scrollToBottom());
+          }
+          break;
+
+        case 'ai_done':
+          if (this.streamingText) {
+            this.messages.push({
+              role: 'assistant',
+              content: this.streamingText,
+              user_name: '',
+            });
+            this.streamingText = '';
+          }
+          this.loading = false;
+          this._incrementUnread();
+          if (msg.data && msg.data.reload) {
+            this.refreshPage();
+          }
+          this.$nextTick(() => this._scrollToBottom());
+          break;
+
+        case 'ai_error':
+          this.loading = false;
+          this.streamingText = '';
+          const errText = (msg.data && msg.data.error) || 'Something went wrong';
+          this.messages.push({
+            role: 'assistant',
+            content: 'Error: ' + errText,
+            user_name: '',
+          });
+          this.$nextTick(() => this._scrollToBottom());
+          break;
+      }
+    },
+
+    _checkProjectChange() {
+      const newPID = this._getProjectID();
+      if (newPID !== this._projectID) {
+        if (this._ws) this._disconnect();
+        if (newPID && this.open) {
+          this._connect(newPID);
+        } else if (!newPID) {
+          this._projectID = null;
+          this.messages = [];
+          this.streamingText = '';
+        }
+      }
+    },
+
+    _incrementUnread() {
+      if (!this.open) {
+        this.unreadCount++;
+      }
+    },
+
+    _scrollToBottom() {
       const el = this.$refs.chatMessages;
       if (el) el.scrollTop = el.scrollHeight;
     },
 
-    getProjectID() {
+    _getProjectID() {
       const el = document.getElementById('assistant-project-ctx');
       const id = el ? el.dataset.projectId : '';
       return id || null;

@@ -302,6 +302,62 @@ func (h *InviteHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// ResendInvitation generates a new token and resends the invitation email.
+func (h *InviteHandler) ResendInvitation(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	orgSlug := r.PathValue("orgSlug")
+	invitationID := r.PathValue("invitationID")
+
+	org, err := h.db.GetOrgBySlug(r.Context(), orgSlug)
+	if err != nil {
+		http.Error(w, "Organization not found", http.StatusNotFound)
+		return
+	}
+
+	if !canManageOrg(h.db, r, user, org.ID) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	inv, err := h.db.GetInvitationByID(r.Context(), invitationID)
+	if err != nil || inv.OrgID != org.ID {
+		http.Error(w, "Invitation not found", http.StatusNotFound)
+		return
+	}
+
+	if inv.Status != "pending" {
+		http.Error(w, "Only pending invitations can be resent", http.StatusBadRequest)
+		return
+	}
+
+	rawToken, tokenHash, err := generateInviteToken()
+	if err != nil {
+		log.Printf("generating invite token: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	newExpiry := time.Now().Add(7 * 24 * time.Hour)
+	if err := h.db.ResetInvitationToken(r.Context(), inv.ID, tokenHash, newExpiry); err != nil {
+		log.Printf("resetting invitation token: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	inviteURL := h.baseURL + "/invite/" + rawToken
+	if err := h.mailer.SendInvitation(inv.Email, org.Name, user.Name, inviteURL); err != nil {
+		log.Printf("resending invitation email: %v", err)
+	}
+
+	// Re-render invitation list
+	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
+	h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
+		"Invitations": invitations,
+		"OrgSlug":     org.Slug,
+		"CanManage":   true,
+	})
+}
+
 // canManageOrg is a shared helper to check org management permission.
 func canManageOrg(db *models.DB, r *http.Request, user *models.User, orgID string) bool {
 	if auth.IsStaffOrAbove(user.Role) {

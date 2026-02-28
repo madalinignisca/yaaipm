@@ -18,6 +18,7 @@ type Config struct {
 	SMTPUsername string
 	SMTPPassword string
 	SMTPFrom     string
+	SMTPSSL      bool
 
 	// WebAuthn
 	RPDisplayName string
@@ -66,6 +67,15 @@ func Load() (*Config, error) {
 		smtpPort = "587"
 	}
 
+	smtpSSL := os.Getenv("SMTP_SSL")
+	isSSL := smtpSSL == "true" || smtpSSL == "1"
+
+	smtpFrom := os.Getenv("SMTP_FROM")
+	smtpUsername := os.Getenv("SMTP_USERNAME")
+	if smtpUsername == "" {
+		smtpUsername = smtpFrom
+	}
+
 	rpID := os.Getenv("WEBAUTHN_RPID")
 	if rpID == "" {
 		rpID = "smart.madalin.me"
@@ -79,9 +89,10 @@ func Load() (*Config, error) {
 		BaseURL:       baseURL,
 		SMTPHost:      os.Getenv("SMTP_HOST"),
 		SMTPPort:      smtpPort,
-		SMTPUsername:   os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:   os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:      os.Getenv("SMTP_FROM"),
+		SMTPUsername:  smtpUsername,
+		SMTPPassword:  os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:      smtpFrom,
+		SMTPSSL:       isSSL,
 		RPDisplayName: "ForgeDesk",
 		RPID:          rpID,
 		RPOrigins:     []string{baseURL},

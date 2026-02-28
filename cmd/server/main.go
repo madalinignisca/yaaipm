@@ -77,7 +77,7 @@ func main() {
 
 	// Handlers
 	secureCookie := strings.HasPrefix(cfg.BaseURL, "https")
-	mailer := mail.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+	mailer := mail.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, cfg.SMTPSSL)
 
 	authH := handlers.NewAuthHandler(db, sessions, engine, cfg.AESKey, secureCookie)
 	dashH := handlers.NewDashboardHandler(db, engine)
@@ -148,6 +148,7 @@ func main() {
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
 		r.Post("/orgs/{orgSlug}/invitations", orgH.InviteMember)
 		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
+		r.Post("/orgs/{orgSlug}/invitations/{invitationID}/resend", inviteH.ResendInvitation)
 		r.Delete("/orgs/{orgSlug}/members/{userID}", orgH.RemoveMember)
 		r.Patch("/orgs/{orgSlug}/members/{userID}/role", orgH.UpdateMemberRole)
 		r.Post("/orgs/{orgSlug}/settings/margin", orgH.UpdateAIMargin)

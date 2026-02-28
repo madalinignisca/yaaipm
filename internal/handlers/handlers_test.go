@@ -37,7 +37,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	}
 
 	aesKey := testutil.TestAESKey
-	mailer := mail.NewMailer("", "", "", "", "")
+	mailer := mail.NewMailer("", "", "", "", "", false)
 	baseURL := "http://localhost:8081"
 
 	authH := NewAuthHandler(db, sessions, engine, aesKey, false)

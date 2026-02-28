@@ -64,21 +64,20 @@
 
         {{if .AssistantEnabled}}
         <div id="assistant-project-ctx" data-project-id="{{.ProjectID}}"></div>
-        <div id="assistant-widget" hx-preserve="true" x-data="chatWidget()" x-cloak>
+        <div id="assistant-widget" hx-preserve="true" x-data="chatWidget()" x-init="init()" x-cloak
+             data-user-id="{{.User.ID}}" data-user-name="{{.User.Name}}">
             <!-- FAB -->
             <button @click="toggle()" class="chat-fab" :aria-label="open ? 'Close assistant' : 'Open assistant'">
                 <svg x-show="!open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                 <svg x-show="open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <span x-show="!open && unreadCount > 0" x-text="unreadCount > 99 ? '99+' : unreadCount" x-transition class="chat-badge"></span>
             </button>
 
             <!-- Chat Panel -->
             <div x-show="open" x-transition.opacity class="chat-panel">
                 <div class="chat-header">
-                    <span class="chat-header-title">ForgeDesk Assistant</span>
+                    <span class="chat-header-title">Project Chat</span>
                     <div class="chat-header-actions">
-                        <button @click="newConversation()" class="chat-header-btn" title="New conversation">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        </button>
                         <button @click="toggle()" class="chat-header-btn" title="Close">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                         </button>
@@ -88,11 +87,22 @@
                 <div class="chat-messages" x-ref="chatMessages">
                     <template x-if="messages.length === 0 && !streamingText && !loading">
                         <div class="chat-empty">
-                            <p>Ask me anything about your projects, tickets, or tasks.</p>
+                            <p>Ask the team assistant anything about this project.</p>
                         </div>
                     </template>
-                    <template x-for="(msg, i) in messages" :key="i">
-                        <div class="chat-msg" :class="msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-assistant'" x-html="renderMd(msg.content, msg.role)"></div>
+                    <template x-for="(msg, i) in messages" :key="msg.id || i">
+                        <div class="chat-msg"
+                             :class="{
+                                'chat-msg-user': msg.role === 'user',
+                                'chat-msg-self': msg.role === 'user' && msg.user_id === _currentUserID,
+                                'chat-msg-other': msg.role === 'user' && msg.user_id && msg.user_id !== _currentUserID,
+                                'chat-msg-assistant': msg.role === 'assistant'
+                             }">
+                            <template x-if="msg.role === 'user' && msg.user_name">
+                                <div class="chat-msg-author" x-text="msg.user_name"></div>
+                            </template>
+                            <div x-html="renderMd(msg.content, msg.role)"></div>
+                        </div>
                     </template>
                     <template x-if="streamingText">
                         <div class="chat-msg chat-msg-streaming" x-html="renderMd(streamingText, 'assistant')"></div>
