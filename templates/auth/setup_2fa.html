@@ -1,0 +1,32 @@
+{{define "content"}}
+<div class="container-narrow">
+    <h1 class="mb-sm">Set Up Two-Factor Authentication</h1>
+    <p class="text-muted mb-xl">Two-factor authentication is required for all accounts. Choose your preferred method:</p>
+
+    <div class="stack-lg">
+        <a href="/setup-2fa/totp" class="method-card">
+            <div class="method-icon method-icon-primary">
+                <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                </svg>
+            </div>
+            <div class="method-info">
+                <h3>Authenticator App</h3>
+                <p>Use Google Authenticator, Authy, or any TOTP app</p>
+            </div>
+        </a>
+
+        <div class="method-card disabled">
+            <div class="method-icon method-icon-muted">
+                <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+                </svg>
+            </div>
+            <div class="method-info">
+                <h3 style="color:var(--gray-500)">Security Key / Passkey</h3>
+                <p style="color:var(--gray-400)">YubiKey, Touch ID, Windows Hello — coming soon</p>
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}

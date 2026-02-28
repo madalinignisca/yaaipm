@@ -87,6 +87,144 @@ func (db *DB) UpdateUserPassword(ctx context.Context, userID, hash string) error
 	return err
 }
 
+func (db *DB) UpdateUserEmail(ctx context.Context, userID, email string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE users SET email = $1, updated_at = now() WHERE id = $2`, email, userID)
+	return err
+}
+
+func (db *DB) CountUsers(ctx context.Context) (int, error) {
+	var count int
+	err := db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
+	return count, err
+}
+
+// ── Invitations ──────────────────────────────────────────────────
+
+func (db *DB) CreateInvitation(ctx context.Context, email, orgID, orgRole, tokenHash, invitedBy string, expiresAt time.Time) (*Invitation, error) {
+	inv := &Invitation{}
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO invitations (email, org_id, org_role, token_hash, invited_by, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, email, org_id, org_role, token_hash, status, invited_by, expires_at, created_at, updated_at`,
+		email, orgID, orgRole, tokenHash, invitedBy, expiresAt,
+	).Scan(&inv.ID, &inv.Email, &inv.OrgID, &inv.OrgRole, &inv.TokenHash, &inv.Status, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt, &inv.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("creating invitation: %w", err)
+	}
+	return inv, nil
+}
+
+func (db *DB) GetInvitationByToken(ctx context.Context, tokenHash string) (*Invitation, error) {
+	inv := &Invitation{}
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, email, org_id, org_role, token_hash, status, invited_by, expires_at, created_at, updated_at
+		 FROM invitations WHERE token_hash = $1 AND status = 'pending' AND expires_at > now()`,
+		tokenHash,
+	).Scan(&inv.ID, &inv.Email, &inv.OrgID, &inv.OrgRole, &inv.TokenHash, &inv.Status, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt, &inv.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return inv, nil
+}
+
+func (db *DB) GetInvitationByID(ctx context.Context, id string) (*Invitation, error) {
+	inv := &Invitation{}
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, email, org_id, org_role, token_hash, status, invited_by, expires_at, created_at, updated_at
+		 FROM invitations WHERE id = $1`,
+		id,
+	).Scan(&inv.ID, &inv.Email, &inv.OrgID, &inv.OrgRole, &inv.TokenHash, &inv.Status, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt, &inv.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return inv, nil
+}
+
+func (db *DB) ListPendingInvitationsForUser(ctx context.Context, email string) ([]InvitationWithOrg, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT i.id, i.email, i.org_id, i.org_role, i.token_hash, i.status, i.invited_by, i.expires_at, i.created_at, i.updated_at,
+		        o.id, o.name, o.slug, o.created_at, o.updated_at,
+		        u.name
+		 FROM invitations i
+		 JOIN organizations o ON o.id = i.org_id
+		 JOIN users u ON u.id = i.invited_by
+		 WHERE i.email = $1 AND i.status = 'pending' AND i.expires_at > now()
+		 ORDER BY i.created_at DESC`, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []InvitationWithOrg
+	for rows.Next() {
+		var r InvitationWithOrg
+		if err := rows.Scan(
+			&r.Invitation.ID, &r.Invitation.Email, &r.Invitation.OrgID, &r.Invitation.OrgRole,
+			&r.Invitation.TokenHash, &r.Invitation.Status, &r.Invitation.InvitedBy,
+			&r.Invitation.ExpiresAt, &r.Invitation.CreatedAt, &r.Invitation.UpdatedAt,
+			&r.Organization.ID, &r.Organization.Name, &r.Organization.Slug,
+			&r.Organization.CreatedAt, &r.Organization.UpdatedAt,
+			&r.InviterName,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+func (db *DB) ListOrgInvitations(ctx context.Context, orgID string) ([]InvitationWithInviter, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT i.id, i.email, i.org_id, i.org_role, i.token_hash, i.status, i.invited_by, i.expires_at, i.created_at, i.updated_at,
+		        u.name
+		 FROM invitations i
+		 JOIN users u ON u.id = i.invited_by
+		 WHERE i.org_id = $1 AND i.status = 'pending' AND i.expires_at > now()
+		 ORDER BY i.created_at DESC`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []InvitationWithInviter
+	for rows.Next() {
+		var r InvitationWithInviter
+		if err := rows.Scan(
+			&r.Invitation.ID, &r.Invitation.Email, &r.Invitation.OrgID, &r.Invitation.OrgRole,
+			&r.Invitation.TokenHash, &r.Invitation.Status, &r.Invitation.InvitedBy,
+			&r.Invitation.ExpiresAt, &r.Invitation.CreatedAt, &r.Invitation.UpdatedAt,
+			&r.InviterName,
+		); err != nil {
+			return nil, err
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+func (db *DB) UpdateInvitationStatus(ctx context.Context, id, status string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE invitations SET status = $1, updated_at = now() WHERE id = $2`,
+		status, id)
+	return err
+}
+
+func (db *DB) ExpireOldInvitations(ctx context.Context) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE invitations SET status = 'expired', updated_at = now()
+		 WHERE status = 'pending' AND expires_at <= now()`)
+	return err
+}
+
+func (db *DB) HasPendingInvitation(ctx context.Context, email, orgID string) (bool, error) {
+	var exists bool
+	err := db.Pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM invitations WHERE email = $1 AND org_id = $2 AND status = 'pending' AND expires_at > now())`,
+		email, orgID).Scan(&exists)
+	return exists, err
+}
+
 // ── Organizations ─────────────────────────────────────────────────
 
 func (db *DB) CreateOrg(ctx context.Context, name, slug string) (*Organization, error) {
@@ -529,6 +667,377 @@ func (db *DB) CountUserWebAuthnCredentials(ctx context.Context, userID string) (
 }
 
 // ── Users listing ──────────────────────────────────────────────────
+
+// ── AI Conversations ──────────────────────────────────────────
+
+func (db *DB) CreateAIConversation(ctx context.Context, userID string, projectID *string) (*AIConversation, error) {
+	c := &AIConversation{}
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO ai_conversations (user_id, project_id) VALUES ($1, $2)
+		 RETURNING id, user_id, project_id, title, created_at, updated_at`,
+		userID, projectID,
+	).Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("creating ai conversation: %w", err)
+	}
+	return c, nil
+}
+
+func (db *DB) GetAIConversation(ctx context.Context, id string) (*AIConversation, error) {
+	c := &AIConversation{}
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, user_id, project_id, title, created_at, updated_at
+		 FROM ai_conversations WHERE id = $1`, id,
+	).Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (db *DB) GetLatestAIConversation(ctx context.Context, userID string, projectID *string) (*AIConversation, error) {
+	c := &AIConversation{}
+	var err error
+	if projectID != nil {
+		err = db.Pool.QueryRow(ctx,
+			`SELECT id, user_id, project_id, title, created_at, updated_at
+			 FROM ai_conversations
+			 WHERE user_id = $1 AND project_id = $2 AND updated_at > now() - interval '1 hour'
+			 ORDER BY updated_at DESC LIMIT 1`,
+			userID, *projectID,
+		).Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
+	} else {
+		err = db.Pool.QueryRow(ctx,
+			`SELECT id, user_id, project_id, title, created_at, updated_at
+			 FROM ai_conversations
+			 WHERE user_id = $1 AND project_id IS NULL AND updated_at > now() - interval '1 hour'
+			 ORDER BY updated_at DESC LIMIT 1`,
+			userID,
+		).Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (db *DB) UpdateAIConversationTitle(ctx context.Context, id, title string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE ai_conversations SET title = $1, updated_at = now() WHERE id = $2`, title, id)
+	return err
+}
+
+func (db *DB) TouchAIConversation(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE ai_conversations SET updated_at = now() WHERE id = $1`, id)
+	return err
+}
+
+func (db *DB) ListAIConversations(ctx context.Context, userID string, limit int) ([]AIConversation, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, user_id, project_id, title, created_at, updated_at
+		 FROM ai_conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2`,
+		userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var convs []AIConversation
+	for rows.Next() {
+		var c AIConversation
+		if err := rows.Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		convs = append(convs, c)
+	}
+	return convs, rows.Err()
+}
+
+func (db *DB) CreateAIMessage(ctx context.Context, conversationID, role, content string) (*AIMessage, error) {
+	m := &AIMessage{}
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO ai_messages (conversation_id, role, content) VALUES ($1, $2, $3)
+		 RETURNING id, conversation_id, role, content, created_at`,
+		conversationID, role, content,
+	).Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("creating ai message: %w", err)
+	}
+	return m, nil
+}
+
+func (db *DB) ListAIMessages(ctx context.Context, conversationID string) ([]AIMessage, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, conversation_id, role, content, created_at
+		 FROM ai_messages WHERE conversation_id = $1 ORDER BY created_at`,
+		conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []AIMessage
+	for rows.Next() {
+		var m AIMessage
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+func (db *DB) DeleteAIConversation(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM ai_conversations WHERE id = $1`, id)
+	return err
+}
+
+// SearchTickets searches tickets by title matching a query within a project.
+func (db *DB) SearchTickets(ctx context.Context, projectID, query string, ticketType, status *string) ([]Ticket, error) {
+	sql := `SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, created_at, updated_at
+		 FROM tickets WHERE project_id = $1 AND (title ILIKE '%' || $2 || '%' OR description_markdown ILIKE '%' || $2 || '%')`
+	args := []any{projectID, query}
+	n := 3
+
+	if ticketType != nil && *ticketType != "" {
+		sql += fmt.Sprintf(" AND type = $%d", n)
+		args = append(args, *ticketType)
+		n++
+	}
+	if status != nil && *status != "" {
+		sql += fmt.Sprintf(" AND status = $%d", n)
+		args = append(args, *status)
+		n++
+	}
+	sql += " ORDER BY created_at DESC LIMIT 20"
+
+	rows, err := db.Pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTickets(rows)
+}
+
+// ── Users listing ──────────────────────────────────────────────────
+
+// ── Project Costs ─────────────────────────────────────────────
+
+func (db *DB) CreateProjectCost(ctx context.Context, projectID, month, category, name string, amountCents int64) (*ProjectCost, error) {
+	c := &ProjectCost{}
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO project_costs (project_id, month, category, name, amount_cents)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, project_id, month, category, name, amount_cents, created_at, updated_at`,
+		projectID, month, category, name, amountCents,
+	).Scan(&c.ID, &c.ProjectID, &c.Month, &c.Category, &c.Name, &c.AmountCents, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("creating project cost: %w", err)
+	}
+	return c, nil
+}
+
+func (db *DB) GetProjectCost(ctx context.Context, id string) (*ProjectCost, error) {
+	c := &ProjectCost{}
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, project_id, month, category, name, amount_cents, created_at, updated_at
+		 FROM project_costs WHERE id = $1`, id,
+	).Scan(&c.ID, &c.ProjectID, &c.Month, &c.Category, &c.Name, &c.AmountCents, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (db *DB) UpdateProjectCost(ctx context.Context, id string, amountCents int64) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE project_costs SET amount_cents = $1, updated_at = now() WHERE id = $2`,
+		amountCents, id)
+	return err
+}
+
+func (db *DB) DeleteProjectCost(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM project_costs WHERE id = $1`, id)
+	return err
+}
+
+func (db *DB) ListProjectCosts(ctx context.Context, projectID, month string) ([]ProjectCost, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, project_id, month, category, name, amount_cents, created_at, updated_at
+		 FROM project_costs WHERE project_id = $1 AND month = $2
+		 ORDER BY category, name`, projectID, month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var costs []ProjectCost
+	for rows.Next() {
+		var c ProjectCost
+		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Month, &c.Category, &c.Name, &c.AmountCents, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		costs = append(costs, c)
+	}
+	return costs, rows.Err()
+}
+
+func (db *DB) ListOrgCostsByMonth(ctx context.Context, orgID, month string) ([]ProjectCost, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT pc.id, pc.project_id, pc.month, pc.category, pc.name, pc.amount_cents, pc.created_at, pc.updated_at
+		 FROM project_costs pc
+		 JOIN projects p ON p.id = pc.project_id
+		 WHERE p.org_id = $1 AND pc.month = $2
+		 ORDER BY p.name, pc.category, pc.name`, orgID, month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var costs []ProjectCost
+	for rows.Next() {
+		var c ProjectCost
+		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Month, &c.Category, &c.Name, &c.AmountCents, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		costs = append(costs, c)
+	}
+	return costs, rows.Err()
+}
+
+// ── AI Usage ──────────────────────────────────────────────────
+
+func (db *DB) CreateAIUsageEntry(ctx context.Context, orgID string, projectID *string, userID, model, label string, inputTokens, outputTokens int, costCents int64) error {
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO ai_usage_entries (org_id, project_id, user_id, model, label, input_tokens, output_tokens, cost_cents)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		orgID, projectID, userID, model, label, inputTokens, outputTokens, costCents)
+	return err
+}
+
+func (db *DB) ListAIUsageByProjectMonth(ctx context.Context, projectID, month string) ([]AIUsageSummary, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT model, label, SUM(input_tokens)::BIGINT, SUM(output_tokens)::BIGINT, SUM(cost_cents)::BIGINT, COUNT(*)::INT
+		 FROM ai_usage_entries
+		 WHERE project_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
+		 GROUP BY model, label ORDER BY model`, projectID, month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []AIUsageSummary
+	for rows.Next() {
+		var s AIUsageSummary
+		if err := rows.Scan(&s.Model, &s.Label, &s.InputTokens, &s.OutputTokens, &s.TotalCents, &s.EntryCount); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
+func (db *DB) ListAIUsageByOrgMonth(ctx context.Context, orgID, month string) ([]AIUsageSummary, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT model, label, SUM(input_tokens)::BIGINT, SUM(output_tokens)::BIGINT, SUM(cost_cents)::BIGINT, COUNT(*)::INT
+		 FROM ai_usage_entries
+		 WHERE org_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
+		 GROUP BY model, label ORDER BY model`, orgID, month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []AIUsageSummary
+	for rows.Next() {
+		var s AIUsageSummary
+		if err := rows.Scan(&s.Model, &s.Label, &s.InputTokens, &s.OutputTokens, &s.TotalCents, &s.EntryCount); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
+func (db *DB) GetTotalAIUsageCentsForOrgMonth(ctx context.Context, orgID, month string) (int64, error) {
+	var total int64
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(cost_cents), 0)::BIGINT FROM ai_usage_entries
+		 WHERE org_id = $1 AND to_char(created_at, 'YYYY-MM') = $2`, orgID, month).Scan(&total)
+	return total, err
+}
+
+// ── AI Model Pricing ──────────────────────────────────────────
+
+func (db *DB) GetModelPricing(ctx context.Context, modelName string) (*AIModelPricing, error) {
+	p := &AIModelPricing{}
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, model_name, input_price_per_million_cents, output_price_per_million_cents, effective_from, created_at
+		 FROM ai_model_pricing WHERE model_name = $1`, modelName,
+	).Scan(&p.ID, &p.ModelName, &p.InputPricePerMillionCents, &p.OutputPricePerMillionCents, &p.EffectiveFrom, &p.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (db *DB) ListModelPricing(ctx context.Context) ([]AIModelPricing, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, model_name, input_price_per_million_cents, output_price_per_million_cents, effective_from, created_at
+		 FROM ai_model_pricing ORDER BY model_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pricing []AIModelPricing
+	for rows.Next() {
+		var p AIModelPricing
+		if err := rows.Scan(&p.ID, &p.ModelName, &p.InputPricePerMillionCents, &p.OutputPricePerMillionCents, &p.EffectiveFrom, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		pricing = append(pricing, p)
+	}
+	return pricing, rows.Err()
+}
+
+func (db *DB) UpsertModelPricing(ctx context.Context, modelName string, inputPrice, outputPrice int64) error {
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO ai_model_pricing (model_name, input_price_per_million_cents, output_price_per_million_cents)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (model_name) DO UPDATE SET
+		   input_price_per_million_cents = $2,
+		   output_price_per_million_cents = $3,
+		   effective_from = now()`,
+		modelName, inputPrice, outputPrice)
+	return err
+}
+
+// ── Cost Months ───────────────────────────────────────────────
+
+func (db *DB) ListCostMonths(ctx context.Context, orgID string) ([]string, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT DISTINCT month FROM (
+		   SELECT pc.month FROM project_costs pc JOIN projects p ON p.id = pc.project_id WHERE p.org_id = $1
+		   UNION
+		   SELECT to_char(a.created_at, 'YYYY-MM') AS month FROM ai_usage_entries a WHERE a.org_id = $1
+		 ) AS months ORDER BY month DESC`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var months []string
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, err
+		}
+		months = append(months, m)
+	}
+	return months, rows.Err()
+}
 
 func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := db.Pool.Query(ctx,

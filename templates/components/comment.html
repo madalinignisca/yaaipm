@@ -1,0 +1,7 @@
+<div class="comment">
+    <div class="comment-meta">
+        <span class="comment-author">{{.UserName}}</span>
+        <span class="comment-time">{{formatDateTime .Comment.CreatedAt}}</span>
+    </div>
+    <div class="comment-body">{{.Comment.BodyMarkdown}}</div>
+</div>

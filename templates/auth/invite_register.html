@@ -1,0 +1,35 @@
+{{define "content"}}
+<div class="stack-xl text-center">
+    <div>
+        <h1 style="font-size:var(--text-3xl)">Join {{with .Data}}{{.OrgName}}{{end}}</h1>
+        {{with .Data}}
+        {{if .InviterName}}
+        <p class="text-muted" style="margin-top:.5rem">
+            {{.InviterName}} invited you to join this organization
+        </p>
+        {{end}}
+        {{end}}
+    </div>
+    {{if .Flash}}{{else}}
+    <form method="POST" action="/invite/{{with .Data}}{{.Token}}{{end}}" class="stack-lg" style="text-align:left">
+        <div class="form-group">
+            <label for="name" class="form-label">Full name</label>
+            <input id="name" name="name" type="text" required class="form-input">
+        </div>
+        <div class="form-group">
+            <label for="email" class="form-label">Email address</label>
+            <input id="email" type="email" class="form-input" value="{{with .Data}}{{.Email}}{{end}}" disabled>
+        </div>
+        <div class="form-group">
+            <label for="password" class="form-label">Password <span class="form-label-hint">(min 12 characters)</span></label>
+            <input id="password" name="password" type="password" required minlength="12"
+                   class="form-input" autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Create account &amp; join</button>
+    </form>
+    <p class="text-muted" style="margin-top:.5rem">
+        Already have an account? <a href="/login" class="btn-link">Sign in</a>
+    </p>
+    {{end}}
+</div>
+{{end}}

@@ -1,0 +1,150 @@
+{{define "content"}}
+{{with .Data}}
+{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab}}
+
+<div class="mt-lg">
+    <!-- Month Picker -->
+    <div class="flex items-center justify-between mb-lg">
+        <h2>Costs — {{.Month}}</h2>
+        <div class="flex items-center gap-sm">
+            <a href="?month={{.PrevMonth}}" class="btn btn-secondary btn-sm">&larr; Prev</a>
+            <span class="text-sm text-muted">{{.Month}}</span>
+            <a href="?month={{.NextMonth}}" class="btn btn-secondary btn-sm">Next &rarr;</a>
+        </div>
+    </div>
+
+    <!-- Infrastructure Costs -->
+    <div class="mb-lg">
+        <h3 class="mb-sm">Infrastructure Costs</h3>
+        {{if .Costs}}
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Name</th>
+                        <th style="text-align:right">Amount</th>
+                        {{if .CanEdit}}<th style="width:6rem"></th>{{end}}
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Costs}}
+                    <tr>
+                        <td class="cost-category">{{humanize .Category}}</td>
+                        <td>{{if .Name}}{{.Name}}{{else}}<span class="text-muted">—</span>{{end}}</td>
+                        <td style="text-align:right;font-weight:500">{{formatCents .AmountCents}}</td>
+                        {{if $.Data.CanEdit}}
+                        <td>
+                            <button class="btn btn-ghost btn-sm"
+                                    hx-delete="/costs/{{.ID}}"
+                                    hx-confirm="Delete this cost item?"
+                                    hx-target="closest tr"
+                                    hx-swap="outerHTML">Delete</button>
+                        </td>
+                        {{end}}
+                    </tr>
+                    {{end}}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="2" style="font-weight:600">Infrastructure Subtotal</td>
+                        <td style="text-align:right;font-weight:600">{{formatCents .InfraTotal}}</td>
+                        {{if .CanEdit}}<td></td>{{end}}
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        {{else}}
+        <div class="empty-state" style="padding:1.5rem">
+            <p class="text-muted">No infrastructure costs for this month.</p>
+        </div>
+        {{end}}
+
+        {{if .CanEdit}}
+        <div class="mt-lg" x-data="{ open: false }">
+            <button @click="open = !open" class="btn btn-secondary btn-sm">Add Cost Item</button>
+            <div x-show="open" x-transition class="card card-compact mt-lg" style="max-width:32rem">
+                <form method="POST" action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/costs">
+                    <input type="hidden" name="month" value="{{.Month}}">
+                    <div class="stack">
+                        <div class="form-group">
+                            <label class="form-label">Category</label>
+                            <select name="category" class="form-select" required>
+                                <option value="">Select...</option>
+                                <option value="base_fee">Base Fee</option>
+                                <option value="dev_environment">Dev Environment</option>
+                                <option value="testing_db">Testing Database</option>
+                                <option value="testing_container">Testing Container</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Name <span class="form-label-hint">(optional)</span></label>
+                            <input type="text" name="name" class="form-input" placeholder="e.g. PostgreSQL staging">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Amount (USD)</label>
+                            <input type="text" name="amount" class="form-input" placeholder="12.50" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Add</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- AI Usage -->
+    <div class="mb-lg">
+        <h3 class="mb-sm">AI Usage</h3>
+        {{if .AIUsage}}
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        {{if .CanEdit}}<th>Model</th>{{end}}
+                        <th>Type</th>
+                        <th style="text-align:right">Count</th>
+                        {{if .CanEdit}}
+                        <th style="text-align:right">Input Tokens</th>
+                        <th style="text-align:right">Output Tokens</th>
+                        {{end}}
+                        <th style="text-align:right">Cost</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .AIUsage}}
+                    <tr>
+                        {{if $.Data.CanEdit}}<td class="text-muted">{{.Model}}</td>{{end}}
+                        <td style="font-weight:500">{{.Label}}</td>
+                        <td style="text-align:right">{{.EntryCount}}</td>
+                        {{if $.Data.CanEdit}}
+                        <td style="text-align:right">{{.InputTokens}}</td>
+                        <td style="text-align:right">{{.OutputTokens}}</td>
+                        {{end}}
+                        <td style="text-align:right;font-weight:500">{{formatCents .TotalCents}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="{{if .CanEdit}}5{{else}}2{{end}}" style="font-weight:600">AI Subtotal</td>
+                        <td style="text-align:right;font-weight:600">{{formatCents .AITotal}}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        {{else}}
+        <div class="empty-state" style="padding:1.5rem">
+            <p class="text-muted">No AI usage for this month.</p>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Grand Total -->
+    <div class="card" style="text-align:right">
+        <span class="text-muted" style="margin-right:.5rem">Total for {{.Month}}:</span>
+        <span class="cost-total">{{formatCents .GrandTotal}}</span>
+    </div>
+</div>
+{{end}}
+{{end}}

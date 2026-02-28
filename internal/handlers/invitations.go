@@ -1,0 +1,315 @@
+package handlers
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/madalin/forgedesk/internal/auth"
+	"github.com/madalin/forgedesk/internal/mail"
+	"github.com/madalin/forgedesk/internal/middleware"
+	"github.com/madalin/forgedesk/internal/models"
+	"github.com/madalin/forgedesk/internal/render"
+)
+
+type InviteHandler struct {
+	db           *models.DB
+	sessions     *auth.SessionStore
+	engine       *render.Engine
+	mailer       *mail.Mailer
+	aesKey       string
+	baseURL      string
+	secureCookie bool
+}
+
+func NewInviteHandler(db *models.DB, sessions *auth.SessionStore, engine *render.Engine, mailer *mail.Mailer, aesKey, baseURL string, secureCookie bool) *InviteHandler {
+	return &InviteHandler{
+		db:           db,
+		sessions:     sessions,
+		engine:       engine,
+		mailer:       mailer,
+		aesKey:       aesKey,
+		baseURL:      baseURL,
+		secureCookie: secureCookie,
+	}
+}
+
+func hashInviteToken(raw string) string {
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
+}
+
+func generateInviteToken() (raw string, hash string, err error) {
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", "", err
+	}
+	raw = hex.EncodeToString(tokenBytes)
+	hash = hashInviteToken(raw)
+	return raw, hash, nil
+}
+
+// InviteRegisterPage renders the registration form for an invite link.
+func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	tokenHash := hashInviteToken(token)
+
+	inv, err := h.db.GetInvitationByToken(r.Context(), tokenHash)
+	if err != nil {
+		h.engine.Render(w, "invite_register.html", render.PageData{
+			Title: "Invalid Invitation",
+			Flash: "This invitation link is invalid or has expired.", FlashType: "error",
+		})
+		return
+	}
+
+	// If user already exists, redirect to login
+	if _, err := h.db.GetUserByEmail(r.Context(), inv.Email); err == nil {
+		h.engine.Render(w, "login.html", render.PageData{
+			Title: "Login",
+			Flash: "You already have an account. Please log in to accept the invitation.", FlashType: "success",
+		})
+		return
+	}
+
+	org, _ := h.db.GetOrgByID(r.Context(), inv.OrgID)
+	inviter, _ := h.db.GetUserByID(r.Context(), inv.InvitedBy)
+
+	orgName := ""
+	inviterName := ""
+	if org != nil {
+		orgName = org.Name
+	}
+	if inviter != nil {
+		inviterName = inviter.Name
+	}
+
+	h.engine.Render(w, "invite_register.html", render.PageData{
+		Title: "Join " + orgName,
+		Data: map[string]any{
+			"Email":       inv.Email,
+			"OrgName":     orgName,
+			"InviterName": inviterName,
+			"Token":       token,
+		},
+	})
+}
+
+// InviteRegister handles the registration form submission from an invite link.
+func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	tokenHash := hashInviteToken(token)
+
+	inv, err := h.db.GetInvitationByToken(r.Context(), tokenHash)
+	if err != nil {
+		h.engine.Render(w, "invite_register.html", render.PageData{
+			Title: "Invalid Invitation",
+			Flash: "This invitation link is invalid or has expired.", FlashType: "error",
+		})
+		return
+	}
+
+	name := strings.TrimSpace(r.FormValue("name"))
+	password := r.FormValue("password")
+
+	org, _ := h.db.GetOrgByID(r.Context(), inv.OrgID)
+	inviter, _ := h.db.GetUserByID(r.Context(), inv.InvitedBy)
+	orgName := ""
+	inviterName := ""
+	if org != nil {
+		orgName = org.Name
+	}
+	if inviter != nil {
+		inviterName = inviter.Name
+	}
+
+	renderErr := func(msg string) {
+		h.engine.Render(w, "invite_register.html", render.PageData{
+			Title: "Join " + orgName, Flash: msg, FlashType: "error",
+			Data: map[string]any{
+				"Email":       inv.Email,
+				"OrgName":     orgName,
+				"InviterName": inviterName,
+				"Token":       token,
+			},
+		})
+	}
+
+	if name == "" || password == "" {
+		renderErr("All fields are required.")
+		return
+	}
+
+	if len(password) < 12 {
+		renderErr("Password must be at least 12 characters.")
+		return
+	}
+
+	// Use email from invitation, not from form
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		log.Printf("hashing password: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	user, err := h.db.CreateUser(r.Context(), inv.Email, hash, name, auth.RoleClient)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
+			renderErr("An account with this email already exists. Please log in.")
+			return
+		}
+		log.Printf("creating user from invite: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Accept invitation and add org membership
+	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); err != nil {
+		log.Printf("accepting invitation: %v", err)
+	}
+	if err := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
+		log.Printf("adding org member from invite: %v", err)
+	}
+
+	// Create session
+	sessionToken, err := h.sessions.CreateSession(r.Context(), user.ID, true, r)
+	if err != nil {
+		log.Printf("creating session: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.SessionCookieName,
+		Value:    sessionToken,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookie,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   86400,
+	})
+
+	http.Redirect(w, r, "/setup-2fa", http.StatusSeeOther)
+}
+
+// AcceptInvitation accepts a pending invitation for an authenticated user.
+func (h *InviteHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	invitationID := r.PathValue("invitationID")
+
+	inv, err := h.db.GetInvitationByID(r.Context(), invitationID)
+	if err != nil {
+		http.Error(w, "Invitation not found", http.StatusNotFound)
+		return
+	}
+
+	if !strings.EqualFold(inv.Email, user.Email) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if inv.Status != "pending" || inv.ExpiresAt.Before(time.Now()) {
+		http.Error(w, "Invitation is no longer valid", http.StatusGone)
+		return
+	}
+
+	if err := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
+		log.Printf("adding org member on accept: %v", err)
+		http.Error(w, "Failed to join organization", http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); err != nil {
+		log.Printf("updating invitation status: %v", err)
+	}
+
+	// Return empty string to remove the card via hx-swap="outerHTML"
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(""))
+}
+
+// DeclineInvitation declines a pending invitation.
+func (h *InviteHandler) DeclineInvitation(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	invitationID := r.PathValue("invitationID")
+
+	inv, err := h.db.GetInvitationByID(r.Context(), invitationID)
+	if err != nil {
+		http.Error(w, "Invitation not found", http.StatusNotFound)
+		return
+	}
+
+	if !strings.EqualFold(inv.Email, user.Email) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if inv.Status != "pending" {
+		http.Error(w, "Invitation is no longer valid", http.StatusGone)
+		return
+	}
+
+	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "declined"); err != nil {
+		log.Printf("declining invitation: %v", err)
+		http.Error(w, "Failed to decline", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(""))
+}
+
+// RevokeInvitation revokes a pending invitation (org admin action).
+func (h *InviteHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	orgSlug := r.PathValue("orgSlug")
+	invitationID := r.PathValue("invitationID")
+
+	org, err := h.db.GetOrgBySlug(r.Context(), orgSlug)
+	if err != nil {
+		http.Error(w, "Organization not found", http.StatusNotFound)
+		return
+	}
+
+	if !canManageOrg(h.db, r, user, org.ID) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	inv, err := h.db.GetInvitationByID(r.Context(), invitationID)
+	if err != nil || inv.OrgID != org.ID {
+		http.Error(w, "Invitation not found", http.StatusNotFound)
+		return
+	}
+
+	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "expired"); err != nil {
+		log.Printf("revoking invitation: %v", err)
+		http.Error(w, "Failed to revoke", http.StatusInternalServerError)
+		return
+	}
+
+	// Re-render invitation list
+	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
+	h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
+		"Invitations": invitations,
+		"OrgSlug":     org.Slug,
+		"CanManage":   true,
+	})
+}
+
+// canManageOrg is a shared helper to check org management permission.
+func canManageOrg(db *models.DB, r *http.Request, user *models.User, orgID string) bool {
+	if auth.IsStaffOrAbove(user.Role) {
+		return true
+	}
+	m, err := db.GetOrgMembership(r.Context(), user.ID, orgID)
+	if err != nil {
+		return false
+	}
+	return auth.CanManageOrg(m.Role)
+}

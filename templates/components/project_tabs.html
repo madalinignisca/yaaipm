@@ -1,0 +1,14 @@
+{{define "project_tabs"}}
+<nav class="tabs">
+    <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/brief"
+       class="tab-link {{if eq .Tab "brief"}}active{{end}}">Brief</a>
+    <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/features"
+       class="tab-link {{if eq .Tab "features"}}active{{end}}">Features</a>
+    <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/bugs"
+       class="tab-link {{if eq .Tab "bugs"}}active{{end}}">Bugs</a>
+    <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/gantt"
+       class="tab-link {{if eq .Tab "gantt"}}active{{end}}">Timeline</a>
+    <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/costs"
+       class="tab-link {{if eq .Tab "costs"}}active{{end}}">Costs</a>
+</nav>
+{{end}}

@@ -1,0 +1,6 @@
+.git
+.secrets
+*.key
+*.crt
+.gitignore
+CLAUDE.md

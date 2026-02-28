@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: forgedesk
+  namespace: smartpm
+  annotations:
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - smart.madalin.me
+      secretName: tls-smart-madalin-me
+  rules:
+    - host: smart.madalin.me
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: forgedesk-server
+                port:
+                  number: 8080

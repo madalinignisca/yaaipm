@@ -1,0 +1,110 @@
+{{define "content"}}
+{{with .Data}}
+<div>
+    <!-- Month Picker -->
+    <div class="flex items-center justify-between mb-lg">
+        <h1>Organization Costs — {{.Month}}</h1>
+        <div class="flex items-center gap-sm">
+            <a href="?month={{.PrevMonth}}" class="btn btn-secondary btn-sm">&larr; Prev</a>
+            <span class="text-sm text-muted">{{.Month}}</span>
+            <a href="?month={{.NextMonth}}" class="btn btn-secondary btn-sm">Next &rarr;</a>
+        </div>
+    </div>
+
+    <!-- Per-Project Infrastructure Costs -->
+    {{if .ProjectCosts}}
+    <div class="mb-lg">
+        <h2 class="mb-sm">Infrastructure Costs by Project</h2>
+        {{range .ProjectCosts}}
+        <div class="card mb-md">
+            <h3 class="mb-sm">{{.Project.Name}}</h3>
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Category</th>
+                            <th>Name</th>
+                            <th style="text-align:right">Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Costs}}
+                        <tr>
+                            <td class="cost-category">{{humanize .Category}}</td>
+                            <td>{{if .Name}}{{.Name}}{{else}}<span class="text-muted">—</span>{{end}}</td>
+                            <td style="text-align:right;font-weight:500">{{formatCents .AmountCents}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td colspan="2" style="font-weight:600">Project Subtotal</td>
+                            <td style="text-align:right;font-weight:600">{{formatCents .InfraTotal}}</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{else}}
+    <div class="empty-state mb-lg" style="padding:1.5rem">
+        <p class="text-muted">No infrastructure costs for this month.</p>
+    </div>
+    {{end}}
+
+    <!-- Org-wide AI Usage -->
+    <div class="mb-lg">
+        <h2 class="mb-sm">AI Usage</h2>
+        {{if .AIUsage}}
+        <div class="table-wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        {{if .CanEdit}}<th>Model</th>{{end}}
+                        <th>Type</th>
+                        <th style="text-align:right">Count</th>
+                        {{if .CanEdit}}
+                        <th style="text-align:right">Input Tokens</th>
+                        <th style="text-align:right">Output Tokens</th>
+                        {{end}}
+                        <th style="text-align:right">Cost</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .AIUsage}}
+                    <tr>
+                        {{if $.Data.CanEdit}}<td class="text-muted">{{.Model}}</td>{{end}}
+                        <td style="font-weight:500">{{.Label}}</td>
+                        <td style="text-align:right">{{.EntryCount}}</td>
+                        {{if $.Data.CanEdit}}
+                        <td style="text-align:right">{{.InputTokens}}</td>
+                        <td style="text-align:right">{{.OutputTokens}}</td>
+                        {{end}}
+                        <td style="text-align:right;font-weight:500">{{formatCents .TotalCents}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="{{if .CanEdit}}5{{else}}2{{end}}" style="font-weight:600">AI Subtotal</td>
+                        <td style="text-align:right;font-weight:600">{{formatCents .AITotal}}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        {{else}}
+        <div class="empty-state" style="padding:1.5rem">
+            <p class="text-muted">No AI usage for this month.</p>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Grand Total -->
+    <div class="card" style="text-align:right">
+        <span class="text-muted" style="margin-right:.5rem">Total for {{.Month}}:</span>
+        <span class="cost-total">{{formatCents .GrandTotal}}</span>
+    </div>
+</div>
+{{end}}
+{{end}}

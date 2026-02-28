@@ -1,0 +1,6 @@
+<div x-show="open" x-transition class="modal-overlay" aria-modal="true">
+    <div class="modal-backdrop" @click="open = false"></div>
+    <div class="modal-card">
+        {{block "modal_content" .}}{{end}}
+    </div>
+</div>

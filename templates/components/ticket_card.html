@@ -1,0 +1,10 @@
+<div class="card card-compact card-hover">
+    <a href="/tickets/{{.ID}}">
+        <div class="ticket-row">
+            <span class="ticket-row-title">{{.Title}}</span>
+            <div class="ticket-row-badges">
+                <span class="badge badge-{{statusColor .Status}}">{{.Status}}</span>
+            </div>
+        </div>
+    </a>
+</div>

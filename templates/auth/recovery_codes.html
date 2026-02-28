@@ -1,0 +1,20 @@
+{{define "content"}}
+<div class="container-narrow">
+    <h1 class="mb-sm">Save Your Recovery Codes</h1>
+    <div class="flash flash-warning mb-lg">
+        These codes are shown only once. Save them somewhere safe. Each code can only be used once.
+    </div>
+
+    <div class="card mb-lg">
+        <div class="recovery-grid">
+            {{range .Data}}
+            <code class="recovery-code">{{.}}</code>
+            {{end}}
+        </div>
+    </div>
+
+    <a href="/" class="btn btn-primary btn-block">
+        I've saved these codes — Continue to Dashboard
+    </a>
+</div>
+{{end}}

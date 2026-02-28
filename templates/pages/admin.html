@@ -1,0 +1,122 @@
+{{define "content"}}
+<div>
+    <h1 class="mb-lg">Admin Panel</h1>
+
+    <div x-data="{ tab: 'users' }">
+        <nav class="tabs mb-lg">
+            <button @click="tab = 'users'" :class="tab === 'users' ? 'tab-link active' : 'tab-link'" class="tab-link">Users</button>
+            <button @click="tab = 'orgs'" :class="tab === 'orgs' ? 'tab-link active' : 'tab-link'" class="tab-link">Organizations</button>
+            <button @click="tab = 'pricing'" :class="tab === 'pricing' ? 'tab-link active' : 'tab-link'" class="tab-link">AI Pricing</button>
+        </nav>
+
+        <!-- Users -->
+        <div x-show="tab === 'users'">
+            {{with .Data}}
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Role</th>
+                            <th>2FA</th>
+                            <th>Joined</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range (index . "Users")}}
+                        <tr>
+                            <td style="font-weight:500;color:var(--gray-900)">{{.Name}}</td>
+                            <td class="text-muted">{{.Email}}</td>
+                            <td><span class="badge badge-pill badge-indigo">{{.Role}}</span></td>
+                            <td>
+                                {{if .MustSetup2FA}}
+                                <span style="color:var(--yellow-600)">Pending</span>
+                                {{else}}
+                                <span style="color:var(--green-600)">Active</span>
+                                {{end}}
+                            </td>
+                            <td class="text-muted">{{formatDate .CreatedAt}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{end}}
+        </div>
+
+        <!-- Orgs -->
+        <div x-show="tab === 'orgs'" x-cloak>
+            <div class="table-wrap">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Slug</th>
+                            <th>Created</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Orgs}}
+                        <tr>
+                            <td><a href="/orgs/{{.Slug}}" class="btn-link" style="font-weight:500">{{.Name}}</a></td>
+                            <td class="text-muted">{{.Slug}}</td>
+                            <td class="text-muted">{{formatDate .CreatedAt}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- AI Pricing -->
+        <div x-show="tab === 'pricing'" x-cloak>
+            {{with .Data}}
+            <div class="table-wrap mb-lg">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th style="text-align:right">Input (cents/M tokens)</th>
+                            <th style="text-align:right">Output (cents/M tokens)</th>
+                            <th>Effective From</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range (index . "Pricing")}}
+                        <tr>
+                            <td style="font-weight:500">{{.ModelName}}</td>
+                            <td style="text-align:right">{{.InputPricePerMillionCents}}</td>
+                            <td style="text-align:right">{{.OutputPricePerMillionCents}}</td>
+                            <td class="text-muted">{{formatDate .EffectiveFrom}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card" style="max-width:32rem">
+                <h3 class="mb-sm">Add / Update Pricing</h3>
+                <form method="POST" action="/admin/pricing">
+                    <div class="stack">
+                        <div class="form-group">
+                            <label class="form-label">Model Name</label>
+                            <input type="text" name="model_name" class="form-input" placeholder="gemini-2.5-flash" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Input Price <span class="form-label-hint">(cents per million tokens)</span></label>
+                            <input type="number" name="input_price" class="form-input" placeholder="15" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Output Price <span class="form-label-hint">(cents per million tokens)</span></label>
+                            <input type="number" name="output_price" class="form-input" placeholder="60" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save Pricing</button>
+                    </div>
+                </form>
+            </div>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}}

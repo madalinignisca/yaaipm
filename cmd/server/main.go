@@ -13,12 +13,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/handlers"
+	"github.com/madalin/forgedesk/internal/mail"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
+	"github.com/madalin/forgedesk/internal/static"
 )
 
 func main() {
@@ -41,21 +44,51 @@ func main() {
 	db := models.NewDB(pool)
 	sessions := auth.NewSessionStore(pool)
 
-	engine, err := render.NewEngine("templates")
+	manifest, err := static.NewManifest("static")
+	if err != nil {
+		log.Fatalf("building asset manifest: %v", err)
+	}
+	log.Printf("Asset manifest built (%d files)", manifest.Len())
+
+	engine, err := render.NewEngine("templates", manifest)
 	if err != nil {
 		log.Fatalf("loading templates: %v", err)
 	}
 	log.Println("Templates loaded")
 
+	// AI Assistant (optional)
+	var geminiClient *ai.GeminiClient
+	if cfg.GeminiAPIKey != "" {
+		geminiClient, err = ai.NewGeminiClient(context.Background(), cfg.GeminiAPIKey, ai.GeminiModels{
+			Default:  cfg.GeminiModel,
+			Chat:     cfg.GeminiModelChat,
+			Pro:      cfg.GeminiModelPro,
+			Image:    cfg.GeminiModelImage,
+			ImagePro: cfg.GeminiModelImagePro,
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to create Gemini client: %v", err)
+		} else {
+			engine.AssistantEnabled = true
+			log.Printf("AI Assistant enabled (chat: %s, default: %s, pro: %s)", cfg.GeminiModelChat, cfg.GeminiModel, cfg.GeminiModelPro)
+		}
+	}
+
 	// Handlers
 	secureCookie := strings.HasPrefix(cfg.BaseURL, "https")
+	mailer := mail.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+
 	authH := handlers.NewAuthHandler(db, sessions, engine, cfg.AESKey, secureCookie)
 	dashH := handlers.NewDashboardHandler(db, engine)
-	orgH := handlers.NewOrgHandler(db, engine)
+	orgH := handlers.NewOrgHandler(db, engine, mailer, cfg.BaseURL)
 	projH := handlers.NewProjectHandler(db, engine)
 	ticketH := handlers.NewTicketHandler(db, engine)
 	commentH := handlers.NewCommentHandler(db, engine)
 	adminH := handlers.NewAdminHandler(db, engine)
+	accountH := handlers.NewAccountHandler(db, sessions, engine)
+	inviteH := handlers.NewInviteHandler(db, sessions, engine, mailer, cfg.AESKey, cfg.BaseURL, secureCookie)
+	costH := handlers.NewCostHandler(db, engine)
+	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient)
 
 	r := chi.NewRouter()
 
@@ -63,9 +96,8 @@ func main() {
 	r.Use(middleware.Recover)
 	r.Use(middleware.Logging)
 
-	// Static files
-	fileServer := http.FileServer(http.Dir("static"))
-	r.Handle("/static/*", http.StripPrefix("/static/", fileServer))
+	// Static files (content-hashed URLs get immutable cache headers)
+	r.Handle("/static/*", http.StripPrefix("/static/", manifest.Handler()))
 
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +118,10 @@ func main() {
 	r.Get("/verify-2fa", authH.Verify2FAPage)
 	r.Post("/verify-2fa", authH.Verify2FA)
 
+	// Invitation routes (public — new users registering)
+	r.Get("/invite/{token}", inviteH.InviteRegisterPage)
+	r.Post("/invite/{token}", inviteH.InviteRegister)
+
 	// Protected routes
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AuthMiddleware(sessions, db))
@@ -93,11 +129,21 @@ func main() {
 		r.Post("/logout", authH.Logout)
 		r.Get("/", dashH.Dashboard)
 
+		// Account settings
+		r.Get("/account/settings", accountH.AccountSettingsPage)
+		r.Post("/account/password", accountH.ChangePassword)
+		r.Post("/account/email", accountH.ChangeEmail)
+
+		// Invitations (authenticated user accepting/declining)
+		r.Post("/invitations/{invitationID}/accept", inviteH.AcceptInvitation)
+		r.Post("/invitations/{invitationID}/decline", inviteH.DeclineInvitation)
+
 		// Organizations
 		r.Post("/orgs", orgH.CreateOrg)
 		r.Get("/orgs/{orgSlug}", orgH.OrgPage)
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
-		r.Post("/orgs/{orgSlug}/members", orgH.AddMember)
+		r.Post("/orgs/{orgSlug}/invitations", orgH.InviteMember)
+		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
 		r.Delete("/orgs/{orgSlug}/members/{userID}", orgH.RemoveMember)
 		r.Patch("/orgs/{orgSlug}/members/{userID}/role", orgH.UpdateMemberRole)
 
@@ -108,6 +154,11 @@ func main() {
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/features", projH.ProjectFeatures)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/bugs", projH.ProjectBugs)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/gantt", projH.ProjectGantt)
+		r.Get("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.ProjectCosts)
+		r.Post("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.AddCostItem)
+		r.Get("/orgs/{orgSlug}/costs", costH.OrgCosts)
+		r.Patch("/costs/{costID}", costH.UpdateCostItem)
+		r.Delete("/costs/{costID}", costH.DeleteCostItem)
 
 		// Tickets
 		r.Post("/tickets", ticketH.CreateTicket)
@@ -118,10 +169,17 @@ func main() {
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
 
+		// AI Assistant
+		r.Post("/assistant/conversations", assistantH.CreateConversation)
+		r.Get("/assistant/conversations/{convID}/messages", assistantH.ListMessages)
+		r.Post("/assistant/conversations/{convID}/messages", assistantH.SendMessage)
+		r.Delete("/assistant/conversations/{convID}", assistantH.DeleteConversation)
+
 		// Admin
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireRole(auth.RoleSuperAdmin))
 			r.Get("/admin", adminH.AdminPage)
+			r.Post("/admin/pricing", costH.UpdateModelPricing)
 		})
 	})
 
@@ -130,16 +188,17 @@ func main() {
 		Addr:         cfg.ListenAddr,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 120 * time.Second, // Extended for SSE streaming
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Session cleanup goroutine
+	// Session and invitation cleanup goroutine
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
 			sessions.CleanExpired(context.Background())
+			db.ExpireOldInvitations(context.Background())
 		}
 	}()
 

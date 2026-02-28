@@ -1,0 +1,31 @@
+# Secrets and certificates - NEVER commit these
+.secrets
+*.key
+*.crt
+
+# Go
+/forgedesk
+/orchestrator
+vendor/
+
+# Tailwind
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+/tmp/
+/dist/
+
+# E2E test artifacts
+e2e/test-results/
+e2e/tests/.auth-state.json

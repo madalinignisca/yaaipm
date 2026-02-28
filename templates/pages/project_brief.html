@@ -1,0 +1,45 @@
+{{define "content"}}
+{{with .Data}}
+{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab}}
+
+<div class="mt-lg">
+    {{if $.User.Role | eq "superadmin"}}
+    <div x-data="{ editing: false }">
+        <div x-show="!editing">
+            <div class="flex items-center justify-between mb-md">
+                <h2>Project Brief</h2>
+                <button @click="editing = true" class="btn-link text-sm">Edit</button>
+            </div>
+            <div class="card">
+                {{if .Project.BriefMarkdown}}
+                <div class="prose">{{markdown .Project.BriefMarkdown}}</div>
+                {{else}}
+                <p class="prose-empty">No brief written yet.</p>
+                {{end}}
+            </div>
+        </div>
+        <div x-show="editing" x-cloak>
+            <form hx-put="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/brief" hx-swap="none">
+                <div class="form-group">
+                    <label class="form-label">Project Brief (Markdown)</label>
+                    <textarea name="brief" rows="20" class="form-textarea font-mono">{{.Project.BriefMarkdown}}</textarea>
+                </div>
+                <div class="flex gap-sm">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" @click="editing = false" class="btn btn-secondary">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {{else}}
+    <div class="card">
+        {{if .Project.BriefMarkdown}}
+        <div class="prose">{{markdown .Project.BriefMarkdown}}</div>
+        {{else}}
+        <p class="prose-empty">No brief available yet.</p>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+{{end}}
+{{end}}

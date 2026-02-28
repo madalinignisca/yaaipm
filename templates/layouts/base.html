@@ -1,0 +1,142 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} — ForgeDesk</title>
+    <link rel="stylesheet" href="{{asset "css/app.css"}}">
+    <script src="{{asset "js/htmx.min.js"}}" defer></script>
+    <script src="{{asset "js/marked.min.js"}}" defer></script>
+    <script src="{{asset "js/assistant.js"}}" defer></script>
+    <script src="{{asset "js/alpine.min.js"}}" defer></script>
+</head>
+<body hx-boost="true">
+    {{if .User}}
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <a href="/">ForgeDesk</a>
+            </div>
+
+            {{if .Orgs}}
+            <nav class="sidebar-nav">
+                <div class="sidebar-section-label">Organizations</div>
+                {{range .Orgs}}
+                <a href="/orgs/{{.Slug}}"
+                   class="sidebar-link {{if and $.Org (eq $.Org.Slug .Slug)}}active{{end}}">
+                    {{.Name}}
+                </a>
+                {{end}}
+            </nav>
+            {{end}}
+
+            <div class="sidebar-footer" x-data="{ open: false }">
+                <button @click="open = !open" class="user-trigger">
+                    <span class="user-avatar">{{slice .User.Name 0 1}}</span>
+                    <span class="truncate">{{.User.Name}}</span>
+                </button>
+                <div x-show="open" @click.outside="open = false" x-transition class="user-menu">
+                    {{if eq .User.Role "superadmin"}}
+                    <a href="/admin">Admin Panel</a>
+                    {{end}}
+                    <a href="/account/settings">Account Settings</a>
+                    <form method="POST" action="/logout">
+                        <button type="submit">Sign Out</button>
+                    </form>
+                </div>
+            </div>
+        </aside>
+
+        <main class="main-area">
+            {{if .Flash}}
+            <div class="main-content" style="padding-bottom:0">
+                <div class="flash {{if eq .FlashType "error"}}flash-error{{else if eq .FlashType "warning"}}flash-warning{{else}}flash-success{{end}}">
+                    {{.Flash}}
+                </div>
+            </div>
+            {{end}}
+
+            <div class="main-content">
+                {{template "content" .}}
+            </div>
+        </main>
+
+        {{if .AssistantEnabled}}
+        <div id="assistant-project-ctx" data-project-id="{{.ProjectID}}"></div>
+        <div id="assistant-widget" hx-preserve="true" x-data="chatWidget()" x-cloak>
+            <!-- FAB -->
+            <button @click="toggle()" class="chat-fab" :aria-label="open ? 'Close assistant' : 'Open assistant'">
+                <svg x-show="!open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                <svg x-show="open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+
+            <!-- Chat Panel -->
+            <div x-show="open" x-transition.opacity class="chat-panel">
+                <div class="chat-header">
+                    <span class="chat-header-title">ForgeDesk Assistant</span>
+                    <div class="chat-header-actions">
+                        <button @click="newConversation()" class="chat-header-btn" title="New conversation">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        </button>
+                        <button @click="toggle()" class="chat-header-btn" title="Close">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="chat-messages" x-ref="chatMessages">
+                    <template x-if="messages.length === 0 && !streamingText && !loading">
+                        <div class="chat-empty">
+                            <p>Ask me anything about your projects, tickets, or tasks.</p>
+                        </div>
+                    </template>
+                    <template x-for="(msg, i) in messages" :key="i">
+                        <div class="chat-msg" :class="msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-assistant'" x-html="renderMd(msg.content, msg.role)"></div>
+                    </template>
+                    <template x-if="streamingText">
+                        <div class="chat-msg chat-msg-streaming" x-html="renderMd(streamingText, 'assistant')"></div>
+                    </template>
+                    <template x-if="loading && !streamingText">
+                        <div class="chat-typing">
+                            <div class="chat-typing-dot"></div>
+                            <div class="chat-typing-dot"></div>
+                            <div class="chat-typing-dot"></div>
+                        </div>
+                    </template>
+                </div>
+
+                <div class="chat-input-area">
+                    <div class="chat-input-wrap">
+                        <textarea
+                            x-ref="chatInput"
+                            x-model="input"
+                            @keydown="handleKeydown($event)"
+                            placeholder="Ask something..."
+                            rows="1"
+                            :disabled="loading"
+                        ></textarea>
+                        <button @click="send()" class="chat-send-btn" :disabled="loading || !input.trim()">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{else}}
+    <div class="auth-page">
+        <div class="auth-card">
+            {{if .Flash}}
+            <div class="flash {{if eq .FlashType "error"}}flash-error{{else}}flash-success{{end}}">
+                {{.Flash}}
+            </div>
+            {{end}}
+            {{template "content" .}}
+        </div>
+    </div>
+    {{end}}
+</body>
+</html>
+{{end}}

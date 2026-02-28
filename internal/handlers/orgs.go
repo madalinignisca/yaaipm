@@ -5,20 +5,24 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/madalin/forgedesk/internal/auth"
+	"github.com/madalin/forgedesk/internal/mail"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
 )
 
 type OrgHandler struct {
-	db     *models.DB
-	engine *render.Engine
+	db      *models.DB
+	engine  *render.Engine
+	mailer  *mail.Mailer
+	baseURL string
 }
 
-func NewOrgHandler(db *models.DB, engine *render.Engine) *OrgHandler {
-	return &OrgHandler{db: db, engine: engine}
+func NewOrgHandler(db *models.DB, engine *render.Engine, mailer *mail.Mailer, baseURL string) *OrgHandler {
+	return &OrgHandler{db: db, engine: engine, mailer: mailer, baseURL: baseURL}
 }
 
 var slugRegex = regexp.MustCompile(`[^a-z0-9]+`)
@@ -126,6 +130,8 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 		orgs, _ = h.db.ListUserOrgs(r.Context(), user.ID)
 	}
 
+	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
+
 	h.engine.Render(w, "org_settings.html", render.PageData{
 		Title:       org.Name + " Settings",
 		User:        user,
@@ -134,6 +140,7 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 		CurrentPath: r.URL.Path,
 		Data: map[string]any{
 			"Members":       members,
+			"Invitations":   invitations,
 			"CanManage":     canManage,
 			"CurrentUserID": user.ID,
 			"OrgSlug":       org.Slug,
@@ -168,7 +175,7 @@ func (h *OrgHandler) renderMemberList(w http.ResponseWriter, r *http.Request, or
 	})
 }
 
-func (h *OrgHandler) AddMember(w http.ResponseWriter, r *http.Request) {
+func (h *OrgHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 	slug := r.PathValue("orgSlug")
 
@@ -194,25 +201,56 @@ func (h *OrgHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, err := h.db.GetUserByEmail(r.Context(), email)
-	if err != nil {
-		http.Error(w, "User not found. They must register first.", http.StatusUnprocessableEntity)
-		return
-	}
-
 	// Check not already a member
-	if _, err := h.db.GetOrgMembership(r.Context(), target.ID, org.ID); err == nil {
-		http.Error(w, "User is already a member of this organization", http.StatusConflict)
+	if target, err := h.db.GetUserByEmail(r.Context(), email); err == nil {
+		if _, err := h.db.GetOrgMembership(r.Context(), target.ID, org.ID); err == nil {
+			http.Error(w, "User is already a member of this organization", http.StatusConflict)
+			return
+		}
+	}
+
+	// Check no existing pending invitation
+	hasPending, err := h.db.HasPendingInvitation(r.Context(), email, org.ID)
+	if err != nil {
+		log.Printf("checking pending invitation: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	if hasPending {
+		http.Error(w, "An invitation is already pending for this email", http.StatusConflict)
 		return
 	}
 
-	if err := h.db.AddOrgMember(r.Context(), target.ID, org.ID, role); err != nil {
-		log.Printf("adding org member: %v", err)
-		http.Error(w, "Failed to add member", http.StatusInternalServerError)
+	// Generate token
+	rawToken, tokenHash, err := generateInviteToken()
+	if err != nil {
+		log.Printf("generating invite token: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
-	h.renderMemberList(w, r, org, user)
+	expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7 days
+	_, err = h.db.CreateInvitation(r.Context(), email, org.ID, role, tokenHash, user.ID, expiresAt)
+	if err != nil {
+		log.Printf("creating invitation: %v", err)
+		http.Error(w, "Failed to create invitation", http.StatusInternalServerError)
+		return
+	}
+
+	inviteURL := h.baseURL + "/invite/" + rawToken
+
+	// Send email (best-effort)
+	if h.mailer.IsEnabled() {
+		if err := h.mailer.SendInvitation(email, org.Name, user.Name, inviteURL); err != nil {
+			log.Printf("sending invite email: %v", err)
+		}
+	}
+
+	h.engine.RenderPartial(w, "invite_result.html", map[string]any{
+		"InviteURL":    inviteURL,
+		"Email":        email,
+		"EmailEnabled": h.mailer.IsEnabled(),
+	})
 }
 
 func (h *OrgHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {

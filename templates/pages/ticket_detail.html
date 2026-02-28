@@ -1,0 +1,115 @@
+{{define "content"}}
+{{with .Data}}
+<div class="container-medium">
+    <div class="mb-md">
+        <a href="javascript:history.back()" class="back-link">&larr; Back</a>
+    </div>
+
+    <!-- Ticket header -->
+    <div id="ticket-header" class="card mb-lg">
+        <div class="ticket-header">
+            <div>
+                <div class="ticket-badges">
+                    <span class="badge badge-gray badge-uppercase">{{.Ticket.Type}}</span>
+                    <span class="badge badge-{{statusColor .Ticket.Status}}">{{.Ticket.Status}}</span>
+                    <span class="badge badge-{{priorityColor .Ticket.Priority}}">{{.Ticket.Priority}}</span>
+                </div>
+                <div class="ticket-title">{{.Ticket.Title}}</div>
+            </div>
+
+            {{if .IsStaff}}
+            <div class="dropdown" x-data="{ open: false }">
+                <button @click="open = !open" class="btn-dots">
+                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM16 12a2 2 0 100-4 2 2 0 000 4z"/>
+                    </svg>
+                </button>
+                <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:14rem">
+                    <div class="dropdown-section">
+                        <div class="dropdown-section-label">Status</div>
+                        {{range $s := strList "backlog" "ready" "planning" "plan_review" "implementing" "testing" "review" "done" "cancelled"}}
+                        <button hx-patch="/tickets/{{$.Ticket.ID}}/status"
+                                hx-vals='{"status":"{{$s}}"}'
+                                hx-target="#ticket-header"
+                                hx-swap="outerHTML"
+                                class="dropdown-item">
+                            {{$s}}
+                        </button>
+                        {{end}}
+                    </div>
+                    <div class="dropdown-section">
+                        <div class="dropdown-section-label">Agent</div>
+                        <form hx-patch="/tickets/{{.Ticket.ID}}/agent" hx-target="#ticket-header" hx-swap="outerHTML" class="dropdown-form stack-sm">
+                            <select name="agent_mode" class="form-select">
+                                <option value="">None</option>
+                                <option value="plan">Plan</option>
+                                <option value="implement">Implement</option>
+                            </select>
+                            <select name="agent_name" class="form-select">
+                                <option value="claude">Claude</option>
+                                <option value="gemini">Gemini</option>
+                                <option value="codex">Codex</option>
+                                <option value="mistral">Mistral</option>
+                            </select>
+                            <button type="submit" class="btn btn-primary btn-sm btn-block">Set Agent</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {{end}}
+        </div>
+
+        {{if .Ticket.DescriptionMarkdown}}
+        <div class="ticket-description">{{.Ticket.DescriptionMarkdown}}</div>
+        {{end}}
+
+        {{if or .Ticket.DateStart .Ticket.DateEnd}}
+        <div class="ticket-dates">
+            {{if .Ticket.DateStart}}<span>Start: {{formatDateInput .Ticket.DateStart}}</span>{{end}}
+            {{if .Ticket.DateEnd}}<span>End: {{formatDateInput .Ticket.DateEnd}}</span>{{end}}
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Child tickets -->
+    {{if .Children}}
+    <div class="card mb-lg">
+        <h3 class="mb-sm">Sub-items</h3>
+        <div class="stack-sm">
+            {{range .Children}}
+            <a href="/tickets/{{.ID}}" class="sub-item">
+                <span class="sub-item-title">{{.Title}}</span>
+                <span class="badge badge-{{statusColor .Status}}">{{.Status}}</span>
+            </a>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+
+    <!-- Comments -->
+    <div class="card">
+        <h3 class="mb-md">Comments</h3>
+        <div id="comments" class="stack-lg mb-lg">
+            {{range .Comments}}
+            <div class="comment">
+                <div class="comment-meta">
+                    <span class="comment-author">{{if .AgentName}}ForgeDesk Bot{{else}}User{{end}}</span>
+                    <span class="comment-time">{{formatDateTime .CreatedAt}}</span>
+                </div>
+                <div class="comment-body">{{.BodyMarkdown}}</div>
+            </div>
+            {{end}}
+        </div>
+
+        <form hx-post="/tickets/{{.Ticket.ID}}/comments"
+              hx-target="#comments"
+              hx-swap="beforeend"
+              hx-on::after-request="this.reset()">
+            <textarea name="body" rows="3" required placeholder="Write a comment..."
+                      class="form-textarea mb-sm"></textarea>
+            <button type="submit" class="btn btn-primary">Comment</button>
+        </form>
+    </div>
+</div>
+{{end}}
+{{end}}

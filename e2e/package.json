@@ -1,0 +1,24 @@
+{
+  "name": "e2e",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:headed": "npx playwright test --headed",
+    "test:debug": "npx playwright test --debug",
+    "test:auth": "npx playwright test 01-auth",
+    "test:orgs": "npx playwright test 02-dashboard",
+    "test:projects": "npx playwright test 03-projects",
+    "test:tickets": "npx playwright test 04-tickets",
+    "test:admin": "npx playwright test 05-admin"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "otpauth": "^9.5.0"
+  }
+}

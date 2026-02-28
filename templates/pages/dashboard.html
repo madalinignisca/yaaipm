@@ -1,0 +1,102 @@
+{{define "content"}}
+<div>
+    <div class="page-header">
+        <h1>{{if .Org}}{{.Org.Name}}{{else}}Dashboard{{end}}</h1>
+        {{if .User}}
+        <div class="flex items-center gap-md">
+        {{if .Org}}
+        <a href="/orgs/{{.Org.Slug}}/costs" class="btn btn-ghost btn-sm">Costs</a>
+        <a href="/orgs/{{.Org.Slug}}/settings" class="btn btn-ghost btn-sm">Settings</a>
+        {{end}}
+        <div class="dropdown" x-data="{ open: false }">
+            <button @click="open = !open" class="btn btn-primary">New...</button>
+            <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:14rem">
+                {{if .Org}}
+                <form method="POST" action="/orgs/{{.Org.Slug}}/projects" class="dropdown-form" @click.stop>
+                    <label class="form-label">New Project</label>
+                    <input type="text" name="name" placeholder="Project name" required class="form-input mb-sm">
+                    <button type="submit" class="btn btn-primary btn-sm btn-block">Create Project</button>
+                </form>
+                {{end}}
+                <form method="POST" action="/orgs" class="dropdown-form" style="border-top:1px solid var(--gray-100)" @click.stop>
+                    <label class="form-label">New Organization</label>
+                    <input type="text" name="name" placeholder="Org name" required class="form-input mb-sm">
+                    <button type="submit" class="btn btn-primary btn-sm btn-block">Create Organization</button>
+                </form>
+            </div>
+        </div>
+        </div>
+        {{end}}
+    </div>
+
+    {{if .Org}}
+    {{with .Data}}
+    <div class="grid grid-3">
+        {{range .}}
+        <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/brief" class="card card-hover">
+            <h3>{{.Name}}</h3>
+            <p class="text-muted text-sm" style="margin-top:.25rem">Created {{formatDate .CreatedAt}}</p>
+        </a>
+        {{end}}
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <p>No projects yet</p>
+        <p class="empty-subtitle">Create your first project to get started</p>
+    </div>
+    {{end}}
+
+    {{else}}
+
+    {{/* Pending invitations section */}}
+    {{with .Data}}
+    {{with .PendingInvites}}
+    <div class="card mb-lg">
+        <h2 class="mb-md">Pending Invitations</h2>
+        <div class="divide-y">
+            {{range .}}
+            <div class="member-row" id="invite-card-{{.Invitation.ID}}">
+                <div class="member-info">
+                    <p><strong>{{.Organization.Name}}</strong></p>
+                    <p class="text-muted text-sm">Invited by {{.InviterName}} &middot; Role: {{.Invitation.OrgRole}}</p>
+                </div>
+                <div class="flex items-center gap-sm">
+                    <button class="btn btn-primary btn-sm"
+                            hx-post="/invitations/{{.Invitation.ID}}/accept"
+                            hx-target="#invite-card-{{.Invitation.ID}}"
+                            hx-swap="outerHTML">
+                        Accept
+                    </button>
+                    <button class="btn btn-ghost btn-sm"
+                            hx-post="/invitations/{{.Invitation.ID}}/decline"
+                            hx-target="#invite-card-{{.Invitation.ID}}"
+                            hx-swap="outerHTML"
+                            hx-confirm="Decline invitation to {{.Organization.Name}}?">
+                        Decline
+                    </button>
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+    {{end}}
+
+    {{if .Orgs}}
+    <div class="grid grid-3">
+        {{range .Orgs}}
+        <a href="/orgs/{{.Slug}}" class="card card-hover">
+            <h3>{{.Name}}</h3>
+            <p class="text-muted text-sm" style="margin-top:.25rem">Created {{formatDate .CreatedAt}}</p>
+        </a>
+        {{end}}
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <p>Welcome to ForgeDesk</p>
+        <p class="empty-subtitle">Create an organization to get started</p>
+    </div>
+    {{end}}
+    {{end}}
+</div>
+{{end}}

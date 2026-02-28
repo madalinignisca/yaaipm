@@ -640,6 +640,129 @@ Build with: `podman build -t forgedesk:latest -f deploy/Containerfile .`
 
 ---
 
+## Testing
+
+### Prerequisites
+- Docker (or Podman) for the test infrastructure
+- Go 1.24+ for unit/integration tests
+- Node.js for Playwright E2E tests
+- Test PostgreSQL instance via `docker-compose.test.yml` (port 5433)
+
+### Unit & Integration Tests
+
+Unit tests live alongside the code in `*_test.go` files. Integration tests (sessions, models, handlers) require a running PostgreSQL instance.
+
+**Start the test database:**
+```bash
+docker compose -f docker-compose.test.yml up -d postgres
+# Wait for healthy, then run migrations:
+docker compose -f docker-compose.test.yml up migrate
+```
+
+**Run all tests:**
+```bash
+go test ./internal/... -p 1 -count=1 -timeout 120s
+```
+
+**Key flags:**
+- `-p 1` — **Required.** Packages share the same test database. Running in parallel causes data conflicts between packages
+- `-count=1` — Disables test caching (each run starts fresh)
+- `-timeout 120s` — Some integration tests (Argon2id hashing) need extra time
+
+**Run a single package:**
+```bash
+go test ./internal/auth/ -p 1 -count=1 -v
+go test ./internal/handlers/ -p 1 -count=1 -v
+```
+
+**Test structure:**
+| Package | Type | Tests |
+|---------|------|-------|
+| `internal/crypto` | Unit | AES-256-GCM encrypt/decrypt, nonce uniqueness, wrong key detection |
+| `internal/auth` | Unit + Integration | Password hashing, TOTP, recovery codes, RBAC, session lifecycle |
+| `internal/models` | Integration | All CRUD operations, org membership, tickets, comments, WebAuthn credentials |
+| `internal/middleware` | Unit | Auth redirect logic, role checks, logging, panic recovery |
+| `internal/handlers` | Integration | Full HTTP handler tests with real DB, template rendering, auth flows |
+
+**Test helper:** `internal/testutil/testutil.go` provides:
+- `SetupTestDB(t)` — connects to test DB, cleans all tables (FK-safe order), registers cleanup
+- `TestDBURL`, `TestAESKey`, `TestSecret` — standard test constants
+- `ProjectRoot()` — resolves absolute path to project root (for template loading in handler tests)
+
+### End-to-End Tests (Playwright)
+
+E2E tests use Playwright with Chromium to test the full application stack through the browser.
+
+**Setup:**
+```bash
+cd e2e
+npm install
+npx playwright install chromium
+```
+
+**Start the full test stack:**
+```bash
+# From project root — builds the app image, starts PostgreSQL + migrations + app
+docker compose -f docker-compose.test.yml up -d --build
+# App runs on port 8081 (mapped from container port 8080)
+```
+
+**Run all E2E tests:**
+```bash
+cd e2e
+npx playwright test
+```
+
+**Run individual test suites:**
+```bash
+npm run test:auth      # 01-auth: registration, login, 2FA, logout
+npm run test:orgs      # 02-dashboard: dashboard, orgs, settings
+npm run test:projects  # 03-projects: CRUD, tabs, navigation
+npm run test:tickets   # 04-tickets: epics, bugs, comments, status
+npm run test:admin     # 05-admin: superadmin panel, RBAC
+```
+
+**Debug a failing test:**
+```bash
+npx playwright test --debug                  # Step-through debugger
+npx playwright test --headed                 # Visible browser
+npx playwright show-trace test-results/*/trace.zip  # View trace on failure
+```
+
+**E2E test structure:**
+| File | Coverage |
+|------|----------|
+| `01-auth.spec.js` | Registration, login, 2FA TOTP setup/verify, logout, protected routes |
+| `02-dashboard-orgs.spec.js` | Dashboard, org creation, org page, org settings |
+| `03-projects.spec.js` | Project creation, brief/features/bugs/gantt pages, tab navigation |
+| `04-tickets.spec.js` | Epic/bug creation, ticket detail, comments (HTMX), status updates |
+| `05-admin.spec.js` | Admin panel access for superadmin, RBAC enforcement for clients |
+
+**Key patterns:**
+- Tests run **sequentially** (`workers: 1`) — they share the same database and the first registered user becomes superadmin
+- `helpers.js` provides shared utilities: `registerUser`, `loginUser`, `setup2FA`, `verify2FA`, `fullLogin`, `generateTOTP`
+- `auth-state.js` enables cross-file state sharing (e.g., superadmin TOTP secret from test 01 → test 05)
+- All form submissions include `waitForLoadState('networkidle')` because `hx-boost="true"` makes forms AJAX-based
+- The `secureCookie` flag is derived from `APP_URL` — set to `http://localhost:8081` in test compose so cookies work over HTTP
+
+**Teardown:**
+```bash
+docker compose -f docker-compose.test.yml down -v
+```
+
+### Writing New Tests
+
+**Unit tests:** Add `*_test.go` files next to the code. For DB-dependent tests, use `testutil.SetupTestDB(t)`.
+
+**E2E tests:** Add new `.spec.js` files in `e2e/tests/`. Use `fullLogin()` from helpers to authenticate. Number files sequentially (e.g., `06-newfeature.spec.js`) to control execution order.
+
+**Testing with HTMX + Alpine.js:**
+- After form submissions, always `await page.waitForLoadState('networkidle')` — HTMX boost intercepts submissions as AJAX
+- For Alpine.js dropdowns, use `page.locator(...).evaluate(el => ...)` to bypass visibility issues from `x-show` transitions
+- Browser HTML5 validation (e.g., `minlength`) blocks HTMX submission — remove attributes with `$eval` if testing server-side validation
+
+---
+
 ## Non-Goals (for now)
 
 - Real-time websockets (HTMX polling is fine for MVP)
