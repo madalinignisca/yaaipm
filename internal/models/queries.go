@@ -144,7 +144,7 @@ func (db *DB) GetInvitationByID(ctx context.Context, id string) (*Invitation, er
 func (db *DB) ListPendingInvitationsForUser(ctx context.Context, email string) ([]InvitationWithOrg, error) {
 	rows, err := db.Pool.Query(ctx,
 		`SELECT i.id, i.email, i.org_id, i.org_role, i.token_hash, i.status, i.invited_by, i.expires_at, i.created_at, i.updated_at,
-		        o.id, o.name, o.slug, o.created_at, o.updated_at,
+		        o.id, o.name, o.slug, o.ai_margin_percent, o.created_at, o.updated_at,
 		        u.name
 		 FROM invitations i
 		 JOIN organizations o ON o.id = i.org_id
@@ -164,7 +164,7 @@ func (db *DB) ListPendingInvitationsForUser(ctx context.Context, email string) (
 			&r.Invitation.TokenHash, &r.Invitation.Status, &r.Invitation.InvitedBy,
 			&r.Invitation.ExpiresAt, &r.Invitation.CreatedAt, &r.Invitation.UpdatedAt,
 			&r.Organization.ID, &r.Organization.Name, &r.Organization.Slug,
-			&r.Organization.CreatedAt, &r.Organization.UpdatedAt,
+			&r.Organization.AIMarginPercent, &r.Organization.CreatedAt, &r.Organization.UpdatedAt,
 			&r.InviterName,
 		); err != nil {
 			return nil, err
@@ -230,9 +230,9 @@ func (db *DB) HasPendingInvitation(ctx context.Context, email, orgID string) (bo
 func (db *DB) CreateOrg(ctx context.Context, name, slug string) (*Organization, error) {
 	o := &Organization{}
 	err := db.Pool.QueryRow(ctx,
-		`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, name, slug, created_at, updated_at`,
+		`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, name, slug, ai_margin_percent, created_at, updated_at`,
 		name, slug,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedAt, &o.UpdatedAt)
+	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("creating org: %w", err)
 	}
@@ -242,8 +242,8 @@ func (db *DB) CreateOrg(ctx context.Context, name, slug string) (*Organization, 
 func (db *DB) GetOrgBySlug(ctx context.Context, slug string) (*Organization, error) {
 	o := &Organization{}
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, name, slug, created_at, updated_at FROM organizations WHERE slug = $1`, slug,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedAt, &o.UpdatedAt)
+		`SELECT id, name, slug, ai_margin_percent, created_at, updated_at FROM organizations WHERE slug = $1`, slug,
+	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -253,8 +253,8 @@ func (db *DB) GetOrgBySlug(ctx context.Context, slug string) (*Organization, err
 func (db *DB) GetOrgByID(ctx context.Context, id string) (*Organization, error) {
 	o := &Organization{}
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, name, slug, created_at, updated_at FROM organizations WHERE id = $1`, id,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedAt, &o.UpdatedAt)
+		`SELECT id, name, slug, ai_margin_percent, created_at, updated_at FROM organizations WHERE id = $1`, id,
+	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +263,7 @@ func (db *DB) GetOrgByID(ctx context.Context, id string) (*Organization, error) 
 
 func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT o.id, o.name, o.slug, o.created_at, o.updated_at
+		`SELECT o.id, o.name, o.slug, o.ai_margin_percent, o.created_at, o.updated_at
 		 FROM organizations o
 		 JOIN org_memberships m ON m.org_id = o.id
 		 WHERE m.user_id = $1
@@ -276,7 +276,7 @@ func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, 
 	var orgs []Organization
 	for rows.Next() {
 		var o Organization
-		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		orgs = append(orgs, o)
@@ -286,7 +286,7 @@ func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, 
 
 func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, name, slug, created_at, updated_at FROM organizations ORDER BY name`)
+		`SELECT id, name, slug, ai_margin_percent, created_at, updated_at FROM organizations ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +295,7 @@ func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	var orgs []Organization
 	for rows.Next() {
 		var o Organization
-		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		orgs = append(orgs, o)
@@ -384,6 +384,13 @@ func (db *DB) CountOrgOwners(ctx context.Context, orgID string) (int, error) {
 	err := db.Pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM org_memberships WHERE org_id = $1 AND role = 'owner'`, orgID).Scan(&count)
 	return count, err
+}
+
+func (db *DB) UpdateOrgAIMargin(ctx context.Context, orgID string, marginPercent int) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE organizations SET ai_margin_percent = $1, updated_at = now() WHERE id = $2`,
+		marginPercent, orgID)
+	return err
 }
 
 // ── Projects ──────────────────────────────────────────────────────
@@ -918,10 +925,18 @@ func (db *DB) CreateAIUsageEntry(ctx context.Context, orgID string, projectID *s
 
 func (db *DB) ListAIUsageByProjectMonth(ctx context.Context, projectID, month string) ([]AIUsageSummary, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT model, label, SUM(input_tokens)::BIGINT, SUM(output_tokens)::BIGINT, SUM(cost_cents)::BIGINT, COUNT(*)::INT
-		 FROM ai_usage_entries
-		 WHERE project_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
-		 GROUP BY model, label ORDER BY model`, projectID, month)
+		`SELECT a.model, a.label,
+		        SUM(a.input_tokens)::BIGINT,
+		        SUM(a.output_tokens)::BIGINT,
+		        COALESCE(
+		            SUM(a.input_tokens)::BIGINT * MAX(p.input_price_per_million_cents) / 1000000
+		            + SUM(a.output_tokens)::BIGINT * MAX(p.output_price_per_million_cents) / 1000000
+		        , 0)::BIGINT,
+		        COUNT(*)::INT
+		 FROM ai_usage_entries a
+		 LEFT JOIN ai_model_pricing p ON p.model_name = a.model
+		 WHERE a.project_id = $1 AND to_char(a.created_at, 'YYYY-MM') = $2
+		 GROUP BY a.model, a.label ORDER BY a.model`, projectID, month)
 	if err != nil {
 		return nil, err
 	}
@@ -940,10 +955,18 @@ func (db *DB) ListAIUsageByProjectMonth(ctx context.Context, projectID, month st
 
 func (db *DB) ListAIUsageByOrgMonth(ctx context.Context, orgID, month string) ([]AIUsageSummary, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT model, label, SUM(input_tokens)::BIGINT, SUM(output_tokens)::BIGINT, SUM(cost_cents)::BIGINT, COUNT(*)::INT
-		 FROM ai_usage_entries
-		 WHERE org_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
-		 GROUP BY model, label ORDER BY model`, orgID, month)
+		`SELECT a.model, a.label,
+		        SUM(a.input_tokens)::BIGINT,
+		        SUM(a.output_tokens)::BIGINT,
+		        COALESCE(
+		            SUM(a.input_tokens)::BIGINT * MAX(p.input_price_per_million_cents) / 1000000
+		            + SUM(a.output_tokens)::BIGINT * MAX(p.output_price_per_million_cents) / 1000000
+		        , 0)::BIGINT,
+		        COUNT(*)::INT
+		 FROM ai_usage_entries a
+		 LEFT JOIN ai_model_pricing p ON p.model_name = a.model
+		 WHERE a.org_id = $1 AND to_char(a.created_at, 'YYYY-MM') = $2
+		 GROUP BY a.model, a.label ORDER BY a.model`, orgID, month)
 	if err != nil {
 		return nil, err
 	}
@@ -963,8 +986,14 @@ func (db *DB) ListAIUsageByOrgMonth(ctx context.Context, orgID, month string) ([
 func (db *DB) GetTotalAIUsageCentsForOrgMonth(ctx context.Context, orgID, month string) (int64, error) {
 	var total int64
 	err := db.Pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(cost_cents), 0)::BIGINT FROM ai_usage_entries
-		 WHERE org_id = $1 AND to_char(created_at, 'YYYY-MM') = $2`, orgID, month).Scan(&total)
+		`SELECT COALESCE(SUM(sub.total), 0)::BIGINT FROM (
+		    SELECT SUM(a.input_tokens)::BIGINT * MAX(p.input_price_per_million_cents) / 1000000
+		           + SUM(a.output_tokens)::BIGINT * MAX(p.output_price_per_million_cents) / 1000000 AS total
+		    FROM ai_usage_entries a
+		    LEFT JOIN ai_model_pricing p ON p.model_name = a.model
+		    WHERE a.org_id = $1 AND to_char(a.created_at, 'YYYY-MM') = $2
+		    GROUP BY a.model
+		) sub`, orgID, month).Scan(&total)
 	return total, err
 }
 

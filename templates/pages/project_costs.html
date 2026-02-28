@@ -128,7 +128,16 @@
                 <tfoot>
                     <tr>
                         <td colspan="{{if .CanEdit}}5{{else}}2{{end}}" style="font-weight:600">AI Subtotal</td>
-                        <td style="text-align:right;font-weight:600">{{formatCents .AITotal}}</td>
+                        {{if .CanEdit}}
+                        <td style="text-align:right;font-weight:600">
+                            {{formatCents .AITotal}}
+                            {{if gt .AIMargin 0}}
+                            <span class="text-sm text-muted" style="display:block">(billed: {{formatCents .AITotalWithMargin}} at +{{.AIMargin}}%)</span>
+                            {{end}}
+                        </td>
+                        {{else}}
+                        <td style="text-align:right;font-weight:600">{{formatCents .AITotalWithMargin}}</td>
+                        {{end}}
                     </tr>
                 </tfoot>
             </table>

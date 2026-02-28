@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -142,6 +143,7 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 			"Members":       members,
 			"Invitations":   invitations,
 			"CanManage":     canManage,
+			"IsStaff":       auth.IsStaffOrAbove(user.Role),
 			"CurrentUserID": user.ID,
 			"OrgSlug":       org.Slug,
 		},
@@ -340,4 +342,34 @@ func (h *OrgHandler) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderMemberList(w, r, org, user)
+}
+
+func (h *OrgHandler) UpdateAIMargin(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	slug := r.PathValue("orgSlug")
+	org, err := h.db.GetOrgBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "Organization not found", http.StatusNotFound)
+		return
+	}
+
+	marginStr := r.FormValue("ai_margin_percent")
+	margin, err := strconv.Atoi(marginStr)
+	if err != nil || margin < 0 || margin > 500 {
+		http.Error(w, "Margin must be between 0 and 500", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.UpdateOrgAIMargin(r.Context(), org.ID, margin); err != nil {
+		log.Printf("updating ai margin: %v", err)
+		http.Error(w, "Failed to update margin", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/orgs/"+slug+"/settings", http.StatusSeeOther)
 }

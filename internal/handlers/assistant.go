@@ -295,7 +295,8 @@ func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.U
 	return sb.String()
 }
 
-// recordAIUsage computes cost and writes an ai_usage_entries row.
+// recordAIUsage writes an ai_usage_entries row with raw token counts.
+// Cost is computed at query time by joining with ai_model_pricing.
 func (h *AssistantHandler) recordAIUsage(ctx context.Context, user *models.User, conv *models.AIConversation, usage *ai.UsageData) {
 	// Determine org ID from the conversation's project, or fall back to user's first org
 	var orgID string
@@ -316,17 +317,8 @@ func (h *AssistantHandler) recordAIUsage(ctx context.Context, user *models.User,
 		return
 	}
 
-	// Look up pricing
-	var costCents int64
-	pricing, err := h.db.GetModelPricing(ctx, usage.Model)
-	if err == nil {
-		inputCost := int64(usage.InputTokens) * pricing.InputPricePerMillionCents / 1_000_000
-		outputCost := int64(usage.OutputTokens) * pricing.OutputPricePerMillionCents / 1_000_000
-		costCents = inputCost + outputCost
-	}
-
 	if err := h.db.CreateAIUsageEntry(ctx, orgID, conv.ProjectID, user.ID, usage.Model, "Chat message",
-		int(usage.InputTokens), int(usage.OutputTokens), costCents); err != nil {
+		int(usage.InputTokens), int(usage.OutputTokens), 0); err != nil {
 		log.Printf("recording ai usage: %v", err)
 	}
 }

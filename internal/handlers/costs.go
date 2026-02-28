@@ -94,6 +94,9 @@ func (h *CostHandler) ProjectCosts(w http.ResponseWriter, r *http.Request) {
 		aiTotal += u.TotalCents
 	}
 
+	margin := org.AIMarginPercent
+	aiTotalWithMargin := aiTotal + aiTotal*int64(margin)/100
+
 	projects, _ := h.db.ListProjects(r.Context(), org.ID)
 	orgs := h.loadOrgs(r, user)
 
@@ -103,18 +106,20 @@ func (h *CostHandler) ProjectCosts(w http.ResponseWriter, r *http.Request) {
 		Title: proj.Name + " — Costs", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		ProjectID: proj.ID,
 		Data: map[string]any{
-			"Project":    proj,
-			"Projects":   projects,
-			"Tab":        "costs",
-			"Month":      month,
-			"PrevMonth":  prevMonth,
-			"NextMonth":  nextMonth,
-			"Costs":      costs,
-			"AIUsage":    aiUsage,
-			"InfraTotal": infraTotal,
-			"AITotal":    aiTotal,
-			"GrandTotal": infraTotal + aiTotal,
-			"CanEdit":    canEdit,
+			"Project":           proj,
+			"Projects":          projects,
+			"Tab":               "costs",
+			"Month":             month,
+			"PrevMonth":         prevMonth,
+			"NextMonth":         nextMonth,
+			"Costs":             costs,
+			"AIUsage":           aiUsage,
+			"InfraTotal":        infraTotal,
+			"AITotal":           aiTotal,
+			"AITotalWithMargin": aiTotalWithMargin,
+			"GrandTotal":        infraTotal + aiTotalWithMargin,
+			"AIMargin":          margin,
+			"CanEdit":           canEdit,
 		},
 	})
 }
@@ -169,6 +174,9 @@ func (h *CostHandler) OrgCosts(w http.ResponseWriter, r *http.Request) {
 		aiTotal += u.TotalCents
 	}
 
+	margin := org.AIMarginPercent
+	aiTotalWithMargin := aiTotal + aiTotal*int64(margin)/100
+
 	orgs := h.loadOrgs(r, user)
 
 	canEdit := auth.IsStaffOrAbove(user.Role)
@@ -176,15 +184,17 @@ func (h *CostHandler) OrgCosts(w http.ResponseWriter, r *http.Request) {
 	h.engine.Render(w, "org_costs.html", render.PageData{
 		Title: org.Name + " — Costs", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
 		Data: map[string]any{
-			"Month":         month,
-			"PrevMonth":     prevMonth,
-			"NextMonth":     nextMonth,
-			"ProjectCosts":  projectCosts,
-			"AIUsage":       aiUsage,
-			"OrgInfraTotal": orgInfraTotal,
-			"AITotal":       aiTotal,
-			"GrandTotal":    orgInfraTotal + aiTotal,
-			"CanEdit":       canEdit,
+			"Month":              month,
+			"PrevMonth":          prevMonth,
+			"NextMonth":          nextMonth,
+			"ProjectCosts":       projectCosts,
+			"AIUsage":            aiUsage,
+			"OrgInfraTotal":      orgInfraTotal,
+			"AITotal":            aiTotal,
+			"AITotalWithMargin":  aiTotalWithMargin,
+			"GrandTotal":         orgInfraTotal + aiTotalWithMargin,
+			"AIMargin":           margin,
+			"CanEdit":            canEdit,
 		},
 	})
 }

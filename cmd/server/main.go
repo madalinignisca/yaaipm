@@ -146,6 +146,7 @@ func main() {
 		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
 		r.Delete("/orgs/{orgSlug}/members/{userID}", orgH.RemoveMember)
 		r.Patch("/orgs/{orgSlug}/members/{userID}/role", orgH.UpdateMemberRole)
+		r.Post("/orgs/{orgSlug}/settings/margin", orgH.UpdateAIMargin)
 
 		// Projects
 		r.Post("/orgs/{orgSlug}/projects", projH.CreateProject)

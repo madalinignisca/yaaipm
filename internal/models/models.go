@@ -18,11 +18,12 @@ type User struct {
 }
 
 type Organization struct {
-	ID        string    `db:"id"`
-	Name      string    `db:"name"`
-	Slug      string    `db:"slug"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	ID              string    `db:"id"`
+	Name            string    `db:"name"`
+	Slug            string    `db:"slug"`
+	AIMarginPercent int       `db:"ai_margin_percent"`
+	CreatedAt       time.Time `db:"created_at"`
+	UpdatedAt       time.Time `db:"updated_at"`
 }
 
 type OrgMembership struct {

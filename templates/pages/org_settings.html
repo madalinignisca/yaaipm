@@ -4,6 +4,19 @@
 
     {{with .Data}}
 
+    {{if .IsStaff}}
+    <div class="card mb-lg">
+        <h2 class="mb-md">AI Cost Margin</h2>
+        <p class="text-sm text-muted mb-md">Percentage markup applied to AI usage costs for client billing.</p>
+        <form method="POST" action="/orgs/{{.OrgSlug}}/settings/margin" class="flex items-center gap-md">
+            <input type="number" name="ai_margin_percent" value="{{$.Org.AIMarginPercent}}"
+                   min="0" max="500" class="form-input" style="width:6rem">
+            <span class="text-sm text-muted">%</span>
+            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        </form>
+    </div>
+    {{end}}
+
     {{if .CanManage}}
     <div class="card mb-lg">
         <h2 class="mb-md">Invite Member</h2>
