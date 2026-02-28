@@ -76,7 +76,7 @@
         </div>
 
         {{if .Ticket.DescriptionMarkdown}}
-        <div class="ticket-description">{{.Ticket.DescriptionMarkdown}}</div>
+        <div class="ticket-description prose">{{markdown .Ticket.DescriptionMarkdown}}</div>
         {{end}}
 
         {{template "reactions.html" dict "TargetType" "ticket" "TargetID" .Ticket.ID "Groups" .TicketReactions}}
@@ -115,7 +115,7 @@
                     <span class="comment-author">{{if .AgentName}}ForgeDesk Bot{{else}}User{{end}}</span>
                     <span class="comment-time">{{formatDateTime .CreatedAt}}</span>
                 </div>
-                <div class="comment-body">{{.BodyMarkdown}}</div>
+                <div class="comment-body prose">{{markdown .BodyMarkdown}}</div>
                 {{template "reactions.html" dict "TargetType" "comment" "TargetID" .ID "Groups" (index $cr .ID)}}
             </div>
             {{end}}
