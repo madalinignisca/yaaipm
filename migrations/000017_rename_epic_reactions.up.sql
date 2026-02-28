@@ -1,8 +1,8 @@
 -- Rename ticket type: epic → feature
 ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_type_check;
+UPDATE tickets SET type = 'feature' WHERE type = 'epic';
 ALTER TABLE tickets ADD CONSTRAINT tickets_type_check
     CHECK (type IN ('feature', 'task', 'subtask', 'bug'));
-UPDATE tickets SET type = 'feature' WHERE type = 'epic';
 
 -- Emoji reactions (polymorphic: works for both tickets and comments)
 CREATE TABLE reactions (
