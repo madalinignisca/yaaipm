@@ -284,8 +284,17 @@ func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.U
 		}
 	}
 
-	sb.WriteString("\nWhen using tools:\n")
+	sb.WriteString("\nTicket hierarchy:\n")
+	sb.WriteString("- Epics are top-level features (no parent). The Features tab shows epics.\n")
+	sb.WriteString("- Tasks are work items that belong UNDER an epic (parent_id = epic ID).\n")
+	sb.WriteString("- Subtasks belong under a task (parent_id = task ID).\n")
+	sb.WriteString("- Bugs are top-level (no parent). The Bugs tab shows bugs.\n")
+	sb.WriteString("- When asked to 'add tasks to an epic', create tickets with type='task' and parent_id set to the epic's ID.\n")
+	sb.WriteString("- NEVER create an epic when the user asks for a task — use type='task' with a parent_id instead.\n\n")
+
+	sb.WriteString("When using tools:\n")
 	sb.WriteString("- Use search_tickets to find existing tickets before creating duplicates\n")
+	sb.WriteString("- When adding tasks to an epic, first search for the epic to get its ID, then create tasks with that parent_id\n")
 	sb.WriteString("- Use the current project ID when creating tickets or searching\n")
 	sb.WriteString("- Use update_project_brief to write or update the project brief when the user asks you to\n")
 	sb.WriteString("- When updating the brief, write well-structured markdown with headings, lists, and sections\n")
@@ -464,9 +473,15 @@ func (e *toolExecutor) createTicket(ctx context.Context, args map[string]any) (m
 	ticketType, _ := args["type"].(string)
 	priority, _ := args["priority"].(string)
 	desc, _ := args["description"].(string)
+	parentID, _ := args["parent_id"].(string)
 
 	if title == "" || ticketType == "" || priority == "" {
 		return map[string]any{"error": "title, type, and priority are required"}, nil
+	}
+
+	// Validate parent_id for tasks/subtasks
+	if (ticketType == "task" || ticketType == "subtask") && parentID == "" {
+		return map[string]any{"error": ticketType + "s require a parent_id (use search_tickets to find the parent epic/task first)"}, nil
 	}
 
 	ticket := &models.Ticket{
@@ -477,6 +492,9 @@ func (e *toolExecutor) createTicket(ctx context.Context, args map[string]any) (m
 		Status:              "backlog",
 		Priority:            priority,
 		CreatedBy:           e.userID,
+	}
+	if parentID != "" {
+		ticket.ParentID = &parentID
 	}
 
 	if err := e.db.CreateTicket(ctx, ticket); err != nil {
