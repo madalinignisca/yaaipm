@@ -1,0 +1,243 @@
+{{define "image_modal"}}
+<div x-data="imageInsertModal()" x-show="open" x-cloak class="modal-overlay" @keydown.escape.window="open && closeModal()" aria-modal="true">
+    <div class="modal-backdrop" @click="closeModal()"></div>
+    <div class="modal-card modal-card-wide" @click.stop>
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-md">
+            <h3>Insert Image</h3>
+            <button @click="closeModal()" class="btn-close" aria-label="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+
+        <!-- Tabs -->
+        <div class="modal-tabs">
+            <button class="modal-tab" :class="{ active: activeTab === 'upload' }" @click="switchTab('upload')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Upload
+            </button>
+            <button class="modal-tab" :class="{ active: activeTab === 'generate' }" @click="switchTab('generate')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                AI Generate
+            </button>
+        </div>
+
+        <!-- Upload panel -->
+        <div x-show="activeTab === 'upload'" style="min-height:12rem">
+            <!-- Drop zone (before file selected) -->
+            <div x-show="!file && !uploadedUrl"
+                 class="drop-zone"
+                 @dragover.prevent="dragover = true"
+                 @dragleave.prevent="dragover = false"
+                 @drop.prevent="onDrop($event)"
+                 :class="{ dragover: dragover }"
+                 @click="$refs.fileInput.click()">
+                <input type="file" x-ref="fileInput" @change="onFileSelect($event)" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gray-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <p class="text-muted mt-sm mb-xs">Drag &amp; drop an image here</p>
+                <p class="text-muted text-xs">or <span class="text-brand" style="cursor:pointer;text-decoration:underline">choose a file</span></p>
+            </div>
+
+            <!-- Uploading / Preview -->
+            <div x-show="file && !uploadedUrl" class="text-center">
+                <img x-show="preview" :src="preview" class="image-preview mb-sm" alt="Preview">
+                <p class="text-sm text-muted mb-xs" x-text="fileName"></p>
+                <p class="text-xs text-muted mb-sm" x-text="fileSize"></p>
+                <div x-show="uploading" class="text-sm text-muted">Uploading...</div>
+            </div>
+
+            <!-- Upload complete -->
+            <div x-show="uploadedUrl" class="text-center">
+                <img :src="uploadedUrl" class="image-preview mb-sm" alt="Uploaded">
+                <div class="flex gap-sm justify-center">
+                    <button @click="insert(uploadedUrl, 'image')" class="btn btn-primary">Insert</button>
+                    <button @click="resetUpload()" class="btn btn-secondary">Upload Another</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Generate panel -->
+        <div x-show="activeTab === 'generate'" style="min-height:12rem">
+            <!-- Prompt (before generation) -->
+            <div x-show="!generatedUrl">
+                <div class="form-group mb-md">
+                    <label class="form-label">Describe the image you want</label>
+                    <textarea x-model="prompt" class="form-textarea" rows="3" placeholder="A clean diagram showing..."></textarea>
+                </div>
+                <div x-show="generating" class="text-sm text-muted mb-sm">Generating image...</div>
+                <div class="flex justify-end">
+                    <button @click="generate()" class="btn btn-primary" :disabled="generating || !prompt.trim()">
+                        <span x-show="!generating">Generate</span>
+                        <span x-show="generating">Generating...</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Generation complete -->
+            <div x-show="generatedUrl" class="text-center">
+                <img :src="generatedUrl" class="image-preview mb-sm" alt="Generated">
+                <div class="flex gap-sm justify-center">
+                    <button @click="insert(generatedUrl, prompt.substring(0, 40))" class="btn btn-primary">Insert</button>
+                    <button @click="generatedUrl = ''" class="btn btn-secondary">Generate Another</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Error -->
+        <div x-show="error" class="text-danger mt-sm text-sm" x-text="error"></div>
+
+        <!-- Footer -->
+        <div class="flex justify-end mt-md">
+            <button @click="closeModal()" class="btn btn-secondary">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+function imageInsertModal() {
+    return {
+        open: false,
+        activeTab: 'upload',
+        editorInstance: null,
+        projectID: '',
+
+        // Upload state
+        file: null,
+        preview: '',
+        fileName: '',
+        fileSize: '',
+        uploading: false,
+        uploadedUrl: '',
+        dragover: false,
+
+        // Generate state
+        prompt: '',
+        generating: false,
+        generatedUrl: '',
+
+        error: '',
+
+        openModal(editor, projectID) {
+            this.editorInstance = editor;
+            this.projectID = projectID;
+            this.open = true;
+        },
+
+        closeModal() {
+            this.open = false;
+            this.reset();
+        },
+
+        switchTab(tab) {
+            this.activeTab = tab;
+            this.error = '';
+        },
+
+        onDrop(event) {
+            this.dragover = false;
+            var files = event.dataTransfer.files;
+            if (files.length > 0 && files[0].type.startsWith('image/')) {
+                this.selectFile(files[0]);
+            }
+        },
+
+        onFileSelect(event) {
+            var files = event.target.files;
+            if (files.length > 0) {
+                this.selectFile(files[0]);
+            }
+            event.target.value = '';
+        },
+
+        selectFile(f) {
+            if (f.size > 10 * 1024 * 1024) {
+                this.error = 'File too large. Maximum size is 10 MB.';
+                return;
+            }
+            this.error = '';
+            this.file = f;
+            this.fileName = f.name;
+            this.fileSize = this.formatSize(f.size);
+            // Show preview
+            var reader = new FileReader();
+            var self = this;
+            reader.onload = function(e) { self.preview = e.target.result; };
+            reader.readAsDataURL(f);
+            // Auto-upload
+            this.upload();
+        },
+
+        upload() {
+            this.uploading = true;
+            this.error = '';
+            var fd = new FormData();
+            fd.append('file', this.file);
+            fd.append('project_id', this.projectID);
+            var self = this;
+            fetch('/api/upload-image', { method: 'POST', body: fd })
+                .then(function(r) { return r.json(); })
+                .then(function(j) {
+                    self.uploading = false;
+                    if (j.error) { self.error = j.error; return; }
+                    self.uploadedUrl = j.data.filePath;
+                })
+                .catch(function(e) { self.uploading = false; self.error = e.message; });
+        },
+
+        generate() {
+            this.generating = true;
+            this.error = '';
+            var self = this;
+            fetch('/api/generate-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: this.prompt, project_id: this.projectID })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(j) {
+                self.generating = false;
+                if (j.error) { self.error = j.error; return; }
+                if (j.data && j.data.filePath) {
+                    self.generatedUrl = j.data.filePath;
+                }
+            })
+            .catch(function(e) { self.generating = false; self.error = e.message; });
+        },
+
+        insert(url, alt) {
+            if (this.editorInstance) {
+                var cm = this.editorInstance.codemirror;
+                var pos = cm.getCursor();
+                cm.replaceRange('![' + alt + '](' + url + ')\n', pos);
+            }
+            this.closeModal();
+        },
+
+        resetUpload() {
+            this.file = null;
+            this.preview = '';
+            this.fileName = '';
+            this.fileSize = '';
+            this.uploading = false;
+            this.uploadedUrl = '';
+            this.error = '';
+        },
+
+        reset() {
+            this.resetUpload();
+            this.prompt = '';
+            this.generating = false;
+            this.generatedUrl = '';
+            this.error = '';
+            this.activeTab = 'upload';
+        },
+
+        formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+    };
+}
+</script>
+{{end}}

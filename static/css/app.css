@@ -643,6 +643,70 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   padding: 1.5rem;
 }
 
+.modal-card-wide { max-width: 36rem; }
+
+.btn-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: .25rem;
+  border-radius: var(--radius-sm);
+  color: var(--gray-400);
+  transition: color .15s ease;
+}
+
+.btn-close:hover { color: var(--gray-700); }
+
+/* ── Modal Tabs ───────────────────────────────────────────── */
+.modal-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--gray-200);
+  margin-bottom: 1rem;
+}
+
+.modal-tab {
+  padding: .625rem 1rem;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--gray-500);
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  background: none;
+  transition: color .15s ease, border-color .15s ease;
+}
+
+.modal-tab:hover { color: var(--gray-700); }
+.modal-tab.active { color: var(--brand-600); border-bottom-color: var(--brand-500); }
+
+/* ── Drop Zone ────────────────────────────────────────────── */
+.drop-zone {
+  border: 2px dashed var(--gray-300);
+  border-radius: var(--radius-md);
+  padding: 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.drop-zone:hover,
+.drop-zone.dragover {
+  border-color: var(--brand-400);
+  background: var(--brand-50, #eef2ff);
+}
+
+/* ── Image Preview ────────────────────────────────────────── */
+.image-preview {
+  max-width: 100%;
+  max-height: 16rem;
+  border-radius: var(--radius-md);
+  object-fit: contain;
+  margin-left: auto;
+  margin-right: auto;
+  display: block;
+}
+
 /* ── Grid ──────────────────────────────────────────────────── */
 .grid { display: grid; gap: 1rem; }
 .grid-2 { grid-template-columns: repeat(2, 1fr); }
