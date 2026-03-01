@@ -978,9 +978,10 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
 .prose a:hover { color: var(--brand-700); }
 .prose strong { font-weight: 600; }
 .prose hr { border: none; border-top: 1px solid var(--gray-200); margin: 1.5rem 0; }
-.prose table { width: 100%; border-collapse: collapse; margin: .75rem 0; }
-.prose th, .prose td { padding: .375rem .75rem; border: 1px solid var(--gray-200); text-align: left; }
-.prose th { background: var(--gray-50); font-weight: 600; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .03em; }
+.prose table { width: 100%; border-collapse: separate; border-spacing: 0; margin: .75rem 0; border: 1px solid var(--gray-200); border-radius: var(--radius-md); overflow: hidden; }
+.prose th, .prose td { padding: .625rem 1rem; border-bottom: 1px solid var(--gray-200); text-align: left; vertical-align: middle; }
+.prose th { background: var(--gray-50); font-weight: 600; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .03em; color: var(--gray-500); }
+.prose tr:last-child td { border-bottom: none; }
 
 .prose-empty {
   color: var(--gray-400);
