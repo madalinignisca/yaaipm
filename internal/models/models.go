@@ -174,15 +174,6 @@ type AIUsageEntry struct {
 	CreatedAt    time.Time `db:"created_at"`
 }
 
-type AIModelPricing struct {
-	ID                          string    `db:"id"`
-	ModelName                   string    `db:"model_name"`
-	InputPricePerMillionCents   int64     `db:"input_price_per_million_cents"`
-	OutputPricePerMillionCents  int64     `db:"output_price_per_million_cents"`
-	EffectiveFrom               time.Time `db:"effective_from"`
-	CreatedAt                   time.Time `db:"created_at"`
-}
-
 type AIUsageSummary struct {
 	Model        string
 	Label        string
@@ -190,6 +181,17 @@ type AIUsageSummary struct {
 	OutputTokens int64
 	TotalCents   int64
 	EntryCount   int
+}
+
+type TicketAttachment struct {
+	ID          string    `db:"id"`
+	TicketID    string    `db:"ticket_id"`
+	FileName    string    `db:"file_name"`
+	FilePath    string    `db:"file_path"`
+	ContentType string   `db:"content_type"`
+	SizeBytes   int64     `db:"size_bytes"`
+	UploadedBy  string    `db:"uploaded_by"`
+	CreatedAt   time.Time `db:"created_at"`
 }
 
 type Reaction struct {

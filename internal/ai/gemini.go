@@ -25,9 +25,10 @@ type ToolExecutor interface {
 
 // UsageData holds token usage information from a chat response.
 type UsageData struct {
-	InputTokens  int32
-	OutputTokens int32
-	Model        string
+	InputTokens    int32
+	OutputTokens   int32
+	Model          string
+	HasImageOutput bool // true when response contains generated images
 }
 
 // Thinking level constants for callers that don't import genai directly.
@@ -244,6 +245,40 @@ func (g *GeminiClient) streamWithToolLoop(ctx context.Context, chat *genai.Chat,
 		// Continue the loop with function responses
 		parts = responseParts
 	}
+}
+
+// GenerateImage generates an image from a text prompt using the image model.
+// Returns the image bytes, MIME type, and usage data.
+func (g *GeminiClient) GenerateImage(ctx context.Context, prompt string) ([]byte, string, *UsageData, error) {
+	config := &genai.GenerateContentConfig{
+		ResponseModalities: []string{"TEXT", "IMAGE"},
+	}
+
+	result, err := g.client.Models.GenerateContent(ctx, g.Models.Image,
+		[]*genai.Content{genai.NewContentFromText(prompt, genai.RoleUser)}, config)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("generating image: %w", err)
+	}
+
+	var usage *UsageData
+	if result != nil && result.UsageMetadata != nil {
+		usage = &UsageData{
+			InputTokens:    result.UsageMetadata.PromptTokenCount,
+			OutputTokens:   result.UsageMetadata.CandidatesTokenCount,
+			Model:          g.Models.Image,
+			HasImageOutput: true,
+		}
+	}
+
+	if result != nil && len(result.Candidates) > 0 && result.Candidates[0].Content != nil {
+		for _, part := range result.Candidates[0].Content.Parts {
+			if part.InlineData != nil && len(part.InlineData.Data) > 0 {
+				return part.InlineData.Data, part.InlineData.MIMEType, usage, nil
+			}
+		}
+	}
+
+	return nil, "", usage, fmt.Errorf("no image in response")
 }
 
 // GenerateTitle generates a short ticket title from a description using the default model.

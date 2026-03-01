@@ -2,6 +2,7 @@
 function chatWidget() {
   return {
     open: false,
+    enlarged: false,
     messages: [],
     input: '',
     loading: false,
@@ -26,6 +27,10 @@ function chatWidget() {
       document.addEventListener('htmx:afterSettle', () => {
         this._checkProjectChange();
       });
+    },
+
+    toggleEnlarge() {
+      this.enlarged = !this.enlarged;
     },
 
     toggle() {

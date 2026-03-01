@@ -22,6 +22,7 @@ import (
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
 	"github.com/madalin/forgedesk/internal/static"
+	"github.com/madalin/forgedesk/internal/storage"
 	"github.com/madalin/forgedesk/internal/ws"
 )
 
@@ -75,6 +76,24 @@ func main() {
 		}
 	}
 
+	// S3 storage (optional)
+	var s3Client *storage.S3Client
+	if cfg.S3Endpoint != "" && cfg.S3Bucket != "" {
+		s3Client, err = storage.NewS3Client(storage.S3Config{
+			Endpoint:       cfg.S3Endpoint,
+			AccessKeyID:    cfg.S3AccessKeyID,
+			SecretAccessKey: cfg.S3SecretAccessKey,
+			Region:         cfg.S3Region,
+			Bucket:         cfg.S3Bucket,
+			ForcePathStyle: cfg.S3ForcePathStyle,
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to create S3 client: %v", err)
+		} else {
+			log.Printf("S3 storage enabled (bucket: %s)", cfg.S3Bucket)
+		}
+	}
+
 	// Handlers
 	secureCookie := strings.HasPrefix(cfg.BaseURL, "https")
 	mailer := mail.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, cfg.SMTPSSL)
@@ -83,7 +102,7 @@ func main() {
 	dashH := handlers.NewDashboardHandler(db, engine)
 	orgH := handlers.NewOrgHandler(db, engine, mailer, cfg.BaseURL, cfg.ProtectedSuperadmins)
 	projH := handlers.NewProjectHandler(db, engine)
-	ticketH := handlers.NewTicketHandler(db, engine, geminiClient)
+	ticketH := handlers.NewTicketHandler(db, engine, geminiClient, cfg)
 	commentH := handlers.NewCommentHandler(db, engine)
 	adminH := handlers.NewAdminHandler(db, engine)
 	accountH := handlers.NewAccountHandler(db, sessions, engine)
@@ -92,7 +111,11 @@ func main() {
 	reactionH := handlers.NewReactionHandler(db, engine)
 	chatHub := ws.NewHub()
 	go chatHub.Run()
-	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient, chatHub)
+	var fileH *handlers.FileHandler
+	if s3Client != nil {
+		fileH = handlers.NewFileHandler(s3Client, db, geminiClient, cfg)
+	}
+	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient, chatHub, cfg)
 
 	r := chi.NewRouter()
 
@@ -102,6 +125,11 @@ func main() {
 
 	// Static files (content-hashed URLs get immutable cache headers)
 	r.Handle("/static/*", http.StripPrefix("/static/", manifest.Handler()))
+
+	// File proxy (public but keys are UUIDs — no listing)
+	if fileH != nil {
+		r.Get("/files/*", fileH.ServeFile)
+	}
 
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +203,7 @@ func main() {
 		r.Patch("/tickets/{ticketID}/agent", ticketH.UpdateAgentMode)
 		r.Post("/tickets/{ticketID}/archive", ticketH.ArchiveTicket)
 		r.Post("/tickets/{ticketID}/restore", ticketH.RestoreTicket)
+		r.Put("/tickets/{ticketID}", ticketH.UpdateTicket)
 		r.Delete("/tickets/{ticketID}", ticketH.DeleteTicket)
 
 		// Comments
@@ -182,6 +211,14 @@ func main() {
 
 		// Reactions
 		r.Post("/reactions/{targetType}/{targetID}", reactionH.ToggleReaction)
+
+		// File uploads (S3)
+		if fileH != nil {
+			r.Post("/api/upload-image", fileH.UploadImage)
+			r.Post("/api/upload-file", fileH.UploadFile)
+			r.Delete("/api/attachments/{attachmentID}", fileH.DeleteAttachment)
+			r.Post("/api/generate-image", fileH.GenerateImage)
+		}
 
 		// AI Assistant (WebSocket)
 		r.Get("/ws/assistant/{projectID}", assistantH.HandleWebSocket)
@@ -191,7 +228,6 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireRole(auth.RoleSuperAdmin))
 			r.Get("/admin", adminH.AdminPage)
-			r.Post("/admin/pricing", costH.UpdateModelPricing)
 		})
 	})
 

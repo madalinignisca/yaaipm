@@ -1,3 +1,8 @@
+{{define "page_head"}}
+<link rel="stylesheet" href="{{asset "css/easymde.min.css"}}">
+<script src="{{asset "js/easymde.min.js"}}" defer></script>
+{{end}}
+
 {{define "content"}}
 {{with .Data}}
 <div class="container-medium">
@@ -5,8 +10,8 @@
         <a href="javascript:history.back()" class="back-link">&larr; Back</a>
     </div>
 
-    <!-- Ticket header -->
-    <div id="ticket-header" class="card mb-lg">
+    <!-- Ticket header + description -->
+    <div id="ticket-header" class="card mb-lg" x-data="ticketEditor()">
         <div class="ticket-header">
             <div>
                 <div class="ticket-badges">
@@ -15,70 +20,97 @@
                     <span class="badge badge-{{priorityColor .Ticket.Priority}}">{{.Ticket.Priority}}</span>
                     {{if .Ticket.ArchivedAt}}<span class="badge badge-red">archived</span>{{end}}
                 </div>
-                <div class="ticket-title">{{.Ticket.Title}}</div>
+                <div x-show="!editing" class="ticket-title">{{.Ticket.Title}}</div>
             </div>
 
-            {{if .IsStaff}}
-            <div class="dropdown" x-data="{ open: false }">
-                <button @click="open = !open" class="btn-dots">
-                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20">
-                        <path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM16 12a2 2 0 100-4 2 2 0 000 4z"/>
-                    </svg>
+            <div class="flex gap-sm items-center">
+                <button x-show="!editing" @click="startEditing()" class="btn btn-secondary btn-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    Edit
                 </button>
-                <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:14rem">
-                    {{$ticketID := .Ticket.ID}}
-                    <div class="dropdown-section">
-                        <div class="dropdown-section-label">Status</div>
-                        {{range $s := strList "backlog" "ready" "planning" "plan_review" "implementing" "testing" "review" "done" "cancelled"}}
-                        <button hx-patch="/tickets/{{$ticketID}}/status"
-                                hx-vals='{"status":"{{$s}}"}'
-                                hx-target="#ticket-header"
-                                hx-swap="outerHTML"
-                                class="dropdown-item">
-                            {{$s}}
-                        </button>
-                        {{end}}
-                    </div>
-                    <div class="dropdown-section">
-                        <div class="dropdown-section-label">Agent</div>
-                        <form hx-patch="/tickets/{{.Ticket.ID}}/agent" hx-target="#ticket-header" hx-swap="outerHTML" class="dropdown-form stack-sm">
-                            <select name="agent_mode" class="form-select">
-                                <option value="">None</option>
-                                <option value="plan">Plan</option>
-                                <option value="implement">Implement</option>
-                            </select>
-                            <select name="agent_name" class="form-select">
-                                <option value="claude">Claude</option>
-                                <option value="gemini">Gemini</option>
-                                <option value="codex">Codex</option>
-                                <option value="mistral">Mistral</option>
-                            </select>
-                            <button type="submit" class="btn btn-primary btn-sm btn-block">Set Agent</button>
-                        </form>
-                    </div>
-                    <div class="dropdown-section">
-                        <div class="dropdown-section-label">Actions</div>
-                        {{if .Ticket.ArchivedAt}}
-                        <button hx-post="/tickets/{{.Ticket.ID}}/restore"
-                                hx-confirm="Restore this ticket and its children?"
-                                class="dropdown-item">Restore</button>
-                        {{else}}
-                        <button hx-post="/tickets/{{.Ticket.ID}}/archive"
-                                hx-confirm="Archive this ticket?"
-                                class="dropdown-item">Archive</button>
-                        {{end}}
-                        <button hx-delete="/tickets/{{.Ticket.ID}}"
-                                hx-confirm="Permanently delete this ticket? This cannot be undone."
-                                class="dropdown-item text-danger">Delete</button>
+                {{if .IsStaff}}
+                <div class="dropdown" x-data="{ open: false }">
+                    <button @click="open = !open" class="btn-dots">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM16 12a2 2 0 100-4 2 2 0 000 4z"/>
+                        </svg>
+                    </button>
+                    <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:14rem">
+                        {{$ticketID := .Ticket.ID}}
+                        <div class="dropdown-section">
+                            <div class="dropdown-section-label">Status</div>
+                            {{range $s := strList "backlog" "ready" "planning" "plan_review" "implementing" "testing" "review" "done" "cancelled"}}
+                            <button hx-patch="/tickets/{{$ticketID}}/status"
+                                    hx-vals='{"status":"{{$s}}"}'
+                                    hx-target="#ticket-header"
+                                    hx-swap="outerHTML"
+                                    class="dropdown-item">
+                                {{$s}}
+                            </button>
+                            {{end}}
+                        </div>
+                        <div class="dropdown-section">
+                            <div class="dropdown-section-label">Agent</div>
+                            <form hx-patch="/tickets/{{.Ticket.ID}}/agent" hx-target="#ticket-header" hx-swap="outerHTML" class="dropdown-form stack-sm">
+                                <select name="agent_mode" class="form-select">
+                                    <option value="">None</option>
+                                    <option value="plan">Plan</option>
+                                    <option value="implement">Implement</option>
+                                </select>
+                                <select name="agent_name" class="form-select">
+                                    <option value="claude">Claude</option>
+                                    <option value="gemini">Gemini</option>
+                                    <option value="codex">Codex</option>
+                                    <option value="mistral">Mistral</option>
+                                </select>
+                                <button type="submit" class="btn btn-primary btn-sm btn-block">Set Agent</button>
+                            </form>
+                        </div>
+                        <div class="dropdown-section">
+                            <div class="dropdown-section-label">Actions</div>
+                            {{if .Ticket.ArchivedAt}}
+                            <button hx-post="/tickets/{{.Ticket.ID}}/restore"
+                                    hx-confirm="Restore this ticket and its children?"
+                                    class="dropdown-item">Restore</button>
+                            {{else}}
+                            <button hx-post="/tickets/{{.Ticket.ID}}/archive"
+                                    hx-confirm="Archive this ticket?"
+                                    class="dropdown-item">Archive</button>
+                            {{end}}
+                            <button hx-delete="/tickets/{{.Ticket.ID}}"
+                                    hx-confirm="Permanently delete this ticket? This cannot be undone."
+                                    class="dropdown-item text-danger">Delete</button>
+                        </div>
                     </div>
                 </div>
+                {{end}}
             </div>
+        </div>
+
+        <!-- View mode -->
+        <div x-show="!editing">
+            {{if .Ticket.DescriptionMarkdown}}
+            <div class="ticket-description prose">{{markdown .Ticket.DescriptionMarkdown}}</div>
             {{end}}
         </div>
 
-        {{if .Ticket.DescriptionMarkdown}}
-        <div class="ticket-description prose">{{markdown .Ticket.DescriptionMarkdown}}</div>
-        {{end}}
+        <!-- Edit mode -->
+        <div x-show="editing" x-cloak>
+            <form @submit="syncEditor()" hx-put="/tickets/{{.Ticket.ID}}" hx-swap="none">
+                <div class="form-group mb-sm">
+                    <label class="form-label">Title</label>
+                    <input type="text" name="title" value="{{.Ticket.Title}}" class="form-input" required>
+                </div>
+                <div class="form-group mb-sm">
+                    <label class="form-label">Description</label>
+                    <textarea x-ref="descTextarea" name="description" rows="12" class="form-textarea font-mono">{{.Ticket.DescriptionMarkdown}}</textarea>
+                </div>
+                <div class="flex gap-sm">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" @click="cancelEditing()" class="btn btn-secondary">Cancel</button>
+                </div>
+            </form>
+        </div>
 
         {{template "reactions.html" dict "TargetType" "ticket" "TargetID" .Ticket.ID "Groups" .TicketReactions}}
 
@@ -87,6 +119,40 @@
             {{if .Ticket.DateStart}}<span>Start: {{formatDateInput .Ticket.DateStart}}</span>{{end}}
             {{if .Ticket.DateEnd}}<span>End: {{formatDateInput .Ticket.DateEnd}}</span>{{end}}
         </div>
+        {{end}}
+    </div>
+
+    <!-- Attachments -->
+    <div class="card mb-lg">
+        <div class="flex items-center justify-between mb-sm">
+            <h3>Attachments</h3>
+            <div x-data="fileUploader()" class="flex gap-sm items-center">
+                <input type="file" x-ref="fileInput" @change="upload($event)" style="display:none" multiple>
+                <button @click="$refs.fileInput.click()" class="btn btn-secondary btn-sm" :disabled="uploading">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <span x-text="uploading ? 'Uploading...' : 'Upload File'"></span>
+                </button>
+            </div>
+        </div>
+        {{if .Attachments}}
+        <div class="attachment-list">
+            {{range .Attachments}}
+            <div class="attachment-item">
+                <a href="{{.FilePath}}" target="_blank" class="attachment-link">
+                    <span class="attachment-icon">{{fileIcon .ContentType}}</span>
+                    <span class="attachment-name">{{.FileName}}</span>
+                    <span class="attachment-size">{{formatBytes .SizeBytes}}</span>
+                </a>
+                <button hx-delete="/api/attachments/{{.ID}}"
+                        hx-confirm="Remove this attachment?"
+                        class="btn-icon-sm text-danger">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+            </div>
+            {{end}}
+        </div>
+        {{else}}
+        <p class="text-muted">No attachments yet.</p>
         {{end}}
     </div>
 
@@ -153,5 +219,181 @@
         </form>
     </div>
 </div>
+
+<style>
+.attachment-list { display: flex; flex-direction: column; gap: .375rem; }
+.attachment-item { display: flex; align-items: center; justify-content: space-between; padding: .5rem .75rem; border-radius: var(--radius-md); background: var(--gray-50); }
+.attachment-link { display: flex; align-items: center; gap: .5rem; color: var(--gray-700); text-decoration: none; min-width: 0; flex: 1; }
+.attachment-link:hover { color: var(--brand-600); }
+.attachment-icon { font-size: 1.25rem; flex-shrink: 0; width: 1.5rem; text-align: center; }
+.attachment-name { font-size: var(--text-sm); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attachment-size { font-size: var(--text-xs); color: var(--gray-400); flex-shrink: 0; margin-left: auto; padding-left: .5rem; }
+.btn-icon-sm { background: none; border: none; cursor: pointer; padding: .25rem; border-radius: var(--radius-sm); opacity: .5; }
+.btn-icon-sm:hover { opacity: 1; background: var(--gray-100); }
+.generate-image-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+}
+.generate-image-dialog {
+    background: var(--white); border-radius: var(--radius-lg); padding: var(--space-lg);
+    width: 90%; max-width: 28rem; box-shadow: var(--shadow-xl);
+}
+</style>
+
+<div x-data="imageGenModal()" x-show="open" x-cloak class="generate-image-overlay" @keydown.escape.window="open = false">
+    <div class="generate-image-dialog" @click.stop>
+        <h3 class="mb-md">Generate Image with AI</h3>
+        <div class="form-group mb-md">
+            <label class="form-label">Describe the image you want</label>
+            <textarea x-model="prompt" class="form-textarea" rows="3" placeholder="A clean diagram showing..."></textarea>
+        </div>
+        <div x-show="error" class="text-danger mb-sm" x-text="error"></div>
+        <div class="flex gap-sm justify-end">
+            <button @click="open = false" class="btn btn-secondary" :disabled="loading">Cancel</button>
+            <button @click="generate()" class="btn btn-primary" :disabled="loading || !prompt.trim()">
+                <span x-show="!loading">Generate</span>
+                <span x-show="loading">Generating...</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+var _imageGenEditor = null;
+var _imageGenProjectID = '{{.Ticket.ProjectID}}';
+var _ticketID = '{{.Ticket.ID}}';
+
+function imageGenModal() {
+    return {
+        open: false,
+        prompt: '',
+        loading: false,
+        error: '',
+        generate() {
+            this.loading = true;
+            this.error = '';
+            fetch('/api/generate-image', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({prompt: this.prompt, project_id: _imageGenProjectID})
+            })
+            .then(r => r.json())
+            .then(j => {
+                this.loading = false;
+                if (j.error) { this.error = j.error; return; }
+                if (j.data && j.data.filePath && _imageGenEditor) {
+                    var cm = _imageGenEditor.codemirror;
+                    var pos = cm.getCursor();
+                    cm.replaceRange('![' + this.prompt.substring(0, 40) + '](' + j.data.filePath + ')\n', pos);
+                }
+                this.open = false;
+                this.prompt = '';
+            })
+            .catch(e => { this.loading = false; this.error = e.message; });
+        }
+    };
+}
+
+function ticketEditor() {
+    return {
+        editing: false,
+        easyMDE: null,
+        startEditing() {
+            this.editing = true;
+            this.$nextTick(() => {
+                var ta = this.$refs.descTextarea;
+                if (ta && typeof EasyMDE !== 'undefined') {
+                    this.easyMDE = new EasyMDE({
+                        element: ta,
+                        spellChecker: false,
+                        autofocus: true,
+                        minHeight: '200px',
+                        status: false,
+                        toolbar: [
+                            'bold', 'italic', 'heading', '|',
+                            'unordered-list', 'ordered-list', '|',
+                            'link', 'image', '|',
+                            'code', 'quote', '|',
+                            {
+                                name: 'generate-image',
+                                action: function() {
+                                    document.dispatchEvent(new CustomEvent('open-image-gen'));
+                                },
+                                className: 'fa fa-magic',
+                                title: 'Generate image with AI',
+                                text: 'AI',
+                            },
+                            '|', 'preview', 'side-by-side', '|',
+                            'guide'
+                        ],
+                        uploadImage: true,
+                        imageUploadFunction: function(file, onSuccess, onError) {
+                            var fd = new FormData();
+                            fd.append('file', file);
+                            fd.append('project_id', _imageGenProjectID);
+                            fetch('/api/upload-image', { method: 'POST', body: fd })
+                                .then(function(r) { return r.json(); })
+                                .then(function(j) {
+                                    if (j.error) { onError(j.error); return; }
+                                    onSuccess(j.data.filePath);
+                                })
+                                .catch(function(e) { onError(e.message); });
+                        },
+                        imageAccept: 'image/png, image/jpeg, image/gif, image/webp',
+                        imageMaxSize: 10 * 1024 * 1024,
+                        placeholder: 'Describe the ticket using Markdown...',
+                    });
+                    _imageGenEditor = this.easyMDE;
+                }
+            });
+        },
+        cancelEditing() {
+            if (this.easyMDE) {
+                this.easyMDE.toTextArea();
+                this.easyMDE = null;
+                _imageGenEditor = null;
+            }
+            this.editing = false;
+        },
+        syncEditor() {
+            if (this.easyMDE) {
+                this.$refs.descTextarea.value = this.easyMDE.value();
+            }
+        }
+    };
+}
+
+function fileUploader() {
+    return {
+        uploading: false,
+        upload(event) {
+            var files = event.target.files;
+            if (!files.length) return;
+            this.uploading = true;
+            var promises = [];
+            for (var i = 0; i < files.length; i++) {
+                var fd = new FormData();
+                fd.append('file', files[i]);
+                fd.append('ticket_id', _ticketID);
+                promises.push(
+                    fetch('/api/upload-file', { method: 'POST', body: fd })
+                        .then(function(r) { return r.json(); })
+                );
+            }
+            Promise.all(promises)
+                .then(function() { window.location.reload(); })
+                .catch(function(e) { alert('Upload failed: ' + e.message); })
+                .finally(function() { this.uploading = false; }.bind(this));
+            event.target.value = '';
+        }
+    };
+}
+
+document.addEventListener('open-image-gen', function() {
+    var el = document.querySelector('[x-data="imageGenModal()"]');
+    if (el && el.__x) el.__x.$data.open = true;
+});
+</script>
+
 {{end}}
 {{end}}

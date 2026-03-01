@@ -1034,18 +1034,14 @@ func (db *DB) CreateAIUsageEntry(ctx context.Context, orgID string, projectID *s
 
 func (db *DB) ListAIUsageByProjectMonth(ctx context.Context, projectID, month string) ([]AIUsageSummary, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT a.model, a.label,
-		        SUM(a.input_tokens)::BIGINT,
-		        SUM(a.output_tokens)::BIGINT,
-		        COALESCE(
-		            SUM(a.input_tokens)::BIGINT * MAX(p.input_price_per_million_cents) / 1000000
-		            + SUM(a.output_tokens)::BIGINT * MAX(p.output_price_per_million_cents) / 1000000
-		        , 0)::BIGINT,
+		`SELECT model, label,
+		        SUM(input_tokens)::BIGINT,
+		        SUM(output_tokens)::BIGINT,
+		        COALESCE(SUM(cost_cents), 0)::BIGINT,
 		        COUNT(*)::INT
-		 FROM ai_usage_entries a
-		 LEFT JOIN ai_model_pricing p ON p.model_name = a.model
-		 WHERE a.project_id = $1 AND to_char(a.created_at, 'YYYY-MM') = $2
-		 GROUP BY a.model, a.label ORDER BY a.model`, projectID, month)
+		 FROM ai_usage_entries
+		 WHERE project_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
+		 GROUP BY model, label ORDER BY model`, projectID, month)
 	if err != nil {
 		return nil, err
 	}
@@ -1064,18 +1060,14 @@ func (db *DB) ListAIUsageByProjectMonth(ctx context.Context, projectID, month st
 
 func (db *DB) ListAIUsageByOrgMonth(ctx context.Context, orgID, month string) ([]AIUsageSummary, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT a.model, a.label,
-		        SUM(a.input_tokens)::BIGINT,
-		        SUM(a.output_tokens)::BIGINT,
-		        COALESCE(
-		            SUM(a.input_tokens)::BIGINT * MAX(p.input_price_per_million_cents) / 1000000
-		            + SUM(a.output_tokens)::BIGINT * MAX(p.output_price_per_million_cents) / 1000000
-		        , 0)::BIGINT,
+		`SELECT model, label,
+		        SUM(input_tokens)::BIGINT,
+		        SUM(output_tokens)::BIGINT,
+		        COALESCE(SUM(cost_cents), 0)::BIGINT,
 		        COUNT(*)::INT
-		 FROM ai_usage_entries a
-		 LEFT JOIN ai_model_pricing p ON p.model_name = a.model
-		 WHERE a.org_id = $1 AND to_char(a.created_at, 'YYYY-MM') = $2
-		 GROUP BY a.model, a.label ORDER BY a.model`, orgID, month)
+		 FROM ai_usage_entries
+		 WHERE org_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
+		 GROUP BY model, label ORDER BY model`, orgID, month)
 	if err != nil {
 		return nil, err
 	}
@@ -1095,62 +1087,13 @@ func (db *DB) ListAIUsageByOrgMonth(ctx context.Context, orgID, month string) ([
 func (db *DB) GetTotalAIUsageCentsForOrgMonth(ctx context.Context, orgID, month string) (int64, error) {
 	var total int64
 	err := db.Pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(sub.total), 0)::BIGINT FROM (
-		    SELECT SUM(a.input_tokens)::BIGINT * MAX(p.input_price_per_million_cents) / 1000000
-		           + SUM(a.output_tokens)::BIGINT * MAX(p.output_price_per_million_cents) / 1000000 AS total
-		    FROM ai_usage_entries a
-		    LEFT JOIN ai_model_pricing p ON p.model_name = a.model
-		    WHERE a.org_id = $1 AND to_char(a.created_at, 'YYYY-MM') = $2
-		    GROUP BY a.model
-		) sub`, orgID, month).Scan(&total)
+		`SELECT COALESCE(SUM(cost_cents), 0)::BIGINT
+		 FROM ai_usage_entries
+		 WHERE org_id = $1 AND to_char(created_at, 'YYYY-MM') = $2`,
+		orgID, month).Scan(&total)
 	return total, err
 }
 
-// ── AI Model Pricing ──────────────────────────────────────────
-
-func (db *DB) GetModelPricing(ctx context.Context, modelName string) (*AIModelPricing, error) {
-	p := &AIModelPricing{}
-	err := db.Pool.QueryRow(ctx,
-		`SELECT id, model_name, input_price_per_million_cents, output_price_per_million_cents, effective_from, created_at
-		 FROM ai_model_pricing WHERE model_name = $1`, modelName,
-	).Scan(&p.ID, &p.ModelName, &p.InputPricePerMillionCents, &p.OutputPricePerMillionCents, &p.EffectiveFrom, &p.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-func (db *DB) ListModelPricing(ctx context.Context) ([]AIModelPricing, error) {
-	rows, err := db.Pool.Query(ctx,
-		`SELECT id, model_name, input_price_per_million_cents, output_price_per_million_cents, effective_from, created_at
-		 FROM ai_model_pricing ORDER BY model_name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var pricing []AIModelPricing
-	for rows.Next() {
-		var p AIModelPricing
-		if err := rows.Scan(&p.ID, &p.ModelName, &p.InputPricePerMillionCents, &p.OutputPricePerMillionCents, &p.EffectiveFrom, &p.CreatedAt); err != nil {
-			return nil, err
-		}
-		pricing = append(pricing, p)
-	}
-	return pricing, rows.Err()
-}
-
-func (db *DB) UpsertModelPricing(ctx context.Context, modelName string, inputPrice, outputPrice int64) error {
-	_, err := db.Pool.Exec(ctx,
-		`INSERT INTO ai_model_pricing (model_name, input_price_per_million_cents, output_price_per_million_cents)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (model_name) DO UPDATE SET
-		   input_price_per_million_cents = $2,
-		   output_price_per_million_cents = $3,
-		   effective_from = now()`,
-		modelName, inputPrice, outputPrice)
-	return err
-}
 
 // ── Cost Months ───────────────────────────────────────────────
 
@@ -1195,6 +1138,44 @@ func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 		users = append(users, u)
 	}
 	return users, rows.Err()
+}
+
+// ── Ticket Attachments ───────────────────────────────────────────
+
+func (db *DB) CreateAttachment(ctx context.Context, ticketID, fileName, filePath, contentType string, sizeBytes int64, uploadedBy string) (*TicketAttachment, error) {
+	var a TicketAttachment
+	err := db.Pool.QueryRow(ctx,
+		`INSERT INTO ticket_attachments (ticket_id, file_name, file_path, content_type, size_bytes, uploaded_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, ticket_id, file_name, file_path, content_type, size_bytes, uploaded_by, created_at`,
+		ticketID, fileName, filePath, contentType, sizeBytes, uploadedBy,
+	).Scan(&a.ID, &a.TicketID, &a.FileName, &a.FilePath, &a.ContentType, &a.SizeBytes, &a.UploadedBy, &a.CreatedAt)
+	return &a, err
+}
+
+func (db *DB) ListAttachmentsByTicket(ctx context.Context, ticketID string) ([]TicketAttachment, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, ticket_id, file_name, file_path, content_type, size_bytes, uploaded_by, created_at
+		 FROM ticket_attachments WHERE ticket_id = $1 ORDER BY created_at`, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var attachments []TicketAttachment
+	for rows.Next() {
+		var a TicketAttachment
+		if err := rows.Scan(&a.ID, &a.TicketID, &a.FileName, &a.FilePath, &a.ContentType, &a.SizeBytes, &a.UploadedBy, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, a)
+	}
+	return attachments, rows.Err()
+}
+
+func (db *DB) DeleteAttachment(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM ticket_attachments WHERE id = $1`, id)
+	return err
 }
 
 // ── Reactions ─────────────────────────────────────────────────────

@@ -318,44 +318,6 @@ func (h *CostHandler) DeleteCostItem(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// UpdateModelPricing upserts AI model pricing (superadmin only).
-func (h *CostHandler) UpdateModelPricing(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUser(r)
-	if user.Role != "superadmin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	modelName := strings.TrimSpace(r.FormValue("model_name"))
-	inputStr := r.FormValue("input_price")
-	outputStr := r.FormValue("output_price")
-
-	if modelName == "" || inputStr == "" || outputStr == "" {
-		http.Error(w, "All fields are required", http.StatusBadRequest)
-		return
-	}
-
-	inputPrice, err := strconv.ParseInt(inputStr, 10, 64)
-	if err != nil {
-		http.Error(w, "Invalid input price", http.StatusBadRequest)
-		return
-	}
-
-	outputPrice, err := strconv.ParseInt(outputStr, 10, 64)
-	if err != nil {
-		http.Error(w, "Invalid output price", http.StatusBadRequest)
-		return
-	}
-
-	if err := h.db.UpsertModelPricing(r.Context(), modelName, inputPrice, outputPrice); err != nil {
-		log.Printf("upserting model pricing: %v", err)
-		http.Error(w, "Failed to update pricing", http.StatusInternalServerError)
-		return
-	}
-
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
 func (h *CostHandler) loadOrgs(r *http.Request, user *models.User) []models.Organization {
 	var orgs []models.Organization
 	if auth.IsStaffOrAbove(user.Role) {

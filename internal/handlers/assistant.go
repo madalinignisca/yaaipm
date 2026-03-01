@@ -13,6 +13,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/madalin/forgedesk/internal/ai"
+	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
@@ -28,10 +29,11 @@ type AssistantHandler struct {
 	engine *render.Engine
 	gemini *ai.GeminiClient
 	hub    *ws.Hub
+	cfg    *config.Config
 }
 
-func NewAssistantHandler(db *models.DB, engine *render.Engine, gemini *ai.GeminiClient, hub *ws.Hub) *AssistantHandler {
-	return &AssistantHandler{db: db, engine: engine, gemini: gemini, hub: hub}
+func NewAssistantHandler(db *models.DB, engine *render.Engine, gemini *ai.GeminiClient, hub *ws.Hub, cfg *config.Config) *AssistantHandler {
+	return &AssistantHandler{db: db, engine: engine, gemini: gemini, hub: hub, cfg: cfg}
 }
 
 // ── WebSocket Message Types ──────────────────────────────────
@@ -453,8 +455,9 @@ func (h *AssistantHandler) recordAIUsage(ctx context.Context, user *models.User,
 		return
 	}
 
+	costCents := h.cfg.CalculateAICost(usage.Model, usage.InputTokens, usage.OutputTokens, usage.HasImageOutput)
 	if err := h.db.CreateAIUsageEntry(ctx, orgID, conv.ProjectID, user.ID, usage.Model, "Chat message",
-		int(usage.InputTokens), int(usage.OutputTokens), 0); err != nil {
+		int(usage.InputTokens), int(usage.OutputTokens), costCents); err != nil {
 		log.Printf("recording ai usage: %v", err)
 	}
 }

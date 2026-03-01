@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/madalin/forgedesk/internal/auth"
+	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/mail"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
@@ -44,7 +45,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	dashH := NewDashboardHandler(db, engine)
 	orgH := NewOrgHandler(db, engine, mailer, baseURL, nil)
 	projH := NewProjectHandler(db, engine)
-	ticketH := NewTicketHandler(db, engine, nil)
+	ticketH := NewTicketHandler(db, engine, nil, &config.Config{})
 	commentH := NewCommentHandler(db, engine)
 	adminH := NewAdminHandler(db, engine)
 	accountH := NewAccountHandler(db, sessions, engine)
@@ -53,7 +54,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	reactionH := NewReactionHandler(db, engine)
 	chatHub := ws.NewHub()
 	go chatHub.Run()
-	assistantH := NewAssistantHandler(db, engine, nil, chatHub) // nil gemini client — feature disabled in tests
+	assistantH := NewAssistantHandler(db, engine, nil, chatHub, &config.Config{}) // nil gemini client — feature disabled in tests
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recover)
@@ -106,7 +107,6 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireRole(auth.RoleSuperAdmin))
 			r.Get("/admin", adminH.AdminPage)
-			r.Post("/admin/pricing", costH.UpdateModelPricing)
 		})
 	})
 

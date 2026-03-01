@@ -32,17 +32,14 @@ func (h *AdminHandler) AdminPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pricing, _ := h.db.ListModelPricing(r.Context())
-
 	h.engine.Render(w, "admin.html", render.PageData{
 		Title:       "Admin Panel",
 		User:        user,
 		Orgs:        orgs,
 		CurrentPath: r.URL.Path,
 		Data: map[string]any{
-			"Users":   users,
-			"Orgs":    orgs,
-			"Pricing": pricing,
+			"Users": users,
+			"Orgs":  orgs,
 		},
 	})
 }

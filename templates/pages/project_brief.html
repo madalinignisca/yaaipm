@@ -91,7 +91,70 @@
     {{end}}
 </div>
 
+<style>
+.generate-image-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+}
+.generate-image-dialog {
+    background: var(--white); border-radius: var(--radius-lg); padding: var(--space-lg);
+    width: 90%; max-width: 28rem; box-shadow: var(--shadow-xl);
+}
+</style>
+
+<div x-data="imageGenModal()" x-show="open" x-cloak class="generate-image-overlay" @keydown.escape.window="open = false">
+    <div class="generate-image-dialog" @click.stop>
+        <h3 class="mb-md">Generate Image with AI</h3>
+        <div class="form-group mb-md">
+            <label class="form-label">Describe the image you want</label>
+            <textarea x-model="prompt" class="form-textarea" rows="3" placeholder="A clean diagram showing..."></textarea>
+        </div>
+        <div x-show="error" class="text-danger mb-sm" x-text="error"></div>
+        <div class="flex gap-sm justify-end">
+            <button @click="open = false" class="btn btn-secondary" :disabled="loading">Cancel</button>
+            <button @click="generate()" class="btn btn-primary" :disabled="loading || !prompt.trim()">
+                <span x-show="!loading">Generate</span>
+                <span x-show="loading">Generating...</span>
+            </button>
+        </div>
+    </div>
+</div>
+
 <script>
+var _imageGenEditor = null;
+var _imageGenProjectID = '{{.Project.ID}}';
+
+function imageGenModal() {
+    return {
+        open: false,
+        prompt: '',
+        loading: false,
+        error: '',
+        generate() {
+            this.loading = true;
+            this.error = '';
+            fetch('/api/generate-image', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({prompt: this.prompt, project_id: _imageGenProjectID})
+            })
+            .then(r => r.json())
+            .then(j => {
+                this.loading = false;
+                if (j.error) { this.error = j.error; return; }
+                if (j.data && j.data.filePath && _imageGenEditor) {
+                    var cm = _imageGenEditor.codemirror;
+                    var pos = cm.getCursor();
+                    cm.replaceRange('![' + this.prompt.substring(0, 40) + '](' + j.data.filePath + ')\n', pos);
+                }
+                this.open = false;
+                this.prompt = '';
+            })
+            .catch(e => { this.loading = false; this.error = e.message; });
+        }
+    };
+}
+
 function briefEditor() {
     return {
         editing: false,
@@ -110,12 +173,39 @@ function briefEditor() {
                         toolbar: [
                             'bold', 'italic', 'heading', '|',
                             'unordered-list', 'ordered-list', '|',
-                            'link', 'code', 'quote', '|',
-                            'preview', 'side-by-side', '|',
+                            'link', 'image', '|',
+                            'code', 'quote', '|',
+                            {
+                                name: 'generate-image',
+                                action: function() {
+                                    var evt = new CustomEvent('open-image-gen');
+                                    document.dispatchEvent(evt);
+                                },
+                                className: 'fa fa-magic',
+                                title: 'Generate image with AI',
+                                text: 'AI',
+                            },
+                            '|', 'preview', 'side-by-side', '|',
                             'guide'
                         ],
+                        uploadImage: true,
+                        imageUploadFunction: function(file, onSuccess, onError) {
+                            var fd = new FormData();
+                            fd.append('file', file);
+                            fd.append('project_id', _imageGenProjectID);
+                            fetch('/api/upload-image', { method: 'POST', body: fd })
+                                .then(function(r) { return r.json(); })
+                                .then(function(j) {
+                                    if (j.error) { onError(j.error); return; }
+                                    onSuccess(j.data.filePath);
+                                })
+                                .catch(function(e) { onError(e.message); });
+                        },
+                        imageAccept: 'image/png, image/jpeg, image/gif, image/webp',
+                        imageMaxSize: 10 * 1024 * 1024,
                         placeholder: 'Write your project brief using Markdown...',
                     });
+                    _imageGenEditor = this.easyMDE;
                 }
             });
         },
@@ -123,6 +213,7 @@ function briefEditor() {
             if (this.easyMDE) {
                 this.easyMDE.toTextArea();
                 this.easyMDE = null;
+                _imageGenEditor = null;
             }
             this.editing = false;
         },
@@ -133,6 +224,11 @@ function briefEditor() {
         }
     };
 }
+
+document.addEventListener('open-image-gen', function() {
+    var el = document.querySelector('[x-data="imageGenModal()"]');
+    if (el && el.__x) el.__x.$data.open = true;
+});
 </script>
 
 {{end}}

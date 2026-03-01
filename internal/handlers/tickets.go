@@ -10,6 +10,7 @@ import (
 
 	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/auth"
+	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
@@ -19,6 +20,7 @@ type TicketHandler struct {
 	db     *models.DB
 	engine *render.Engine
 	ai     titleGenerator
+	cfg    *config.Config
 }
 
 // titleGenerator generates a ticket title from a description.
@@ -26,14 +28,15 @@ type titleGenerator interface {
 	GenerateTitle(ctx context.Context, ticketType, description string) (string, *ai.UsageData, error)
 }
 
-func NewTicketHandler(db *models.DB, engine *render.Engine, ai titleGenerator) *TicketHandler {
-	return &TicketHandler{db: db, engine: engine, ai: ai}
+func NewTicketHandler(db *models.DB, engine *render.Engine, ai titleGenerator, cfg *config.Config) *TicketHandler {
+	return &TicketHandler{db: db, engine: engine, ai: ai, cfg: cfg}
 }
 
 type ticketDetailData struct {
 	Ticket           *models.Ticket
 	Children         []models.Ticket
 	Comments         []models.Comment
+	Attachments      []models.TicketAttachment
 	IsStaff          bool
 	TicketReactions  []models.ReactionGroup
 	CommentReactions map[string][]models.ReactionGroup
@@ -51,6 +54,7 @@ func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
 
 	children, _ := h.db.ListTicketsByParent(r.Context(), ticket.ID)
 	comments, _ := h.db.ListComments(r.Context(), ticket.ID)
+	attachments, _ := h.db.ListAttachmentsByTicket(r.Context(), ticket.ID)
 
 	// Load reactions for ticket
 	ticketReactions, _ := h.db.ListReactionGroups(r.Context(), "ticket", ticket.ID, user.ID)
@@ -88,6 +92,7 @@ func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
 			Ticket:           ticket,
 			Children:         children,
 			Comments:         comments,
+			Attachments:      attachments,
 			IsStaff:          auth.IsStaffOrAbove(user.Role),
 			TicketReactions:  ticketReactions,
 			CommentReactions: commentReactions,
@@ -177,6 +182,45 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("HX-Refresh", "true")
 	w.WriteHeader(http.StatusCreated)
+}
+
+func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
+	ticketID := r.PathValue("ticketID")
+
+	ticket, err := h.db.GetTicket(r.Context(), ticketID)
+	if err != nil {
+		http.Error(w, "Ticket not found", http.StatusNotFound)
+		return
+	}
+
+	if title := strings.TrimSpace(r.FormValue("title")); title != "" {
+		ticket.Title = title
+	}
+	if desc := r.FormValue("description"); r.Form.Has("description") {
+		ticket.DescriptionMarkdown = desc
+	}
+	if pri := r.FormValue("priority"); pri != "" {
+		ticket.Priority = pri
+	}
+	if ds := r.FormValue("date_start"); ds != "" {
+		if t, err := time.Parse("2006-01-02", ds); err == nil {
+			ticket.DateStart = &t
+		}
+	}
+	if de := r.FormValue("date_end"); de != "" {
+		if t, err := time.Parse("2006-01-02", de); err == nil {
+			ticket.DateEnd = &t
+		}
+	}
+
+	if err := h.db.UpdateTicket(r.Context(), ticket); err != nil {
+		log.Printf("updating ticket: %v", err)
+		http.Error(w, "Failed to update ticket", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *TicketHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
@@ -337,8 +381,9 @@ func (h *TicketHandler) recordAIUsage(ctx context.Context, user *models.User, pr
 		log.Printf("ai usage: project %s not found: %v", projectID, err)
 		return
 	}
+	costCents := h.cfg.CalculateAICost(usage.Model, usage.InputTokens, usage.OutputTokens, usage.HasImageOutput)
 	if err := h.db.CreateAIUsageEntry(ctx, proj.OrgID, &projectID, user.ID, usage.Model, label,
-		int(usage.InputTokens), int(usage.OutputTokens), 0); err != nil {
+		int(usage.InputTokens), int(usage.OutputTokens), costCents); err != nil {
 		log.Printf("recording ai usage: %v", err)
 	}
 }
