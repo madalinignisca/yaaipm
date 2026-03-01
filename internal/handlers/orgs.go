@@ -415,3 +415,39 @@ func (h *OrgHandler) UpdateAIMargin(w http.ResponseWriter, r *http.Request) {
 
 	http.Redirect(w, r, "/orgs/"+slug+"/settings", http.StatusSeeOther)
 }
+
+var allowedCurrencies = map[string]bool{
+	"EUR": true, "USD": true, "GBP": true, "CHF": true,
+	"SEK": true, "NOK": true, "DKK": true, "PLN": true,
+	"CZK": true, "RON": true, "HUF": true, "BGN": true,
+	"HRK": true, "JPY": true, "CAD": true, "AUD": true,
+}
+
+func (h *OrgHandler) UpdateCurrency(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	slug := r.PathValue("orgSlug")
+	org, err := h.db.GetOrgBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "Organization not found", http.StatusNotFound)
+		return
+	}
+
+	code := strings.ToUpper(strings.TrimSpace(r.FormValue("currency_code")))
+	if !allowedCurrencies[code] {
+		http.Error(w, "Invalid currency code", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.UpdateOrgCurrency(r.Context(), org.ID, code); err != nil {
+		log.Printf("updating currency: %v", err)
+		http.Error(w, "Failed to update currency", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/orgs/"+slug+"/settings", http.StatusSeeOther)
+}

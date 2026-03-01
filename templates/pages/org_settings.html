@@ -15,6 +15,32 @@
             <button type="submit" class="btn btn-primary btn-sm">Save</button>
         </form>
     </div>
+    <div class="card mb-lg">
+        <h2 class="mb-md">Display Currency</h2>
+        <p class="text-sm text-muted mb-md">Currency used to display costs for this organization. Does not convert amounts.</p>
+        <form method="POST" action="/orgs/{{.OrgSlug}}/settings/currency" class="flex items-center gap-md">
+            <select name="currency_code" class="form-select" style="width:auto">
+                {{$cur := $.Org.CurrencyCode}}
+                <option value="EUR" {{if eq $cur "EUR"}}selected{{end}}>EUR — €</option>
+                <option value="USD" {{if eq $cur "USD"}}selected{{end}}>USD — $</option>
+                <option value="GBP" {{if eq $cur "GBP"}}selected{{end}}>GBP — £</option>
+                <option value="CHF" {{if eq $cur "CHF"}}selected{{end}}>CHF</option>
+                <option value="SEK" {{if eq $cur "SEK"}}selected{{end}}>SEK</option>
+                <option value="NOK" {{if eq $cur "NOK"}}selected{{end}}>NOK</option>
+                <option value="DKK" {{if eq $cur "DKK"}}selected{{end}}>DKK</option>
+                <option value="PLN" {{if eq $cur "PLN"}}selected{{end}}>PLN</option>
+                <option value="CZK" {{if eq $cur "CZK"}}selected{{end}}>CZK</option>
+                <option value="RON" {{if eq $cur "RON"}}selected{{end}}>RON</option>
+                <option value="HUF" {{if eq $cur "HUF"}}selected{{end}}>HUF</option>
+                <option value="BGN" {{if eq $cur "BGN"}}selected{{end}}>BGN</option>
+                <option value="HRK" {{if eq $cur "HRK"}}selected{{end}}>HRK</option>
+                <option value="JPY" {{if eq $cur "JPY"}}selected{{end}}>JPY — ¥</option>
+                <option value="CAD" {{if eq $cur "CAD"}}selected{{end}}>CAD — $</option>
+                <option value="AUD" {{if eq $cur "AUD"}}selected{{end}}>AUD — $</option>
+            </select>
+            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        </form>
+    </div>
     {{end}}
 
     {{if .CanManage}}

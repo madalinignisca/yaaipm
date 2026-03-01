@@ -1,0 +1,1 @@
+ALTER TABLE organizations ADD COLUMN currency_code VARCHAR(3) NOT NULL DEFAULT 'EUR';

@@ -180,6 +180,7 @@ func main() {
 		r.Delete("/orgs/{orgSlug}/members/{userID}", orgH.RemoveMember)
 		r.Patch("/orgs/{orgSlug}/members/{userID}/role", orgH.UpdateMemberRole)
 		r.Post("/orgs/{orgSlug}/settings/margin", orgH.UpdateAIMargin)
+		r.Post("/orgs/{orgSlug}/settings/currency", orgH.UpdateCurrency)
 
 		// Projects
 		r.Post("/orgs/{orgSlug}/projects", projH.CreateProject)

@@ -237,9 +237,9 @@ func (db *DB) HasPendingInvitation(ctx context.Context, email, orgID string) (bo
 func (db *DB) CreateOrg(ctx context.Context, name, slug string) (*Organization, error) {
 	o := &Organization{}
 	err := db.Pool.QueryRow(ctx,
-		`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, name, slug, ai_margin_percent, created_at, updated_at`,
+		`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, name, slug, ai_margin_percent, currency_code, created_at, updated_at`,
 		name, slug,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt)
+	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("creating org: %w", err)
 	}
@@ -249,8 +249,8 @@ func (db *DB) CreateOrg(ctx context.Context, name, slug string) (*Organization, 
 func (db *DB) GetOrgBySlug(ctx context.Context, slug string) (*Organization, error) {
 	o := &Organization{}
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, name, slug, ai_margin_percent, created_at, updated_at FROM organizations WHERE slug = $1`, slug,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt)
+		`SELECT id, name, slug, ai_margin_percent, currency_code, created_at, updated_at FROM organizations WHERE slug = $1`, slug,
+	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -260,8 +260,8 @@ func (db *DB) GetOrgBySlug(ctx context.Context, slug string) (*Organization, err
 func (db *DB) GetOrgByID(ctx context.Context, id string) (*Organization, error) {
 	o := &Organization{}
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, name, slug, ai_margin_percent, created_at, updated_at FROM organizations WHERE id = $1`, id,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt)
+		`SELECT id, name, slug, ai_margin_percent, currency_code, created_at, updated_at FROM organizations WHERE id = $1`, id,
+	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +270,7 @@ func (db *DB) GetOrgByID(ctx context.Context, id string) (*Organization, error) 
 
 func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT o.id, o.name, o.slug, o.ai_margin_percent, o.created_at, o.updated_at
+		`SELECT o.id, o.name, o.slug, o.ai_margin_percent, o.currency_code, o.created_at, o.updated_at
 		 FROM organizations o
 		 JOIN org_memberships m ON m.org_id = o.id
 		 WHERE m.user_id = $1
@@ -283,7 +283,7 @@ func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, 
 	var orgs []Organization
 	for rows.Next() {
 		var o Organization
-		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		orgs = append(orgs, o)
@@ -293,7 +293,7 @@ func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, 
 
 func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, name, slug, ai_margin_percent, created_at, updated_at FROM organizations ORDER BY name`)
+		`SELECT id, name, slug, ai_margin_percent, currency_code, created_at, updated_at FROM organizations ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +302,7 @@ func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	var orgs []Organization
 	for rows.Next() {
 		var o Organization
-		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, err
 		}
 		orgs = append(orgs, o)
@@ -397,6 +397,13 @@ func (db *DB) UpdateOrgAIMargin(ctx context.Context, orgID string, marginPercent
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE organizations SET ai_margin_percent = $1, updated_at = now() WHERE id = $2`,
 		marginPercent, orgID)
+	return err
+}
+
+func (db *DB) UpdateOrgCurrency(ctx context.Context, orgID, currencyCode string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE organizations SET currency_code = $1, updated_at = now() WHERE id = $2`,
+		currencyCode, orgID)
 	return err
 }
 

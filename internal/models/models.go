@@ -22,6 +22,7 @@ type Organization struct {
 	Name            string    `db:"name"`
 	Slug            string    `db:"slug"`
 	AIMarginPercent int       `db:"ai_margin_percent"`
+	CurrencyCode    string    `db:"currency_code"`
 	CreatedAt       time.Time `db:"created_at"`
 	UpdatedAt       time.Time `db:"updated_at"`
 }

@@ -35,18 +35,18 @@ func TestParseDollarsToCents(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			got, err := parseDollarsToCents(tc.input)
+			got, err := parseToCents(tc.input)
 			if tc.wantErr {
 				if err == nil {
-					t.Errorf("parseDollarsToCents(%q) expected error, got %d", tc.input, got)
+					t.Errorf("parseToCents(%q) expected error, got %d", tc.input, got)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("parseDollarsToCents(%q) unexpected error: %v", tc.input, err)
+				t.Fatalf("parseToCents(%q) unexpected error: %v", tc.input, err)
 			}
 			if got != tc.want {
-				t.Errorf("parseDollarsToCents(%q) = %d, want %d", tc.input, got, tc.want)
+				t.Errorf("parseToCents(%q) = %d, want %d", tc.input, got, tc.want)
 			}
 		})
 	}

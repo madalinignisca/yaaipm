@@ -32,14 +32,14 @@
                         <tr>
                             <td class="cost-category">{{humanize .Category}}</td>
                             <td>{{if .Name}}{{.Name}}{{else}}<span class="text-muted">—</span>{{end}}</td>
-                            <td style="text-align:right;font-weight:500">{{formatCents .AmountCents}}</td>
+                            <td style="text-align:right;font-weight:500">{{formatCents .AmountCents $.Org.CurrencyCode}}</td>
                         </tr>
                         {{end}}
                     </tbody>
                     <tfoot>
                         <tr>
                             <td colspan="2" style="font-weight:600">Project Subtotal</td>
-                            <td style="text-align:right;font-weight:600">{{formatCents .InfraTotal}}</td>
+                            <td style="text-align:right;font-weight:600">{{formatCents .InfraTotal $.Org.CurrencyCode}}</td>
                         </tr>
                     </tfoot>
                 </table>
@@ -81,7 +81,7 @@
                         <td style="text-align:right">{{.InputTokens}}</td>
                         <td style="text-align:right">{{.OutputTokens}}</td>
                         {{end}}
-                        <td style="text-align:right;font-weight:500">{{formatCents .TotalCents}}</td>
+                        <td style="text-align:right;font-weight:500">{{formatCents .TotalCents $.Org.CurrencyCode}}</td>
                     </tr>
                     {{end}}
                 </tbody>
@@ -90,13 +90,13 @@
                         <td colspan="{{if .CanEdit}}5{{else}}2{{end}}" style="font-weight:600">AI Subtotal</td>
                         {{if .CanEdit}}
                         <td style="text-align:right;font-weight:600">
-                            {{formatCents .AITotal}}
+                            {{formatCents .AITotal $.Org.CurrencyCode}}
                             {{if gt .AIMargin 0}}
-                            <span class="text-sm text-muted" style="display:block">(billed: {{formatCents .AITotalWithMargin}} at +{{.AIMargin}}%)</span>
+                            <span class="text-sm text-muted" style="display:block">(billed: {{formatCents .AITotalWithMargin $.Org.CurrencyCode}} at +{{.AIMargin}}%)</span>
                             {{end}}
                         </td>
                         {{else}}
-                        <td style="text-align:right;font-weight:600">{{formatCents .AITotalWithMargin}}</td>
+                        <td style="text-align:right;font-weight:600">{{formatCents .AITotalWithMargin $.Org.CurrencyCode}}</td>
                         {{end}}
                     </tr>
                 </tfoot>
@@ -112,7 +112,7 @@
     <!-- Grand Total -->
     <div class="card" style="text-align:right">
         <span class="text-muted" style="margin-right:.5rem">Total for {{.Month}}:</span>
-        <span class="cost-total">{{formatCents .GrandTotal}}</span>
+        <span class="cost-total">{{formatCents .GrandTotal $.Org.CurrencyCode}}</span>
     </div>
 </div>
 {{end}}

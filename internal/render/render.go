@@ -129,8 +129,12 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		"strList": func(items ...string) []string {
 			return items
 		},
-		"formatCents": func(cents int64) string {
-			return fmt.Sprintf("$%.2f", float64(cents)/100.0)
+		"formatCents": func(cents int64, currency ...string) string {
+			code := "EUR"
+			if len(currency) > 0 && currency[0] != "" {
+				code = currency[0]
+			}
+			return fmt.Sprintf("%s%.2f", currencySymbol(code), float64(cents)/100.0)
 		},
 		"humanize": func(s string) string {
 			return strings.ReplaceAll(s, "_", " ")
@@ -217,6 +221,24 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 	}
 
 	return e, nil
+}
+
+// currencySymbol returns the display symbol/prefix for a currency code.
+func currencySymbol(code string) string {
+	switch code {
+	case "EUR":
+		return "€"
+	case "USD", "CAD", "AUD":
+		return "$"
+	case "GBP":
+		return "£"
+	case "JPY", "CNY":
+		return "¥"
+	case "CHF", "SEK", "NOK", "DKK", "PLN", "CZK", "RON", "HUF", "BGN", "HRK":
+		return code + " "
+	default:
+		return code + " "
+	}
 }
 
 // Render renders a full page (with layout).

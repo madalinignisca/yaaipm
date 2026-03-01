@@ -236,7 +236,7 @@ func (h *CostHandler) AddCostItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	amountCents, err := parseDollarsToCents(amountStr)
+	amountCents, err := parseToCents(amountStr)
 	if err != nil {
 		http.Error(w, "Invalid amount", http.StatusBadRequest)
 		return
@@ -263,7 +263,7 @@ func (h *CostHandler) UpdateCostItem(w http.ResponseWriter, r *http.Request) {
 	costID := chi.URLParam(r, "costID")
 	amountStr := r.FormValue("amount")
 
-	amountCents, err := parseDollarsToCents(amountStr)
+	amountCents, err := parseToCents(amountStr)
 	if err != nil {
 		http.Error(w, "Invalid amount", http.StatusBadRequest)
 		return
@@ -328,10 +328,14 @@ func (h *CostHandler) loadOrgs(r *http.Request, user *models.User) []models.Orga
 	return orgs
 }
 
-// parseDollarsToCents converts a dollar string like "12.50" to cents (1250).
-func parseDollarsToCents(s string) (int64, error) {
+// parseToCents converts a currency string like "12.50" or "€12.50" to cents (1250).
+func parseToCents(s string) (int64, error) {
 	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "$")
+	// Strip common currency symbols
+	for _, sym := range []string{"$", "€", "£", "¥"} {
+		s = strings.TrimPrefix(s, sym)
+	}
+	s = strings.TrimSpace(s)
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return 0, err
