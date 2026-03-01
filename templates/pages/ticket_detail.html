@@ -1,6 +1,5 @@
 {{define "page_head"}}
 <link rel="stylesheet" href="{{asset "css/easymde.min.css"}}">
-<script src="{{asset "js/easymde.min.js"}}" defer></script>
 {{end}}
 
 {{define "content"}}
@@ -261,8 +260,10 @@ function ticketEditor() {
                             {
                                 name: 'insert-image',
                                 action: function(editor) {
-                                    var el = document.querySelector('[x-data="imageInsertModal()"]');
-                                    if (el && el.__x) el.__x.$data.openModal(editor, _imageGenProjectID);
+                                    document.dispatchEvent(new CustomEvent('open-image-modal', {
+                                        bubbles: true,
+                                        detail: { editor: editor, projectID: _imageGenProjectID }
+                                    }));
                                 },
                                 className: 'fa fa-image',
                                 title: 'Insert Image',

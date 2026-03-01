@@ -983,6 +983,87 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
 .prose th { background: var(--gray-50); font-weight: 600; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .03em; color: var(--gray-500); }
 .prose tr:last-child td { border-bottom: none; }
 
+/* Mermaid diagrams */
+.prose .mermaid {
+  display: flex;
+  justify-content: center;
+  background: var(--gray-50);
+  padding: 1.5rem;
+  border-radius: var(--radius-md);
+  overflow: auto;
+  margin: .75rem 0;
+  color: var(--gray-800);
+}
+
+/* Task list checkboxes (GFM - [ ] / - [x]) */
+.prose .task-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.prose .task-list li {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+}
+
+.prose .task-list li input[type="checkbox"] {
+  appearance: auto;
+  margin: 0;
+  flex-shrink: 0;
+  position: relative;
+  top: .1em;
+}
+
+/* Footnotes */
+.prose .footnotes {
+  border-top: 1px solid var(--gray-200);
+  margin-top: 2rem;
+  padding-top: 1rem;
+  font-size: var(--text-xs);
+  color: var(--gray-500);
+}
+
+.prose .footnotes ol {
+  padding-left: 1.25rem;
+}
+
+.prose .footnotes li {
+  margin-bottom: .25rem;
+}
+
+/* Definition lists */
+.prose dl {
+  margin: .75rem 0;
+}
+
+.prose dt {
+  font-weight: 600;
+  color: var(--gray-900);
+  margin-top: .5rem;
+}
+
+.prose dt:first-child {
+  margin-top: 0;
+}
+
+.prose dd {
+  margin-left: 1.5rem;
+  color: var(--gray-600);
+}
+
+/* Strikethrough */
+.prose del {
+  text-decoration: line-through;
+  color: var(--gray-400);
+}
+
+/* Syntax highlighting — override chroma background to match design system */
+.prose .chroma {
+  background: var(--gray-800);
+  color: var(--gray-100);
+}
+
 .prose-empty {
   color: var(--gray-400);
   font-style: italic;

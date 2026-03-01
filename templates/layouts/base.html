@@ -6,10 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}} — ForgeDesk</title>
     <link rel="stylesheet" href="{{asset "css/app.css"}}">
-    <script src="{{asset "js/htmx.min.js"}}" defer></script>
-    <script src="{{asset "js/marked.min.js"}}" defer></script>
-    <script src="{{asset "js/assistant.js"}}" defer></script>
-    <script src="{{asset "js/alpine.min.js"}}" defer></script>
+    {{highlightCSS}}
+    <script src="{{asset "js/bundle.js"}}" defer></script>
     {{block "page_head" .}}{{end}}
 </head>
 <body hx-boost="true">

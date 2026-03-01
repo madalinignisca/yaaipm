@@ -1,5 +1,5 @@
 {{define "image_modal"}}
-<div x-data="imageInsertModal()" x-show="open" x-cloak class="modal-overlay" @keydown.escape.window="open && closeModal()" aria-modal="true">
+<div x-data="imageInsertModal()" x-show="open" x-cloak class="modal-overlay" @keydown.escape.window="open && closeModal()" @open-image-modal.window="openModal($event.detail.editor, $event.detail.projectID)" aria-modal="true">
     <div class="modal-backdrop" @click="closeModal()"></div>
     <div class="modal-card modal-card-wide" @click.stop>
         <!-- Header -->

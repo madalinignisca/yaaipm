@@ -10,10 +10,14 @@ import (
 	"strings"
 	"time"
 
+	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/static"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/util"
+	highlighting "github.com/yuin/goldmark-highlighting/v2"
 )
 
 type Engine struct {
@@ -48,9 +52,52 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		return "/static/" + logical
 	}
 
-	md := goldmark.New(goldmark.WithExtensions(extension.Table))
+	// Generate syntax highlighting CSS once at startup.
+	chromaStyle := styles.Get("dracula")
+	if chromaStyle == nil {
+		chromaStyle = styles.Fallback
+	}
+	chromaFmt := chromahtml.New(chromahtml.WithClasses(true))
+	var cssBuf bytes.Buffer
+	_ = chromaFmt.WriteCSS(&cssBuf, chromaStyle)
+	highlightCSSStr := cssBuf.String()
+
+	md := goldmark.New(goldmark.WithExtensions(
+		extension.Table,
+		extension.Strikethrough,
+		extension.Linkify,
+		extension.TaskList,
+		extension.DefinitionList,
+		extension.Footnote,
+		extension.Typographer,
+		highlighting.NewHighlighting(
+			highlighting.WithStyle("dracula"),
+			highlighting.WithFormatOptions(
+				chromahtml.WithClasses(true),
+			),
+			highlighting.WithWrapperRenderer(func(w util.BufWriter, c highlighting.CodeBlockContext, entering bool) {
+				lang, _ := c.Language()
+				if string(lang) == "mermaid" {
+					if entering {
+						w.WriteString(`<pre class="mermaid">`)
+					} else {
+						w.WriteString("</pre>")
+					}
+					return
+				}
+				if entering {
+					w.WriteString("<pre class=\"chroma\"><code>")
+				} else {
+					w.WriteString("</code></pre>")
+				}
+			}),
+		),
+	))
 
 	funcMap := template.FuncMap{
+		"highlightCSS": func() template.HTML {
+			return template.HTML("<style>" + highlightCSSStr + "</style>")
+		},
 		"asset": assetFunc,
 		"markdown": func(src string) template.HTML {
 			var buf bytes.Buffer

@@ -15,6 +15,32 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
 
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    tmpfs:
+      - /data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb local/forgedesk-test --ignore-existing &&
+      mc anonymous set download local/forgedesk-test
+      "
+
   migrate:
     image: migrate/migrate:v4.18.1
     depends_on:
@@ -31,6 +57,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgres://testuser:testpass@postgres:5432/forgedesk_test?sslmode=disable
       SESSION_SECRET: test-session-secret-32-chars-long!
@@ -38,6 +66,12 @@ services:
       LISTEN_ADDR: ":8080"
       APP_URL: "http://localhost:8081"
       WEBAUTHN_RPID: "localhost"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY_ID: "minioadmin"
+      S3_SECRET_ACCESS_KEY: "minioadmin"
+      S3_REGION: "us-east-1"
+      S3_PUBLIC_BUCKET: "forgedesk-test"
+      S3_FORCE_PATH_STYLE: "true"
     ports:
       - "8081:8080"
     healthcheck:

@@ -6,7 +6,7 @@
 # Go
 /forgedesk
 /orchestrator
-vendor/
+/vendor/
 
 # Tailwind
 node_modules/
@@ -25,6 +25,7 @@ Thumbs.db
 # Build artifacts
 /tmp/
 /dist/
+static/js/bundle.js
 
 # E2E test artifacts
 e2e/test-results/
