@@ -13,6 +13,7 @@ import (
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/static"
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 )
 
 type Engine struct {
@@ -47,7 +48,7 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		return "/static/" + logical
 	}
 
-	md := goldmark.New()
+	md := goldmark.New(goldmark.WithExtensions(extension.Table))
 
 	funcMap := template.FuncMap{
 		"asset": assetFunc,
