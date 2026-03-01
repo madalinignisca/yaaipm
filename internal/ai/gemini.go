@@ -148,8 +148,10 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 }
 
 // StreamChat sends messages to Gemini with streaming and handles tool calling loops.
-// onChunk is called with each text chunk from the model.
-// Returns token usage data from the final response chunk.
+// It uses GenerateContentStream directly (not the Chat abstraction) to maintain
+// full control over the content array, avoiding issues where the SDK's internal
+// history curation drops function call turns when thinking mode produces chunks
+// with empty content.
 func (g *GeminiClient) StreamChat(ctx context.Context, opts ChatOpts, onChunk func(text string)) (*UsageData, error) {
 	thinking := opts.ThinkingLevel
 	if thinking == "" {
@@ -172,25 +174,17 @@ func (g *GeminiClient) StreamChat(ctx context.Context, opts ChatOpts, onChunk fu
 		return nil, fmt.Errorf("no messages in history")
 	}
 
-	// Split: all but last message as history, last message sent via SendStream
-	lastMsg := opts.History[len(opts.History)-1]
-	history := opts.History[:len(opts.History)-1]
+	// We manage the content array ourselves so that function call/response
+	// turns are always preserved, regardless of how the SDK validates chunks.
+	contents := make([]*genai.Content, len(opts.History))
+	copy(contents, opts.History)
 
-	chat, err := g.client.Chats.Create(ctx, g.Models.Chat, config, history)
-	if err != nil {
-		return nil, fmt.Errorf("creating chat: %w", err)
-	}
-
-	return g.streamWithToolLoop(ctx, chat, lastMsg.Parts, opts.Executor, onChunk)
-}
-
-// streamWithToolLoop handles streaming response and tool call loops.
-func (g *GeminiClient) streamWithToolLoop(ctx context.Context, chat *genai.Chat, parts []*genai.Part, executor ToolExecutor, onChunk func(text string)) (*UsageData, error) {
 	var lastUsage *UsageData
 	for {
-		stream := chat.SendStream(ctx, parts...)
+		stream := g.client.Models.GenerateContentStream(ctx, g.Models.Chat, contents, config)
 
 		var functionCalls []*genai.FunctionCall
+		var modelParts []*genai.Part
 		for chunk, err := range stream {
 			if err != nil {
 				return lastUsage, fmt.Errorf("streaming: %w", err)
@@ -200,7 +194,6 @@ func (g *GeminiClient) streamWithToolLoop(ctx context.Context, chat *genai.Chat,
 				continue
 			}
 
-			// Capture cumulative usage from final chunk
 			if chunk.UsageMetadata != nil {
 				lastUsage = &UsageData{
 					InputTokens:  chunk.UsageMetadata.PromptTokenCount,
@@ -221,6 +214,7 @@ func (g *GeminiClient) streamWithToolLoop(ctx context.Context, chat *genai.Chat,
 				if part.FunctionCall != nil {
 					functionCalls = append(functionCalls, part.FunctionCall)
 				}
+				modelParts = append(modelParts, part)
 			}
 		}
 
@@ -229,12 +223,18 @@ func (g *GeminiClient) streamWithToolLoop(ctx context.Context, chat *genai.Chat,
 			return lastUsage, nil
 		}
 
-		// Execute tool calls and send results back
+		// Append the model's response (with function calls) to contents
+		contents = append(contents, &genai.Content{
+			Role:  "model",
+			Parts: modelParts,
+		})
+
+		// Execute tool calls and build function response parts
 		var responseParts []*genai.Part
 		for _, call := range functionCalls {
 			log.Printf("AI tool call: %s(%v)", call.Name, call.Args)
 
-			result, err := executor.Execute(ctx, call.Name, call.Args)
+			result, err := opts.Executor.Execute(ctx, call.Name, call.Args)
 			if err != nil {
 				result = map[string]any{"error": err.Error()}
 			}
@@ -242,8 +242,11 @@ func (g *GeminiClient) streamWithToolLoop(ctx context.Context, chat *genai.Chat,
 			responseParts = append(responseParts, genai.NewPartFromFunctionResponse(call.Name, result))
 		}
 
-		// Continue the loop with function responses
-		parts = responseParts
+		// Append function responses as a user turn, then loop for next model response
+		contents = append(contents, &genai.Content{
+			Role:  "user",
+			Parts: responseParts,
+		})
 	}
 }
 
