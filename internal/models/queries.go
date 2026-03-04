@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -234,12 +235,40 @@ func (db *DB) HasPendingInvitation(ctx context.Context, email, orgID string) (bo
 
 // ── Organizations ─────────────────────────────────────────────────
 
+// orgColumns is the column list for all organization queries.
+const orgColumns = `id, name, slug, ai_margin_percent, currency_code,
+	business_name, vat_number, registration_number,
+	address_street, address_extra, postal_code, city, country,
+	contact_phones, contact_emails,
+	created_at, updated_at`
+
+// prefixColumns adds a table alias prefix to each column in a comma-separated list.
+// e.g. prefixColumns("o", "id, name") → "o.id, o.name"
+func prefixColumns(alias, cols string) string {
+	parts := strings.Split(cols, ",")
+	for i, p := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(p)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// scanOrg scans a row into an Organization struct. Column order must match orgColumns.
+func scanOrg(scanner interface{ Scan(dest ...any) error }, o *Organization) error {
+	return scanner.Scan(
+		&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode,
+		&o.BusinessName, &o.VATNumber, &o.RegistrationNumber,
+		&o.AddressStreet, &o.AddressExtra, &o.PostalCode, &o.City, &o.Country,
+		&o.ContactPhones, &o.ContactEmails,
+		&o.CreatedAt, &o.UpdatedAt,
+	)
+}
+
 func (db *DB) CreateOrg(ctx context.Context, name, slug string) (*Organization, error) {
 	o := &Organization{}
-	err := db.Pool.QueryRow(ctx,
-		`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, name, slug, ai_margin_percent, currency_code, created_at, updated_at`,
+	err := scanOrg(db.Pool.QueryRow(ctx,
+		`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING `+orgColumns,
 		name, slug,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt)
+	), o)
 	if err != nil {
 		return nil, fmt.Errorf("creating org: %w", err)
 	}
@@ -248,9 +277,9 @@ func (db *DB) CreateOrg(ctx context.Context, name, slug string) (*Organization, 
 
 func (db *DB) GetOrgBySlug(ctx context.Context, slug string) (*Organization, error) {
 	o := &Organization{}
-	err := db.Pool.QueryRow(ctx,
-		`SELECT id, name, slug, ai_margin_percent, currency_code, created_at, updated_at FROM organizations WHERE slug = $1`, slug,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt)
+	err := scanOrg(db.Pool.QueryRow(ctx,
+		`SELECT `+orgColumns+` FROM organizations WHERE slug = $1`, slug,
+	), o)
 	if err != nil {
 		return nil, err
 	}
@@ -259,9 +288,9 @@ func (db *DB) GetOrgBySlug(ctx context.Context, slug string) (*Organization, err
 
 func (db *DB) GetOrgByID(ctx context.Context, id string) (*Organization, error) {
 	o := &Organization{}
-	err := db.Pool.QueryRow(ctx,
-		`SELECT id, name, slug, ai_margin_percent, currency_code, created_at, updated_at FROM organizations WHERE id = $1`, id,
-	).Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt)
+	err := scanOrg(db.Pool.QueryRow(ctx,
+		`SELECT `+orgColumns+` FROM organizations WHERE id = $1`, id,
+	), o)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +299,7 @@ func (db *DB) GetOrgByID(ctx context.Context, id string) (*Organization, error) 
 
 func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT o.id, o.name, o.slug, o.ai_margin_percent, o.currency_code, o.created_at, o.updated_at
+		`SELECT `+prefixColumns("o", orgColumns)+`
 		 FROM organizations o
 		 JOIN org_memberships m ON m.org_id = o.id
 		 WHERE m.user_id = $1
@@ -283,7 +312,7 @@ func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, 
 	var orgs []Organization
 	for rows.Next() {
 		var o Organization
-		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := scanOrg(rows, &o); err != nil {
 			return nil, err
 		}
 		orgs = append(orgs, o)
@@ -293,7 +322,7 @@ func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, 
 
 func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, name, slug, ai_margin_percent, currency_code, created_at, updated_at FROM organizations ORDER BY name`)
+		`SELECT `+orgColumns+` FROM organizations ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -302,12 +331,72 @@ func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	var orgs []Organization
 	for rows.Next() {
 		var o Organization
-		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.AIMarginPercent, &o.CurrencyCode, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := scanOrg(rows, &o); err != nil {
 			return nil, err
 		}
 		orgs = append(orgs, o)
 	}
 	return orgs, rows.Err()
+}
+
+func (db *DB) UpdateOrgBusinessDetails(ctx context.Context, orgID string, businessName, vatNumber, registrationNumber, addressStreet, addressExtra, postalCode, city, country, contactPhones, contactEmails string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE organizations SET
+			business_name = $2, vat_number = $3, registration_number = $4,
+			address_street = $5, address_extra = $6, postal_code = $7,
+			city = $8, country = $9,
+			contact_phones = $10, contact_emails = $11,
+			updated_at = now()
+		 WHERE id = $1`,
+		orgID, businessName, vatNumber, registrationNumber,
+		addressStreet, addressExtra, postalCode, city, country,
+		contactPhones, contactEmails,
+	)
+	if err != nil {
+		return fmt.Errorf("updating org business details: %w", err)
+	}
+	return nil
+}
+
+// --- Platform Settings ---
+
+func (db *DB) GetPlatformSettings(ctx context.Context) (*PlatformSettings, error) {
+	s := &PlatformSettings{}
+	err := db.Pool.QueryRow(ctx,
+		`SELECT business_name, vat_number, registration_number,
+			address_street, address_extra, postal_code, city, country,
+			contact_phones, contact_emails,
+			created_at, updated_at
+		 FROM platform_settings WHERE id = 1`,
+	).Scan(
+		&s.BusinessName, &s.VATNumber, &s.RegistrationNumber,
+		&s.AddressStreet, &s.AddressExtra, &s.PostalCode, &s.City, &s.Country,
+		&s.ContactPhones, &s.ContactEmails,
+		&s.CreatedAt, &s.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("getting platform settings: %w", err)
+	}
+	return s, nil
+}
+
+func (db *DB) UpdatePlatformSettings(ctx context.Context, businessName, vatNumber, registrationNumber, addressStreet, addressExtra, postalCode, city, country, contactPhones, contactEmails string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE platform_settings SET
+			business_name = $1, vat_number = $2, registration_number = $3,
+			address_street = $4, address_extra = $5, postal_code = $6,
+			city = $7, country = $8,
+			contact_phones = $9, contact_emails = $10,
+			updated_at = now()
+		 WHERE id = 1`,
+		businessName, vatNumber, registrationNumber,
+		addressStreet, addressExtra, postalCode, city, country,
+		contactPhones, contactEmails,
+	)
+	if err != nil {
+		return fmt.Errorf("updating platform settings: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) AddOrgMember(ctx context.Context, userID, orgID, role string) error {
@@ -413,9 +502,9 @@ func (db *DB) CreateProject(ctx context.Context, orgID, name, slug string) (*Pro
 	p := &Project{}
 	err := db.Pool.QueryRow(ctx,
 		`INSERT INTO projects (org_id, name, slug) VALUES ($1, $2, $3)
-		 RETURNING id, org_id, name, slug, brief_markdown, created_at, updated_at`,
+		 RETURNING id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at`,
 		orgID, name, slug,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("creating project: %w", err)
 	}
@@ -425,9 +514,9 @@ func (db *DB) CreateProject(ctx context.Context, orgID, name, slug string) (*Pro
 func (db *DB) GetProject(ctx context.Context, orgID, slug string) (*Project, error) {
 	p := &Project{}
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, created_at, updated_at
+		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
 		 FROM projects WHERE org_id = $1 AND slug = $2`, orgID, slug,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -437,9 +526,9 @@ func (db *DB) GetProject(ctx context.Context, orgID, slug string) (*Project, err
 func (db *DB) GetProjectByID(ctx context.Context, id string) (*Project, error) {
 	p := &Project{}
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, created_at, updated_at
+		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
 		 FROM projects WHERE id = $1`, id,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -448,7 +537,7 @@ func (db *DB) GetProjectByID(ctx context.Context, id string) (*Project, error) {
 
 func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, created_at, updated_at
+		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
 		 FROM projects WHERE org_id = $1 ORDER BY name`, orgID)
 	if err != nil {
 		return nil, err
@@ -458,7 +547,7 @@ func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error)
 	var projects []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		projects = append(projects, p)
@@ -469,6 +558,12 @@ func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error)
 func (db *DB) UpdateProjectBrief(ctx context.Context, projectID, brief string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE projects SET brief_markdown = $1, updated_at = now() WHERE id = $2`, brief, projectID)
+	return err
+}
+
+func (db *DB) UpdateProjectRepoURL(ctx context.Context, projectID, repoURL string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE projects SET repo_url = $1, updated_at = now() WHERE id = $2`, repoURL, projectID)
 	return err
 }
 
@@ -1031,7 +1126,7 @@ func (db *DB) ListOrgCostsByMonth(ctx context.Context, orgID, month string) ([]P
 
 // ── AI Usage ──────────────────────────────────────────────────
 
-func (db *DB) CreateAIUsageEntry(ctx context.Context, orgID string, projectID *string, userID, model, label string, inputTokens, outputTokens int, costCents int64) error {
+func (db *DB) CreateAIUsageEntry(ctx context.Context, orgID string, projectID *string, userID *string, model, label string, inputTokens, outputTokens int, costCents int64) error {
 	_, err := db.Pool.Exec(ctx,
 		`INSERT INTO ai_usage_entries (org_id, project_id, user_id, model, label, input_tokens, output_tokens, cost_cents)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,

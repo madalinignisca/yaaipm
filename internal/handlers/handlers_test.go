@@ -43,7 +43,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 
 	authH := NewAuthHandler(db, sessions, engine, aesKey, false)
 	dashH := NewDashboardHandler(db, engine)
-	orgH := NewOrgHandler(db, engine, mailer, baseURL, nil)
+	orgH := NewOrgHandler(db, engine, sessions, mailer, baseURL, nil)
 	projH := NewProjectHandler(db, engine)
 	ticketH := NewTicketHandler(db, engine, nil, &config.Config{})
 	commentH := NewCommentHandler(db, engine)
@@ -80,9 +80,11 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Post("/account/email", accountH.ChangeEmail)
 		r.Post("/invitations/{invitationID}/accept", inviteH.AcceptInvitation)
 		r.Post("/invitations/{invitationID}/decline", inviteH.DeclineInvitation)
+		r.Post("/switch-org", orgH.SwitchOrg)
 		r.Post("/orgs", orgH.CreateOrg)
 		r.Get("/orgs/{orgSlug}", orgH.OrgPage)
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
+		r.Post("/orgs/{orgSlug}/settings/business", orgH.UpdateBusinessDetails)
 		r.Post("/orgs/{orgSlug}/invitations", orgH.InviteMember)
 		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
 		r.Post("/orgs/{orgSlug}/projects", projH.CreateProject)
@@ -107,6 +109,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireRole(auth.RoleSuperAdmin))
 			r.Get("/admin", adminH.AdminPage)
+			r.Post("/admin/settings/business", adminH.UpdatePlatformBusiness)
 		})
 	})
 

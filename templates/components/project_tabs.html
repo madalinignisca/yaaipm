@@ -13,6 +13,8 @@
     {{if .IsStaff}}
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/archived"
        class="tab-link {{if eq .Tab "archived"}}active{{end}}">Archived</a>
+    <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/settings"
+       class="tab-link {{if eq .Tab "settings"}}active{{end}}">Settings</a>
     {{end}}
 </nav>
 {{end}}

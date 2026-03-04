@@ -18,17 +18,81 @@
                 <a href="/">ForgeDesk</a>
             </div>
 
-            {{if .Orgs}}
             <nav class="sidebar-nav">
-                <div class="sidebar-section-label">Organizations</div>
-                {{range .Orgs}}
-                <a href="/orgs/{{.Slug}}"
-                   class="sidebar-link {{if and $.Org (eq $.Org.Slug .Slug)}}active{{end}}">
+                {{if .Orgs}}
+                {{if and .User (or (eq .User.Role "superadmin") (eq .User.Role "staff"))}}
+                {{if gt (len .Orgs) 1}}
+                <div class="sidebar-org-selector">
+                    <form method="POST" action="/switch-org" hx-boost="false">
+                        <select name="org_id" class="sidebar-org-select" onchange="this.form.submit()">
+                            <option value="">Select organization...</option>
+                            {{range .Orgs}}
+                            <option value="{{.ID}}" {{if and $.Org (eq $.Org.ID .ID)}}selected{{end}}>{{.Name}}</option>
+                            {{end}}
+                        </select>
+                    </form>
+                </div>
+                {{else}}
+                {{if .Org}}
+                <div class="sidebar-org-selector">
+                    <div class="sidebar-org-name">{{.Org.Name}}</div>
+                </div>
+                {{end}}
+                {{end}}
+                {{else}}
+                {{/* Client user: show org name if selected */}}
+                {{if .Org}}
+                <div class="sidebar-org-selector">
+                    <div class="sidebar-org-name">{{.Org.Name}}</div>
+                </div>
+                {{end}}
+                {{end}}
+                {{end}}
+
+                {{if and .Org .Projects}}
+                <div class="sidebar-section-label">Projects</div>
+                {{range .Projects}}
+                <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/brief"
+                   class="sidebar-link {{if and $.ActiveProject (eq $.ActiveProject.ID .ID)}}active{{end}}">
                     {{.Name}}
                 </a>
+                {{if and $.ActiveProject (eq $.ActiveProject.ID .ID)}}
+                <div class="sidebar-sub-links">
+                    <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/brief"
+                       class="sidebar-sub-link {{if eq $.ActiveTab "brief"}}active{{end}}">Brief</a>
+                    <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/features"
+                       class="sidebar-sub-link {{if eq $.ActiveTab "features"}}active{{end}}">Features</a>
+                    <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/bugs"
+                       class="sidebar-sub-link {{if eq $.ActiveTab "bugs"}}active{{end}}">Bugs</a>
+                    <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/gantt"
+                       class="sidebar-sub-link {{if eq $.ActiveTab "gantt"}}active{{end}}">Timeline</a>
+                    <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/costs"
+                       class="sidebar-sub-link {{if eq $.ActiveTab "costs"}}active{{end}}">Costs</a>
+                    {{if or (eq $.User.Role "superadmin") (eq $.User.Role "staff")}}
+                    <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/archived"
+                       class="sidebar-sub-link {{if eq $.ActiveTab "archived"}}active{{end}}">Archived</a>
+                    <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/settings"
+                       class="sidebar-sub-link {{if eq $.ActiveTab "settings"}}active{{end}}">Settings</a>
+                    {{end}}
+                </div>
+                {{end}}
+                {{end}}
+                {{else if .Org}}
+                <div class="sidebar-section-label">Projects</div>
+                <div class="sidebar-empty-hint">No projects yet</div>
+                {{end}}
+
+                {{if .Org}}
+                <div class="sidebar-section-label" style="margin-top:1rem">Organization</div>
+                <a href="/orgs/{{.Org.Slug}}/costs" class="sidebar-link {{if hasPrefix .CurrentPath (printf "/orgs/%s/costs" .Org.Slug)}}active{{end}}">Costs</a>
+                <a href="/orgs/{{.Org.Slug}}/settings" class="sidebar-link {{if hasPrefix .CurrentPath (printf "/orgs/%s/settings" .Org.Slug)}}active{{end}}">Settings</a>
+                {{end}}
+
+                {{if eq .User.Role "superadmin"}}
+                <div class="sidebar-section-label" style="margin-top:1rem">Admin</div>
+                <a href="/admin" class="sidebar-link {{if hasPrefix .CurrentPath "/admin"}}active{{end}}">Admin Panel</a>
                 {{end}}
             </nav>
-            {{end}}
 
             <div class="sidebar-footer" x-data="{ open: false }">
                 <button @click="open = !open" class="user-trigger">
@@ -36,9 +100,6 @@
                     <span class="truncate">{{.User.Name}}</span>
                 </button>
                 <div x-show="open" @click.outside="open = false" x-transition class="user-menu">
-                    {{if eq .User.Role "superadmin"}}
-                    <a href="/admin">Admin Panel</a>
-                    {{end}}
                     <a href="/account/settings">Account Settings</a>
                     <form method="POST" action="/logout">
                         <button type="submit">Sign Out</button>

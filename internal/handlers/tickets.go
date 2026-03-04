@@ -74,19 +74,14 @@ func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
 
 	proj, _ := h.db.GetProjectByID(r.Context(), ticket.ProjectID)
 
-	var org *models.Organization
-	var orgs []models.Organization
-	if proj != nil {
+	org := middleware.GetOrg(r)
+	if org == nil && proj != nil {
 		org, _ = h.db.GetOrgByID(r.Context(), proj.OrgID)
-		if auth.IsStaffOrAbove(user.Role) {
-			orgs, _ = h.db.ListAllOrgs(r.Context())
-		} else {
-			orgs, _ = h.db.ListUserOrgs(r.Context(), user.ID)
-		}
 	}
 
 	h.engine.Render(w, "ticket_detail.html", render.PageData{
-		Title: ticket.Title, User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		Title: ticket.Title, User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+		Projects: middleware.GetProjects(r), ActiveProject: proj,
 		ProjectID: ticket.ProjectID,
 		Data: ticketDetailData{
 			Ticket:           ticket,
@@ -382,7 +377,7 @@ func (h *TicketHandler) recordAIUsage(ctx context.Context, user *models.User, pr
 		return
 	}
 	costCents := h.cfg.CalculateAICost(usage.Model, usage.InputTokens, usage.OutputTokens, usage.HasImageOutput)
-	if err := h.db.CreateAIUsageEntry(ctx, proj.OrgID, &projectID, user.ID, usage.Model, label,
+	if err := h.db.CreateAIUsageEntry(ctx, proj.OrgID, &projectID, &user.ID, usage.Model, label,
 		int(usage.InputTokens), int(usage.OutputTokens), costCents); err != nil {
 		log.Printf("recording ai usage: %v", err)
 	}

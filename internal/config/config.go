@@ -51,6 +51,18 @@ type Config struct {
 	GeminiImageProTextOutPrice  int64 // GEMINI_MODEL_IMAGE_PRO_TEXT_OUTPUT_PRICE
 	GeminiImageProImageOutPrice int64 // GEMINI_MODEL_IMAGE_PRO_IMAGE_OUTPUT_PRICE
 
+	// AI / Anthropic (optional — if AnthropicAPIKey is empty, orchestrator agent dispatch is disabled)
+	AnthropicAPIKey          string
+	AnthropicModel           string // default model for planning (ANTHROPIC_MODEL)
+	AnthropicModelContent    string // content model for implementation (ANTHROPIC_MODEL_CONTENT)
+	AnthropicInputPrice      int64  // cents per million tokens (sonnet)
+	AnthropicOutputPrice     int64
+	AnthropicContentInputPrice  int64 // cents per million tokens (opus)
+	AnthropicContentOutputPrice int64
+
+	// Workspaces (orchestrator — directory for git repos and worktrees)
+	WorkspacesDir string
+
 	// S3 storage (optional — if S3Endpoint is empty, file uploads are disabled)
 	S3Endpoint       string // S3_ENDPOINT
 	S3AccessKeyID    string // S3_ACCESS_KEY_ID
@@ -125,6 +137,12 @@ func Load() (*Config, error) {
 		rpID = "smart.madalin.me"
 	}
 
+	workspacesDir := os.Getenv("WORKSPACES_DIR")
+	if workspacesDir == "" {
+		home, _ := os.UserHomeDir()
+		workspacesDir = home + "/forgedesk-workspaces"
+	}
+
 	return &Config{
 		DatabaseURL:   dbURL,
 		SessionSecret: sessionSecret,
@@ -160,12 +178,22 @@ func Load() (*Config, error) {
 		GeminiImageProTextOutPrice:  envInt64("GEMINI_MODEL_IMAGE_PRO_TEXT_OUTPUT_PRICE", 1200),
 		GeminiImageProImageOutPrice: envInt64("GEMINI_MODEL_IMAGE_PRO_IMAGE_OUTPUT_PRICE", 12000),
 
+		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicModel:              envOrDefault("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+		AnthropicModelContent:       envOrDefault("ANTHROPIC_MODEL_CONTENT", "claude-opus-4-6"),
+		AnthropicInputPrice:         envInt64("ANTHROPIC_INPUT_PRICE", 300),
+		AnthropicOutputPrice:        envInt64("ANTHROPIC_OUTPUT_PRICE", 1500),
+		AnthropicContentInputPrice:  envInt64("ANTHROPIC_CONTENT_INPUT_PRICE", 1500),
+		AnthropicContentOutputPrice: envInt64("ANTHROPIC_CONTENT_OUTPUT_PRICE", 7500),
+
 		S3Endpoint:       os.Getenv("S3_ENDPOINT"),
 		S3AccessKeyID:    os.Getenv("S3_ACCESS_KEY_ID"),
 		S3SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
 		S3Region:         envOrDefault("S3_REGION", "us-east-1"),
 		S3Bucket:         os.Getenv("S3_PUBLIC_BUCKET"),
 		S3ForcePathStyle: os.Getenv("S3_FORCE_PATH_STYLE") == "true",
+
+		WorkspacesDir: workspacesDir,
 	}, nil
 }
 
@@ -191,6 +219,12 @@ func (c *Config) CalculateAICost(model string, inputTokens, outputTokens int32, 
 		} else {
 			outPrice = c.GeminiImageTextOutPrice
 		}
+	case c.AnthropicModelContent:
+		inPrice = c.AnthropicContentInputPrice
+		outPrice = c.AnthropicContentOutputPrice
+	case c.AnthropicModel:
+		inPrice = c.AnthropicInputPrice
+		outPrice = c.AnthropicOutputPrice
 	default: // GeminiModel, GeminiModelChat, and any unknown
 		inPrice = c.GeminiInputPrice
 		outPrice = c.GeminiOutputPrice

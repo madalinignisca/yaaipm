@@ -24,6 +24,7 @@ type Session struct {
 	MustSetup2FA      bool
 	IPAddress         string
 	UserAgent         string
+	SelectedOrgID     *string
 	ExpiresAt         time.Time
 }
 
@@ -66,10 +67,10 @@ func (s *SessionStore) GetSession(ctx context.Context, rawToken string) (*Sessio
 	tokenHash := hashToken(rawToken)
 	sess := &Session{}
 	err := s.db.QueryRow(ctx,
-		`SELECT id, user_id, two_factor_verified, must_setup_2fa, ip_address, user_agent, expires_at
+		`SELECT id, user_id, two_factor_verified, must_setup_2fa, ip_address, user_agent, selected_org_id, expires_at
 		 FROM sessions WHERE token_hash = $1 AND expires_at > now()`,
 		tokenHash,
-	).Scan(&sess.ID, &sess.UserID, &sess.TwoFactorVerified, &sess.MustSetup2FA, &sess.IPAddress, &sess.UserAgent, &sess.ExpiresAt)
+	).Scan(&sess.ID, &sess.UserID, &sess.TwoFactorVerified, &sess.MustSetup2FA, &sess.IPAddress, &sess.UserAgent, &sess.SelectedOrgID, &sess.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +88,13 @@ func (s *SessionStore) MarkTwoFactorVerified(ctx context.Context, sessionID stri
 func (s *SessionStore) Mark2FASetupComplete(ctx context.Context, sessionID string) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE sessions SET must_setup_2fa = FALSE WHERE id = $1`, sessionID)
+	return err
+}
+
+// SetSelectedOrg updates the selected org for a session.
+func (s *SessionStore) SetSelectedOrg(ctx context.Context, sessionID, orgID string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE sessions SET selected_org_id = $1 WHERE id = $2`, orgID, sessionID)
 	return err
 }
 

@@ -97,13 +97,13 @@ func (h *CostHandler) ProjectCosts(w http.ResponseWriter, r *http.Request) {
 	margin := org.AIMarginPercent
 	aiTotalWithMargin := aiTotal + aiTotal*int64(margin)/100
 
-	projects, _ := h.db.ListProjects(r.Context(), org.ID)
-	orgs := h.loadOrgs(r, user)
+	projects := middleware.GetProjects(r)
 
 	canEdit := auth.IsStaffOrAbove(user.Role)
 
 	h.engine.Render(w, "project_costs.html", render.PageData{
-		Title: proj.Name + " — Costs", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		Title: proj.Name + " — Costs", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+		Projects: projects, ActiveProject: proj, ActiveTab: "costs",
 		ProjectID: proj.ID,
 		Data: map[string]any{
 			"Project":           proj,
@@ -178,12 +178,10 @@ func (h *CostHandler) OrgCosts(w http.ResponseWriter, r *http.Request) {
 	margin := org.AIMarginPercent
 	aiTotalWithMargin := aiTotal + aiTotal*int64(margin)/100
 
-	orgs := h.loadOrgs(r, user)
-
 	canEdit := auth.IsStaffOrAbove(user.Role)
 
 	h.engine.Render(w, "org_costs.html", render.PageData{
-		Title: org.Name + " — Costs", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		Title: org.Name + " — Costs", User: user, Org: org, Orgs: middleware.GetOrgs(r), Projects: middleware.GetProjects(r), CurrentPath: r.URL.Path,
 		Data: map[string]any{
 			"Month":              month,
 			"PrevMonth":          prevMonth,
@@ -316,16 +314,6 @@ func (h *CostHandler) DeleteCostItem(w http.ResponseWriter, r *http.Request) {
 	redirect := "/orgs/" + org.Slug + "/projects/" + proj.Slug + "/costs?month=" + cost.Month
 	w.Header().Set("HX-Redirect", redirect)
 	w.WriteHeader(http.StatusOK)
-}
-
-func (h *CostHandler) loadOrgs(r *http.Request, user *models.User) []models.Organization {
-	var orgs []models.Organization
-	if auth.IsStaffOrAbove(user.Role) {
-		orgs, _ = h.db.ListAllOrgs(r.Context())
-	} else {
-		orgs, _ = h.db.ListUserOrgs(r.Context(), user.ID)
-	}
-	return orgs
 }
 
 // parseToCents converts a currency string like "12.50" or "€12.50" to cents (1250).

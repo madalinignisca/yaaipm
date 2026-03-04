@@ -1,0 +1,24 @@
+{{define "content"}}
+{{with .Data}}
+{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
+
+<div class="mt-lg">
+    <h2 class="mb-lg">Project Settings</h2>
+
+    <div class="card mb-lg">
+        <h3 class="mb-sm">Repository</h3>
+        <p class="text-sm text-muted mb-md">Git repository URL for this project. Required for the orchestrator to clone code and create agent worktrees.</p>
+        <form method="POST" action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/settings/repo">
+            <div class="form-group mb-md">
+                <label class="form-label" for="repo_url">Repository URL</label>
+                <input type="url" id="repo_url" name="repo_url" class="form-input"
+                       value="{{.Project.RepoURL}}"
+                       placeholder="https://github.com/org/repo.git or git@github.com:org/repo.git">
+                <span class="form-label-hint">SSH or HTTPS URL. The orchestrator VM must have access to clone this repo.</span>
+            </div>
+            <button type="submit" class="btn btn-primary">Save Repository URL</button>
+        </form>
+    </div>
+</div>
+{{end}}
+{{end}}

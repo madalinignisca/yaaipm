@@ -456,7 +456,7 @@ func (h *AssistantHandler) recordAIUsage(ctx context.Context, user *models.User,
 	}
 
 	costCents := h.cfg.CalculateAICost(usage.Model, usage.InputTokens, usage.OutputTokens, usage.HasImageOutput)
-	if err := h.db.CreateAIUsageEntry(ctx, orgID, conv.ProjectID, user.ID, usage.Model, "Chat message",
+	if err := h.db.CreateAIUsageEntry(ctx, orgID, conv.ProjectID, &user.ID, usage.Model, "Chat message",
 		int(usage.InputTokens), int(usage.OutputTokens), costCents); err != nil {
 		log.Printf("recording ai usage: %v", err)
 	}

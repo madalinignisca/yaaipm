@@ -23,8 +23,21 @@ type Organization struct {
 	Slug            string    `db:"slug"`
 	AIMarginPercent int       `db:"ai_margin_percent"`
 	CurrencyCode    string    `db:"currency_code"`
-	CreatedAt       time.Time `db:"created_at"`
-	UpdatedAt       time.Time `db:"updated_at"`
+
+	// Business details
+	BusinessName       string `db:"business_name"`
+	VATNumber          string `db:"vat_number"`
+	RegistrationNumber string `db:"registration_number"`
+	AddressStreet      string `db:"address_street"`
+	AddressExtra       string `db:"address_extra"`
+	PostalCode         string `db:"postal_code"`
+	City               string `db:"city"`
+	Country            string `db:"country"`
+	ContactPhones      string `db:"contact_phones"`
+	ContactEmails      string `db:"contact_emails"`
+
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
 }
 
 type OrgMembership struct {
@@ -65,6 +78,7 @@ type Project struct {
 	Name          string    `db:"name"`
 	Slug          string    `db:"slug"`
 	BriefMarkdown string    `db:"brief_markdown"`
+	RepoURL       string    `db:"repo_url"`
 	CreatedAt     time.Time `db:"created_at"`
 	UpdatedAt     time.Time `db:"updated_at"`
 }
@@ -208,4 +222,19 @@ type ReactionGroup struct {
 	Emoji       string
 	Count       int
 	UserReacted bool
+}
+
+type PlatformSettings struct {
+	BusinessName       string    `db:"business_name"`
+	VATNumber          string    `db:"vat_number"`
+	RegistrationNumber string    `db:"registration_number"`
+	AddressStreet      string    `db:"address_street"`
+	AddressExtra       string    `db:"address_extra"`
+	PostalCode         string    `db:"postal_code"`
+	City               string    `db:"city"`
+	Country            string    `db:"country"`
+	ContactPhones      string    `db:"contact_phones"`
+	ContactEmails      string    `db:"contact_emails"`
+	CreatedAt          time.Time `db:"created_at"`
+	UpdatedAt          time.Time `db:"updated_at"`
 }

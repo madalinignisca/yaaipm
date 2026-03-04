@@ -3,7 +3,6 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
@@ -25,22 +24,16 @@ func (h *DashboardHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var orgs []models.Organization
-	var err error
+	orgs := middleware.GetOrgs(r)
+	pendingInvites, _ := h.db.ListPendingInvitationsForUser(r.Context(), user.Email)
 
-	if auth.IsStaffOrAbove(user.Role) {
-		orgs, err = h.db.ListAllOrgs(r.Context())
-	} else {
-		orgs, err = h.db.ListUserOrgs(r.Context(), user.ID)
-	}
-	if err != nil {
-		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organizations")
+	// Auto-redirect if org selected and no pending invitations
+	if selectedOrg := middleware.GetOrg(r); selectedOrg != nil && len(pendingInvites) == 0 {
+		http.Redirect(w, r, "/orgs/"+selectedOrg.Slug, http.StatusSeeOther)
 		return
 	}
 
-	pendingInvites, _ := h.db.ListPendingInvitationsForUser(r.Context(), user.Email)
-
-	// Only auto-redirect if one org AND no pending invitations
+	// Fallback: if one org and no pending invites
 	if len(orgs) == 1 && len(pendingInvites) == 0 {
 		http.Redirect(w, r, "/orgs/"+orgs[0].Slug, http.StatusSeeOther)
 		return
@@ -50,6 +43,7 @@ func (h *DashboardHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		Title:       "Dashboard",
 		User:        user,
 		Orgs:        orgs,
+		Projects:    middleware.GetProjects(r),
 		CurrentPath: r.URL.Path,
 		Data:        map[string]any{"PendingInvites": pendingInvites},
 	})

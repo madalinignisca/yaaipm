@@ -60,12 +60,12 @@ func (h *ProjectHandler) ProjectBrief(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projects, _ := h.db.ListProjects(r.Context(), org.ID)
-	orgs := h.loadOrgs(r, user)
+	projects := middleware.GetProjects(r)
 	revisions, _ := h.db.ListBriefRevisions(r.Context(), proj.ID)
 
 	h.engine.Render(w, "project_brief.html", render.PageData{
-		Title: proj.Name + " — Brief", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		Title: proj.Name + " — Brief", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+		Projects: projects, ActiveProject: proj, ActiveTab: "brief",
 		ProjectID: proj.ID,
 		Data:      projectPageData{Project: proj, Projects: projects, Tab: "brief", IsStaff: auth.IsStaffOrAbove(user.Role), Revisions: revisions},
 	})
@@ -123,11 +123,11 @@ func (h *ProjectHandler) ProjectFeatures(w http.ResponseWriter, r *http.Request)
 	}
 
 	features, _ := h.db.ListFeatures(r.Context(), proj.ID)
-	projects, _ := h.db.ListProjects(r.Context(), org.ID)
-	orgs := h.loadOrgs(r, user)
+	projects := middleware.GetProjects(r)
 
 	h.engine.Render(w, "project_features.html", render.PageData{
-		Title: proj.Name + " — Features", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		Title: proj.Name + " — Features", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+		Projects: projects, ActiveProject: proj, ActiveTab: "features",
 		ProjectID: proj.ID,
 		Data:      projectPageData{Project: proj, Projects: projects, Tab: "features", Tickets: features, IsStaff: auth.IsStaffOrAbove(user.Role)},
 	})
@@ -142,11 +142,11 @@ func (h *ProjectHandler) ProjectBugs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bugs, _ := h.db.ListBugs(r.Context(), proj.ID)
-	projects, _ := h.db.ListProjects(r.Context(), org.ID)
-	orgs := h.loadOrgs(r, user)
+	projects := middleware.GetProjects(r)
 
 	h.engine.Render(w, "project_bugs.html", render.PageData{
-		Title: proj.Name + " — Bugs", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		Title: proj.Name + " — Bugs", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+		Projects: projects, ActiveProject: proj, ActiveTab: "bugs",
 		ProjectID: proj.ID,
 		Data:      projectPageData{Project: proj, Projects: projects, Tab: "bugs", Tickets: bugs, IsStaff: auth.IsStaffOrAbove(user.Role)},
 	})
@@ -161,11 +161,11 @@ func (h *ProjectHandler) ProjectGantt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tickets, _ := h.db.ListGanttTickets(r.Context(), proj.ID)
-	projects, _ := h.db.ListProjects(r.Context(), org.ID)
-	orgs := h.loadOrgs(r, user)
+	projects := middleware.GetProjects(r)
 
 	h.engine.Render(w, "project_gantt.html", render.PageData{
-		Title: proj.Name + " — Timeline", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		Title: proj.Name + " — Timeline", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+		Projects: projects, ActiveProject: proj, ActiveTab: "gantt",
 		ProjectID: proj.ID,
 		Data:      projectPageData{Project: proj, Projects: projects, Tab: "gantt", Tickets: tickets, IsStaff: auth.IsStaffOrAbove(user.Role)},
 	})
@@ -220,22 +220,60 @@ func (h *ProjectHandler) ProjectArchived(w http.ResponseWriter, r *http.Request)
 	}
 
 	archived, _ := h.db.ListArchivedTickets(r.Context(), proj.ID)
-	projects, _ := h.db.ListProjects(r.Context(), org.ID)
-	orgs := h.loadOrgs(r, user)
+	projects := middleware.GetProjects(r)
 
 	h.engine.Render(w, "project_archived.html", render.PageData{
-		Title: proj.Name + " — Archived", User: user, Org: org, Orgs: orgs, CurrentPath: r.URL.Path,
+		Title: proj.Name + " — Archived", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+		Projects: projects, ActiveProject: proj, ActiveTab: "archived",
 		ProjectID: proj.ID,
 		Data:      projectPageData{Project: proj, Projects: projects, Tab: "archived", Tickets: archived, IsStaff: true},
 	})
 }
 
-func (h *ProjectHandler) loadOrgs(r *http.Request, user *models.User) []models.Organization {
-	var orgs []models.Organization
-	if auth.IsStaffOrAbove(user.Role) {
-		orgs, _ = h.db.ListAllOrgs(r.Context())
-	} else {
-		orgs, _ = h.db.ListUserOrgs(r.Context(), user.ID)
+func (h *ProjectHandler) ProjectSettings(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
 	}
-	return orgs
+
+	org, proj, err := h.getOrgAndProject(r, user)
+	if err != nil {
+		h.engine.RenderError(w, http.StatusNotFound, "Not found")
+		return
+	}
+
+	projects := middleware.GetProjects(r)
+
+	h.engine.Render(w, "project_settings.html", render.PageData{
+		Title: proj.Name + " — Settings", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+		Projects: projects, ActiveProject: proj, ActiveTab: "settings",
+		ProjectID: proj.ID,
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "settings", IsStaff: true},
+	})
 }
+
+func (h *ProjectHandler) UpdateRepoURL(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	_, proj, err := h.getOrgAndProject(r, user)
+	if err != nil {
+		h.engine.RenderError(w, http.StatusNotFound, "Not found")
+		return
+	}
+
+	repoURL := strings.TrimSpace(r.FormValue("repo_url"))
+	if err := h.db.UpdateProjectRepoURL(r.Context(), proj.ID, repoURL); err != nil {
+		log.Printf("updating repo url: %v", err)
+		http.Error(w, "Failed to update", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("HX-Redirect", r.URL.Path[:strings.LastIndex(r.URL.Path, "/")])
+	w.WriteHeader(http.StatusOK)
+}
+

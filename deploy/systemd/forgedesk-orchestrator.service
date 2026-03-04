@@ -1,0 +1,21 @@
+[Unit]
+Description=ForgeDesk Orchestrator
+After=network-online.target
+
+[Service]
+Type=simple
+User=gabriel
+WorkingDirectory=/home/gabriel/apps/smartProjectManager
+EnvironmentFile=/home/gabriel/apps/smartProjectManager/.secrets
+ExecStart=/home/gabriel/apps/smartProjectManager/orchestrator
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=forgedesk-orchestrator
+ProtectHome=no
+Environment=HOME=/home/gabriel
+Environment=PATH=/home/gabriel/.local/bin:/home/gabriel/.nvm/versions/node/v24.14.0/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

@@ -100,7 +100,7 @@ func main() {
 
 	authH := handlers.NewAuthHandler(db, sessions, engine, cfg.AESKey, secureCookie)
 	dashH := handlers.NewDashboardHandler(db, engine)
-	orgH := handlers.NewOrgHandler(db, engine, mailer, cfg.BaseURL, cfg.ProtectedSuperadmins)
+	orgH := handlers.NewOrgHandler(db, engine, sessions, mailer, cfg.BaseURL, cfg.ProtectedSuperadmins)
 	projH := handlers.NewProjectHandler(db, engine)
 	ticketH := handlers.NewTicketHandler(db, engine, geminiClient, cfg)
 	commentH := handlers.NewCommentHandler(db, engine)
@@ -171,6 +171,7 @@ func main() {
 		r.Post("/invitations/{invitationID}/decline", inviteH.DeclineInvitation)
 
 		// Organizations
+		r.Post("/switch-org", orgH.SwitchOrg)
 		r.Post("/orgs", orgH.CreateOrg)
 		r.Get("/orgs/{orgSlug}", orgH.OrgPage)
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
@@ -179,6 +180,7 @@ func main() {
 		r.Post("/orgs/{orgSlug}/invitations/{invitationID}/resend", inviteH.ResendInvitation)
 		r.Delete("/orgs/{orgSlug}/members/{userID}", orgH.RemoveMember)
 		r.Patch("/orgs/{orgSlug}/members/{userID}/role", orgH.UpdateMemberRole)
+		r.Post("/orgs/{orgSlug}/settings/business", orgH.UpdateBusinessDetails)
 		r.Post("/orgs/{orgSlug}/settings/margin", orgH.UpdateAIMargin)
 		r.Post("/orgs/{orgSlug}/settings/currency", orgH.UpdateCurrency)
 
@@ -191,6 +193,8 @@ func main() {
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/bugs", projH.ProjectBugs)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/gantt", projH.ProjectGantt)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/archived", projH.ProjectArchived)
+		r.Get("/orgs/{orgSlug}/projects/{projSlug}/settings", projH.ProjectSettings)
+		r.Post("/orgs/{orgSlug}/projects/{projSlug}/settings/repo", projH.UpdateRepoURL)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.ProjectCosts)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.AddCostItem)
 		r.Get("/orgs/{orgSlug}/costs", costH.OrgCosts)
@@ -229,6 +233,7 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireRole(auth.RoleSuperAdmin))
 			r.Get("/admin", adminH.AdminPage)
+			r.Post("/admin/settings/business", adminH.UpdatePlatformBusiness)
 		})
 	})
 

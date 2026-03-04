@@ -165,7 +165,7 @@ func (h *FileHandler) GenerateImage(w http.ResponseWriter, r *http.Request) {
 	// Record AI usage with image pricing
 	if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
 		costCents := h.cfg.CalculateAICost(usage.Model, usage.InputTokens, usage.OutputTokens, usage.HasImageOutput)
-		if err := h.db.CreateAIUsageEntry(r.Context(), orgID, &req.ProjectID, user.ID,
+		if err := h.db.CreateAIUsageEntry(r.Context(), orgID, &req.ProjectID, &user.ID,
 			usage.Model, "Image generation", int(usage.InputTokens), int(usage.OutputTokens), costCents); err != nil {
 			log.Printf("recording ai usage: %v", err)
 		}

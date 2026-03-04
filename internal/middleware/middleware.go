@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,8 +18,11 @@ import (
 type contextKey string
 
 const (
-	SessionContextKey contextKey = "session"
-	UserContextKey    contextKey = "user"
+	SessionContextKey  contextKey = "session"
+	UserContextKey     contextKey = "user"
+	OrgContextKey      contextKey = "org"
+	OrgsContextKey     contextKey = "orgs"
+	ProjectsContextKey contextKey = "projects"
 )
 
 func GetSession(r *http.Request) *auth.Session {
@@ -29,6 +33,32 @@ func GetSession(r *http.Request) *auth.Session {
 func GetUser(r *http.Request) *models.User {
 	user, _ := r.Context().Value(UserContextKey).(*models.User)
 	return user
+}
+
+func GetOrg(r *http.Request) *models.Organization {
+	org, _ := r.Context().Value(OrgContextKey).(*models.Organization)
+	return org
+}
+
+func GetOrgs(r *http.Request) []models.Organization {
+	orgs, _ := r.Context().Value(OrgsContextKey).([]models.Organization)
+	return orgs
+}
+
+func GetProjects(r *http.Request) []models.Project {
+	projects, _ := r.Context().Value(ProjectsContextKey).([]models.Project)
+	return projects
+}
+
+var orgSlugRe = regexp.MustCompile(`^/orgs/([^/]+)`)
+
+// extractOrgSlug pulls the org slug from the URL path if present.
+func extractOrgSlug(path string) string {
+	m := orgSlugRe.FindStringSubmatch(path)
+	if len(m) >= 2 {
+		return m[1]
+	}
+	return ""
 }
 
 // AuthMiddleware enforces authentication and 2FA on all routes except public ones.
@@ -85,6 +115,48 @@ func AuthMiddleware(sessions *auth.SessionStore, db *models.DB) func(http.Handle
 
 			ctx := context.WithValue(r.Context(), SessionContextKey, sess)
 			ctx = context.WithValue(ctx, UserContextKey, user)
+
+			// Load org context for sidebar
+			var orgs []models.Organization
+			if auth.IsStaffOrAbove(user.Role) {
+				orgs, _ = db.ListAllOrgs(ctx)
+			} else {
+				orgs, _ = db.ListUserOrgs(ctx, user.ID)
+			}
+			ctx = context.WithValue(ctx, OrgsContextKey, orgs)
+
+			// Determine selected org
+			var selectedOrg *models.Organization
+			if urlSlug := extractOrgSlug(path); urlSlug != "" {
+				for i := range orgs {
+					if orgs[i].Slug == urlSlug {
+						selectedOrg = &orgs[i]
+						break
+					}
+				}
+				// Update session if org changed
+				if selectedOrg != nil && (sess.SelectedOrgID == nil || *sess.SelectedOrgID != selectedOrg.ID) {
+					_ = sessions.SetSelectedOrg(ctx, sess.ID, selectedOrg.ID)
+				}
+			} else if sess.SelectedOrgID != nil {
+				for i := range orgs {
+					if orgs[i].ID == *sess.SelectedOrgID {
+						selectedOrg = &orgs[i]
+						break
+					}
+				}
+			}
+			// Fallback: auto-select if exactly one org
+			if selectedOrg == nil && len(orgs) == 1 {
+				selectedOrg = &orgs[0]
+			}
+
+			if selectedOrg != nil {
+				ctx = context.WithValue(ctx, OrgContextKey, selectedOrg)
+				projects, _ := db.ListProjects(ctx, selectedOrg.ID)
+				ctx = context.WithValue(ctx, ProjectsContextKey, projects)
+			}
+
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

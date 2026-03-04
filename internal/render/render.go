@@ -31,6 +31,9 @@ type PageData struct {
 	User             *models.User
 	Org              *models.Organization
 	Orgs             []models.Organization
+	Projects         []models.Project   // projects for sidebar (selected org)
+	ActiveProject    *models.Project    // current project (nil if not on a project page)
+	ActiveTab        string             // "brief", "features", "bugs", "gantt", "costs", "archived", "settings"
 	CSRFToken        string
 	Flash            string
 	FlashType        string // "success", "error", "warning"

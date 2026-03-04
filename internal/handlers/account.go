@@ -24,17 +24,11 @@ func NewAccountHandler(db *models.DB, sessions *auth.SessionStore, engine *rende
 func (h *AccountHandler) AccountSettingsPage(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 
-	var orgs []models.Organization
-	if auth.IsStaffOrAbove(user.Role) {
-		orgs, _ = h.db.ListAllOrgs(r.Context())
-	} else {
-		orgs, _ = h.db.ListUserOrgs(r.Context(), user.ID)
-	}
-
 	h.engine.Render(w, "account_settings.html", render.PageData{
 		Title:       "Account Settings",
 		User:        user,
-		Orgs:        orgs,
+		Orgs:        middleware.GetOrgs(r),
+		Projects:    middleware.GetProjects(r),
 		CurrentPath: r.URL.Path,
 	})
 }
@@ -129,17 +123,11 @@ func (h *AccountHandler) ChangeEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AccountHandler) renderPage(w http.ResponseWriter, r *http.Request, user *models.User, flash, flashType string) {
-	var orgs []models.Organization
-	if auth.IsStaffOrAbove(user.Role) {
-		orgs, _ = h.db.ListAllOrgs(r.Context())
-	} else {
-		orgs, _ = h.db.ListUserOrgs(r.Context(), user.ID)
-	}
-
 	h.engine.Render(w, "account_settings.html", render.PageData{
 		Title:       "Account Settings",
 		User:        user,
-		Orgs:        orgs,
+		Orgs:        middleware.GetOrgs(r),
+		Projects:    middleware.GetProjects(r),
 		CurrentPath: "/account/settings",
 		Flash:       flash,
 		FlashType:   flashType,

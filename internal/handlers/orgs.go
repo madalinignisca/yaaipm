@@ -18,13 +18,14 @@ import (
 type OrgHandler struct {
 	db                   *models.DB
 	engine               *render.Engine
+	sessions             *auth.SessionStore
 	mailer               *mail.Mailer
 	baseURL              string
 	protectedSuperadmins []string
 }
 
-func NewOrgHandler(db *models.DB, engine *render.Engine, mailer *mail.Mailer, baseURL string, protectedSuperadmins []string) *OrgHandler {
-	return &OrgHandler{db: db, engine: engine, mailer: mailer, baseURL: baseURL, protectedSuperadmins: protectedSuperadmins}
+func NewOrgHandler(db *models.DB, engine *render.Engine, sessions *auth.SessionStore, mailer *mail.Mailer, baseURL string, protectedSuperadmins []string) *OrgHandler {
+	return &OrgHandler{db: db, engine: engine, sessions: sessions, mailer: mailer, baseURL: baseURL, protectedSuperadmins: protectedSuperadmins}
 }
 
 // isProtectedSuperadmin checks if an email is in the protected superadmins list.
@@ -65,27 +66,46 @@ func (h *OrgHandler) OrgPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	projects, err := h.db.ListProjects(r.Context(), org.ID)
-	if err != nil {
-		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load projects")
-		return
-	}
-
-	var orgs []models.Organization
-	if auth.IsStaffOrAbove(user.Role) {
-		orgs, _ = h.db.ListAllOrgs(r.Context())
-	} else {
-		orgs, _ = h.db.ListUserOrgs(r.Context(), user.ID)
+	projects := middleware.GetProjects(r)
+	if projects == nil {
+		projects, _ = h.db.ListProjects(r.Context(), org.ID)
 	}
 
 	h.engine.Render(w, "dashboard.html", render.PageData{
 		Title:       org.Name,
 		User:        user,
 		Org:         org,
-		Orgs:        orgs,
+		Orgs:        middleware.GetOrgs(r),
+		Projects:    projects,
 		CurrentPath: r.URL.Path,
 		Data:        projects,
 	})
+}
+
+func (h *OrgHandler) SwitchOrg(w http.ResponseWriter, r *http.Request) {
+	sess := middleware.GetSession(r)
+	orgID := r.FormValue("org_id")
+	if orgID == "" {
+		http.Error(w, "org_id required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate the user has access to this org
+	orgs := middleware.GetOrgs(r)
+	var target *models.Organization
+	for i := range orgs {
+		if orgs[i].ID == orgID {
+			target = &orgs[i]
+			break
+		}
+	}
+	if target == nil {
+		http.Error(w, "Organization not found", http.StatusForbidden)
+		return
+	}
+
+	_ = h.sessions.SetSelectedOrg(r.Context(), sess.ID, orgID)
+	http.Redirect(w, r, "/orgs/"+target.Slug, http.StatusSeeOther)
 }
 
 func (h *OrgHandler) CreateOrg(w http.ResponseWriter, r *http.Request) {
@@ -136,20 +156,14 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var orgs []models.Organization
-	if auth.IsStaffOrAbove(user.Role) {
-		orgs, _ = h.db.ListAllOrgs(r.Context())
-	} else {
-		orgs, _ = h.db.ListUserOrgs(r.Context(), user.ID)
-	}
-
 	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
 
 	h.engine.Render(w, "org_settings.html", render.PageData{
 		Title:       org.Name + " Settings",
 		User:        user,
 		Org:         org,
-		Orgs:        orgs,
+		Orgs:        middleware.GetOrgs(r),
+		Projects:    middleware.GetProjects(r),
 		CurrentPath: r.URL.Path,
 		Data: map[string]any{
 			"Members":       members,
@@ -410,6 +424,41 @@ func (h *OrgHandler) UpdateAIMargin(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.UpdateOrgAIMargin(r.Context(), org.ID, margin); err != nil {
 		log.Printf("updating ai margin: %v", err)
 		http.Error(w, "Failed to update margin", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/orgs/"+slug+"/settings", http.StatusSeeOther)
+}
+
+func (h *OrgHandler) UpdateBusinessDetails(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	slug := r.PathValue("orgSlug")
+
+	org, err := h.db.GetOrgBySlug(r.Context(), slug)
+	if err != nil {
+		http.Error(w, "Organization not found", http.StatusNotFound)
+		return
+	}
+
+	if !h.canManageOrgMembers(r, user, org.ID) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if err := h.db.UpdateOrgBusinessDetails(r.Context(), org.ID,
+		strings.TrimSpace(r.FormValue("business_name")),
+		strings.TrimSpace(r.FormValue("vat_number")),
+		strings.TrimSpace(r.FormValue("registration_number")),
+		strings.TrimSpace(r.FormValue("address_street")),
+		strings.TrimSpace(r.FormValue("address_extra")),
+		strings.TrimSpace(r.FormValue("postal_code")),
+		strings.TrimSpace(r.FormValue("city")),
+		strings.TrimSpace(r.FormValue("country")),
+		strings.TrimSpace(r.FormValue("contact_phones")),
+		strings.TrimSpace(r.FormValue("contact_emails")),
+	); err != nil {
+		log.Printf("updating business details: %v", err)
+		http.Error(w, "Failed to update business details", http.StatusInternalServerError)
 		return
 	}
 

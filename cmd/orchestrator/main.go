@@ -10,8 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/models"
+	"github.com/madalin/forgedesk/internal/orchestrator"
 )
 
 func main() {
@@ -19,6 +21,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
 	}
+
+	if cfg.AnthropicAPIKey == "" {
+		log.Fatal("ANTHROPIC_API_KEY is required for the orchestrator")
+	}
+
+	// Ensure workspaces directory exists
+	if err := os.MkdirAll(cfg.WorkspacesDir, 0755); err != nil {
+		log.Fatalf("creating workspaces dir %s: %v", cfg.WorkspacesDir, err)
+	}
+	log.Printf("Workspaces directory: %s", cfg.WorkspacesDir)
 
 	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
 	if err != nil {
@@ -32,6 +44,13 @@ func main() {
 
 	db := models.NewDB(pool)
 
+	claude := ai.NewAnthropicClient(cfg.AnthropicAPIKey, ai.AnthropicModels{
+		Default: cfg.AnthropicModel,
+		Content: cfg.AnthropicModelContent,
+	})
+
+	dispatcher := orchestrator.NewDispatcher(db, claude, cfg)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -39,7 +58,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	log.Println("ForgeDesk orchestrator starting...")
+	log.Printf("ForgeDesk orchestrator starting (model: %s)", cfg.AnthropicModel)
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -47,54 +66,10 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			processTickets(ctx, db)
+			dispatcher.ProcessTickets(ctx)
 		case <-sigCh:
 			log.Println("Orchestrator shutting down...")
 			return
-		}
-	}
-}
-
-func processTickets(ctx context.Context, db *models.DB) {
-	tickets, err := db.ListAgentReady(ctx)
-	if err != nil {
-		log.Printf("fetching agent-ready tickets: %v", err)
-		return
-	}
-
-	if len(tickets) == 0 {
-		return
-	}
-
-	log.Printf("Found %d tickets ready for agent processing", len(tickets))
-
-	for _, t := range tickets {
-		agentMode := "plan"
-		if t.AgentMode != nil {
-			agentMode = *t.AgentMode
-		}
-
-		agentName := "claude"
-		if t.AgentName != nil {
-			agentName = *t.AgentName
-		}
-
-		log.Printf("Processing ticket %s: mode=%s agent=%s title=%q", t.ID, agentMode, agentName, t.Title)
-
-		// For now, just log — actual agent dispatch will be implemented later
-		// This creates comments on the ticket to show the orchestrator is working
-		var comment string
-		switch agentMode {
-		case "plan":
-			comment = "[Orchestrator] Planning phase initiated. Agent " + agentName + " will analyze this ticket and produce an implementation plan."
-			db.UpdateTicketStatus(ctx, t.ID, "planning")
-		case "implement":
-			comment = "[Orchestrator] Implementation phase initiated. Agent " + agentName + " will implement the approved plan."
-			db.UpdateTicketStatus(ctx, t.ID, "implementing")
-		}
-
-		if comment != "" {
-			db.CreateComment(ctx, t.ID, nil, &agentName, comment)
 		}
 	}
 }
