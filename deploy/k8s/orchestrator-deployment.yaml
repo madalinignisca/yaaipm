@@ -1,46 +1,32 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: forgedesk-server
+  name: forgedesk-orchestrator
   namespace: smartpm
   labels:
     app: forgedesk
-    component: server
+    component: orchestrator
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: forgedesk
-      component: server
+      component: orchestrator
   template:
     metadata:
       labels:
         app: forgedesk
-        component: server
+        component: orchestrator
     spec:
       imagePullSecrets:
         - name: registry-credentials
       containers:
-        - name: server
+        - name: orchestrator
           image: registry.k3s.vlah.sh/smartpm:latest
-          command: ["forgedesk"]
-          ports:
-            - containerPort: 8080
+          command: ["orchestrator"]
           envFrom:
             - secretRef:
                 name: forgedesk-env
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 30
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 3
-            periodSeconds: 10
           resources:
             requests:
               cpu: 50m

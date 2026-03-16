@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -143,10 +144,18 @@ func Load() (*Config, error) {
 		workspacesDir = home + "/forgedesk-workspaces"
 	}
 
+	aesKey := os.Getenv("AES_ENCRYPTION_KEY")
+	if aesKey == "" {
+		return nil, fmt.Errorf("AES_ENCRYPTION_KEY is required (hex-encoded 32-byte key)")
+	}
+	if len(aesKey) != 64 {
+		log.Printf("WARNING: AES_ENCRYPTION_KEY length is %d, expected 64 (hex-encoded 32-byte key)", len(aesKey))
+	}
+
 	return &Config{
 		DatabaseURL:   dbURL,
 		SessionSecret: sessionSecret,
-		AESKey:        os.Getenv("AES_ENCRYPTION_KEY"),
+		AESKey:        aesKey,
 		ListenAddr:    listenAddr,
 		BaseURL:       baseURL,
 		SMTPHost:      os.Getenv("SMTP_HOST"),

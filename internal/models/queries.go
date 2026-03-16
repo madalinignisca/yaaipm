@@ -40,7 +40,7 @@ func (db *DB) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 		 FROM users WHERE email = $1`, email,
 	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.TOTPSecret, &u.TOTPVerified, &u.RecoveryCodes, &u.MustSetup2FA, &u.Preferred2FAMethod, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting user by email: %w", err)
 	}
 	return u, nil
 }
@@ -52,7 +52,7 @@ func (db *DB) GetUserByID(ctx context.Context, id string) (*User, error) {
 		 FROM users WHERE id = $1`, id,
 	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.TOTPSecret, &u.TOTPVerified, &u.RecoveryCodes, &u.MustSetup2FA, &u.Preferred2FAMethod, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting user by id: %w", err)
 	}
 	return u, nil
 }
@@ -61,43 +61,64 @@ func (db *DB) UpdateUserTOTP(ctx context.Context, userID string, totpSecret []by
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE users SET totp_secret = $1, totp_verified = $2, preferred_2fa_method = $3, must_setup_2fa = FALSE, updated_at = now() WHERE id = $4`,
 		totpSecret, verified, method, userID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating user totp: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) UpdateUserRecoveryCodes(ctx context.Context, userID string, codes []byte) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE users SET recovery_codes = $1, updated_at = now() WHERE id = $2`, codes, userID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating user recovery codes: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ClearUser2FA(ctx context.Context, userID string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE users SET totp_secret = NULL, totp_verified = FALSE, recovery_codes = NULL, must_setup_2fa = TRUE, preferred_2fa_method = NULL, updated_at = now() WHERE id = $1`, userID)
-	return err
+	if err != nil {
+		return fmt.Errorf("clearing user 2fa: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ConsumeRecoveryCode(ctx context.Context, userID string, codes []byte) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE users SET recovery_codes = $1, updated_at = now() WHERE id = $2`, codes, userID)
-	return err
+	if err != nil {
+		return fmt.Errorf("consuming recovery code: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) UpdateUserPassword(ctx context.Context, userID, hash string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, hash, userID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating user password: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) UpdateUserEmail(ctx context.Context, userID, email string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE users SET email = $1, updated_at = now() WHERE id = $2`, email, userID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating user email: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) CountUsers(ctx context.Context) (int, error) {
 	var count int
 	err := db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
-	return count, err
+	if err != nil {
+		return 0, fmt.Errorf("counting users: %w", err)
+	}
+	return count, nil
 }
 
 // ── Invitations ──────────────────────────────────────────────────
@@ -124,7 +145,7 @@ func (db *DB) GetInvitationByToken(ctx context.Context, tokenHash string) (*Invi
 		tokenHash,
 	).Scan(&inv.ID, &inv.Email, &inv.OrgID, &inv.OrgRole, &inv.TokenHash, &inv.Status, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt, &inv.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting invitation by token: %w", err)
 	}
 	return inv, nil
 }
@@ -137,7 +158,7 @@ func (db *DB) GetInvitationByID(ctx context.Context, id string) (*Invitation, er
 		id,
 	).Scan(&inv.ID, &inv.Email, &inv.OrgID, &inv.OrgRole, &inv.TokenHash, &inv.Status, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt, &inv.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting invitation by id: %w", err)
 	}
 	return inv, nil
 }
@@ -153,7 +174,7 @@ func (db *DB) ListPendingInvitationsForUser(ctx context.Context, email string) (
 		 WHERE i.email = $1 AND i.status = 'pending' AND i.expires_at > now()
 		 ORDER BY i.created_at DESC`, email)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing pending invitations for user: %w", err)
 	}
 	defer rows.Close()
 
@@ -168,7 +189,7 @@ func (db *DB) ListPendingInvitationsForUser(ctx context.Context, email string) (
 			&r.Organization.AIMarginPercent, &r.Organization.CreatedAt, &r.Organization.UpdatedAt,
 			&r.InviterName,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning pending invitation for user: %w", err)
 		}
 		results = append(results, r)
 	}
@@ -184,7 +205,7 @@ func (db *DB) ListOrgInvitations(ctx context.Context, orgID string) ([]Invitatio
 		 WHERE i.org_id = $1 AND i.status = 'pending' AND i.expires_at > now()
 		 ORDER BY i.created_at DESC`, orgID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing org invitations: %w", err)
 	}
 	defer rows.Close()
 
@@ -197,7 +218,7 @@ func (db *DB) ListOrgInvitations(ctx context.Context, orgID string) ([]Invitatio
 			&r.Invitation.ExpiresAt, &r.Invitation.CreatedAt, &r.Invitation.UpdatedAt,
 			&r.InviterName,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning org invitation: %w", err)
 		}
 		results = append(results, r)
 	}
@@ -208,21 +229,30 @@ func (db *DB) UpdateInvitationStatus(ctx context.Context, id, status string) err
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE invitations SET status = $1, updated_at = now() WHERE id = $2`,
 		status, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating invitation status: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ResetInvitationToken(ctx context.Context, id, newTokenHash string, newExpiry time.Time) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE invitations SET token_hash = $1, expires_at = $2, updated_at = now() WHERE id = $3`,
 		newTokenHash, newExpiry, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("resetting invitation token: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ExpireOldInvitations(ctx context.Context) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE invitations SET status = 'expired', updated_at = now()
 		 WHERE status = 'pending' AND expires_at <= now()`)
-	return err
+	if err != nil {
+		return fmt.Errorf("expiring old invitations: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) HasPendingInvitation(ctx context.Context, email, orgID string) (bool, error) {
@@ -230,7 +260,10 @@ func (db *DB) HasPendingInvitation(ctx context.Context, email, orgID string) (bo
 	err := db.Pool.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM invitations WHERE email = $1 AND org_id = $2 AND status = 'pending' AND expires_at > now())`,
 		email, orgID).Scan(&exists)
-	return exists, err
+	if err != nil {
+		return false, fmt.Errorf("checking pending invitation: %w", err)
+	}
+	return exists, nil
 }
 
 // ── Organizations ─────────────────────────────────────────────────
@@ -281,7 +314,7 @@ func (db *DB) GetOrgBySlug(ctx context.Context, slug string) (*Organization, err
 		`SELECT `+orgColumns+` FROM organizations WHERE slug = $1`, slug,
 	), o)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting org by slug: %w", err)
 	}
 	return o, nil
 }
@@ -292,7 +325,7 @@ func (db *DB) GetOrgByID(ctx context.Context, id string) (*Organization, error) 
 		`SELECT `+orgColumns+` FROM organizations WHERE id = $1`, id,
 	), o)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting org by id: %w", err)
 	}
 	return o, nil
 }
@@ -305,7 +338,7 @@ func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, 
 		 WHERE m.user_id = $1
 		 ORDER BY o.name`, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing user orgs: %w", err)
 	}
 	defer rows.Close()
 
@@ -313,7 +346,7 @@ func (db *DB) ListUserOrgs(ctx context.Context, userID string) ([]Organization, 
 	for rows.Next() {
 		var o Organization
 		if err := scanOrg(rows, &o); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning user org: %w", err)
 		}
 		orgs = append(orgs, o)
 	}
@@ -324,7 +357,7 @@ func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx,
 		`SELECT `+orgColumns+` FROM organizations ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing all orgs: %w", err)
 	}
 	defer rows.Close()
 
@@ -332,7 +365,7 @@ func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	for rows.Next() {
 		var o Organization
 		if err := scanOrg(rows, &o); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning org: %w", err)
 		}
 		orgs = append(orgs, o)
 	}
@@ -404,7 +437,10 @@ func (db *DB) AddOrgMember(ctx context.Context, userID, orgID, role string) erro
 		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, $3)
 		 ON CONFLICT (user_id, org_id) DO UPDATE SET role = $3`,
 		userID, orgID, role)
-	return err
+	if err != nil {
+		return fmt.Errorf("adding org member: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) GetOrgMembership(ctx context.Context, userID, orgID string) (*OrgMembership, error) {
@@ -414,7 +450,7 @@ func (db *DB) GetOrgMembership(ctx context.Context, userID, orgID string) (*OrgM
 		userID, orgID,
 	).Scan(&m.ID, &m.UserID, &m.OrgID, &m.Role, &m.CreatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting org membership: %w", err)
 	}
 	return m, nil
 }
@@ -429,7 +465,7 @@ func (db *DB) ListOrgMembers(ctx context.Context, orgID string) ([]struct {
 		 FROM users u JOIN org_memberships m ON u.id = m.user_id
 		 WHERE m.org_id = $1 ORDER BY u.name`, orgID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing org members: %w", err)
 	}
 	defer rows.Close()
 
@@ -442,7 +478,7 @@ func (db *DB) ListOrgMembers(ctx context.Context, orgID string) ([]struct {
 		var m member
 		if err := rows.Scan(&m.User.ID, &m.User.Email, &m.User.Name, &m.User.Role, &m.User.MustSetup2FA, &m.User.CreatedAt,
 			&m.Membership.ID, &m.Membership.Role, &m.Membership.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning org member: %w", err)
 		}
 		m.Membership.OrgID = orgID
 		m.Membership.UserID = m.User.ID
@@ -465,35 +501,50 @@ func (db *DB) RemoveOrgMember(ctx context.Context, userID, orgID string) error {
 	_, err := db.Pool.Exec(ctx,
 		`DELETE FROM org_memberships WHERE user_id = $1 AND org_id = $2`,
 		userID, orgID)
-	return err
+	if err != nil {
+		return fmt.Errorf("removing org member: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) UpdateOrgMemberRole(ctx context.Context, userID, orgID, role string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE org_memberships SET role = $1 WHERE user_id = $2 AND org_id = $3`,
 		role, userID, orgID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating org member role: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) CountOrgOwners(ctx context.Context, orgID string) (int, error) {
 	var count int
 	err := db.Pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM org_memberships WHERE org_id = $1 AND role = 'owner'`, orgID).Scan(&count)
-	return count, err
+	if err != nil {
+		return 0, fmt.Errorf("counting org owners: %w", err)
+	}
+	return count, nil
 }
 
 func (db *DB) UpdateOrgAIMargin(ctx context.Context, orgID string, marginPercent int) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE organizations SET ai_margin_percent = $1, updated_at = now() WHERE id = $2`,
 		marginPercent, orgID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating org ai margin: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) UpdateOrgCurrency(ctx context.Context, orgID, currencyCode string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE organizations SET currency_code = $1, updated_at = now() WHERE id = $2`,
 		currencyCode, orgID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating org currency: %w", err)
+	}
+	return nil
 }
 
 // ── Projects ──────────────────────────────────────────────────────
@@ -518,7 +569,7 @@ func (db *DB) GetProject(ctx context.Context, orgID, slug string) (*Project, err
 		 FROM projects WHERE org_id = $1 AND slug = $2`, orgID, slug,
 	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting project: %w", err)
 	}
 	return p, nil
 }
@@ -530,7 +581,7 @@ func (db *DB) GetProjectByID(ctx context.Context, id string) (*Project, error) {
 		 FROM projects WHERE id = $1`, id,
 	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting project by id: %w", err)
 	}
 	return p, nil
 }
@@ -540,7 +591,7 @@ func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error)
 		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
 		 FROM projects WHERE org_id = $1 ORDER BY name`, orgID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing projects: %w", err)
 	}
 	defer rows.Close()
 
@@ -548,7 +599,7 @@ func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error)
 	for rows.Next() {
 		var p Project
 		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning project: %w", err)
 		}
 		projects = append(projects, p)
 	}
@@ -558,13 +609,19 @@ func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error)
 func (db *DB) UpdateProjectBrief(ctx context.Context, projectID, brief string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE projects SET brief_markdown = $1, updated_at = now() WHERE id = $2`, brief, projectID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating project brief: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) UpdateProjectRepoURL(ctx context.Context, projectID, repoURL string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE projects SET repo_url = $1, updated_at = now() WHERE id = $2`, repoURL, projectID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating project repo url: %w", err)
+	}
+	return nil
 }
 
 // ── Brief Revisions ──────────────────────────────────────────────
@@ -573,7 +630,10 @@ func (db *DB) CreateBriefRevision(ctx context.Context, projectID, userID, action
 	_, err := db.Pool.Exec(ctx,
 		`INSERT INTO brief_revisions (project_id, user_id, action, previous_brief) VALUES ($1, $2, $3, $4)`,
 		projectID, userID, action, previousBrief)
-	return err
+	if err != nil {
+		return fmt.Errorf("creating brief revision: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ListBriefRevisions(ctx context.Context, projectID string) ([]BriefRevision, error) {
@@ -586,7 +646,7 @@ func (db *DB) ListBriefRevisions(ctx context.Context, projectID string) ([]Brief
 		 ORDER BY r.created_at DESC
 		 LIMIT 50`, projectID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing brief revisions: %w", err)
 	}
 	defer rows.Close()
 
@@ -594,7 +654,7 @@ func (db *DB) ListBriefRevisions(ctx context.Context, projectID string) ([]Brief
 	for rows.Next() {
 		var r BriefRevision
 		if err := rows.Scan(&r.ID, &r.ProjectID, &r.UserID, &r.Action, &r.PreviousBrief, &r.CreatedAt, &r.UserName); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning brief revision: %w", err)
 		}
 		revs = append(revs, r)
 	}
@@ -619,7 +679,7 @@ func (db *DB) GetTicket(ctx context.Context, id string) (*Ticket, error) {
 		 FROM tickets WHERE id = $1`, id,
 	).Scan(&t.ID, &t.ProjectID, &t.ParentID, &t.Type, &t.Title, &t.DescriptionMarkdown, &t.Status, &t.Priority, &t.DateStart, &t.DateEnd, &t.AgentMode, &t.AgentName, &t.AssignedTo, &t.CreatedBy, &t.ArchivedAt, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting ticket: %w", err)
 	}
 	return t, nil
 }
@@ -637,7 +697,7 @@ func (db *DB) ListTickets(ctx context.Context, projectID, ticketType string) ([]
 
 	rows, err := db.Pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing tickets: %w", err)
 	}
 	defer rows.Close()
 	return scanTickets(rows)
@@ -648,14 +708,100 @@ func (db *DB) ListTicketsByParent(ctx context.Context, parentID string) ([]Ticke
 		`SELECT id, project_id, parent_id, type, title, description_markdown, status, priority, date_start, date_end, agent_mode, agent_name, assigned_to, created_by, archived_at, created_at, updated_at
 		 FROM tickets WHERE parent_id = $1 AND archived_at IS NULL ORDER BY created_at`, parentID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing tickets by parent: %w", err)
 	}
 	defer rows.Close()
 	return scanTickets(rows)
 }
 
 func (db *DB) ListFeatures(ctx context.Context, projectID string) ([]Ticket, error) {
-	return db.ListTickets(ctx, projectID, "feature")
+	tickets, err := db.ListTickets(ctx, projectID, "feature")
+	if err != nil {
+		return nil, fmt.Errorf("listing features: %w", err)
+	}
+	if err := db.populateChildCounts(ctx, tickets); err != nil {
+		return tickets, nil // non-fatal: return tickets without counts
+	}
+	return tickets, nil
+}
+
+// populateChildCounts fills ChildCount for each ticket in the slice.
+func (db *DB) populateChildCounts(ctx context.Context, tickets []Ticket) error {
+	if len(tickets) == 0 {
+		return nil
+	}
+	ids := make([]string, len(tickets))
+	for i, t := range tickets {
+		ids[i] = t.ID
+	}
+	rows, err := db.Pool.Query(ctx,
+		`SELECT parent_id, COUNT(*) FROM tickets
+		 WHERE parent_id = ANY($1) AND archived_at IS NULL
+		 GROUP BY parent_id`, ids)
+	if err != nil {
+		return fmt.Errorf("populating child counts: %w", err)
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var parentID string
+		var count int
+		if err := rows.Scan(&parentID, &count); err != nil {
+			return fmt.Errorf("scanning child count: %w", err)
+		}
+		counts[parentID] = count
+	}
+	for i := range tickets {
+		tickets[i].ChildCount = counts[tickets[i].ID]
+	}
+	return nil
+}
+
+// ExpandParentDates walks up the parent chain from the given ticket,
+// expanding each ancestor's date range to encompass the child's dates.
+// If an ancestor has no dates, they are seeded from the child.
+// Stops when there's no parent or no expansion is needed.
+func (db *DB) ExpandParentDates(ctx context.Context, childStart, childEnd *time.Time, parentID *string) error {
+	if parentID == nil || (childStart == nil && childEnd == nil) {
+		return nil
+	}
+	// Walk up at most 5 levels (feature → task → subtask depth + safety margin)
+	for i := 0; i < 5 && parentID != nil; i++ {
+		parent, err := db.GetTicket(ctx, *parentID)
+		if err != nil {
+			return nil // parent not found, nothing to expand
+		}
+
+		changed := false
+
+		if childStart != nil {
+			if parent.DateStart == nil || childStart.Before(*parent.DateStart) {
+				parent.DateStart = childStart
+				changed = true
+			}
+		}
+		if childEnd != nil {
+			if parent.DateEnd == nil || childEnd.After(*parent.DateEnd) {
+				parent.DateEnd = childEnd
+				changed = true
+			}
+		}
+
+		if !changed {
+			return nil // parent already encompasses child, no need to go higher
+		}
+
+		_, err = db.Pool.Exec(ctx,
+			`UPDATE tickets SET date_start = $1, date_end = $2, updated_at = now() WHERE id = $3`,
+			parent.DateStart, parent.DateEnd, parent.ID)
+		if err != nil {
+			return fmt.Errorf("expanding parent %s dates: %w", parent.ID, err)
+		}
+
+		// Continue up the chain
+		parentID = parent.ParentID
+	}
+	return nil
 }
 
 func (db *DB) ListBugs(ctx context.Context, projectID string) ([]Ticket, error) {
@@ -668,7 +814,7 @@ func (db *DB) ListGanttTickets(ctx context.Context, projectID string) ([]Ticket,
 		 FROM tickets WHERE project_id = $1 AND archived_at IS NULL AND date_start IS NOT NULL AND date_end IS NOT NULL
 		 ORDER BY date_start`, projectID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing gantt tickets: %w", err)
 	}
 	defer rows.Close()
 	return scanTickets(rows)
@@ -677,20 +823,29 @@ func (db *DB) ListGanttTickets(ctx context.Context, projectID string) ([]Ticket,
 func (db *DB) UpdateTicketStatus(ctx context.Context, id, status string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE tickets SET status = $1, updated_at = now() WHERE id = $2`, status, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating ticket status: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) UpdateTicketAgentMode(ctx context.Context, id string, mode, agent *string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE tickets SET agent_mode = $1, agent_name = $2, updated_at = now() WHERE id = $3`, mode, agent, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating ticket agent mode: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) UpdateTicket(ctx context.Context, t *Ticket) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE tickets SET title = $1, description_markdown = $2, priority = $3, date_start = $4, date_end = $5, assigned_to = $6, updated_at = now() WHERE id = $7`,
 		t.Title, t.DescriptionMarkdown, t.Priority, t.DateStart, t.DateEnd, t.AssignedTo, t.ID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating ticket: %w", err)
+	}
+	return nil
 }
 
 // ListAgentReady returns tickets that are ready for agent processing.
@@ -700,7 +855,7 @@ func (db *DB) ListAgentReady(ctx context.Context) ([]Ticket, error) {
 		 FROM tickets WHERE agent_mode IS NOT NULL AND archived_at IS NULL AND status IN ('ready', 'plan_review')
 		 ORDER BY priority DESC, created_at`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing agent ready tickets: %w", err)
 	}
 	defer rows.Close()
 	return scanTickets(rows)
@@ -711,7 +866,7 @@ func scanTickets(rows pgx.Rows) ([]Ticket, error) {
 	for rows.Next() {
 		var t Ticket
 		if err := rows.Scan(&t.ID, &t.ProjectID, &t.ParentID, &t.Type, &t.Title, &t.DescriptionMarkdown, &t.Status, &t.Priority, &t.DateStart, &t.DateEnd, &t.AgentMode, &t.AgentName, &t.AssignedTo, &t.CreatedBy, &t.ArchivedAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning ticket: %w", err)
 		}
 		tickets = append(tickets, t)
 	}
@@ -723,13 +878,19 @@ func scanTickets(rows pgx.Rows) ([]Ticket, error) {
 func (db *DB) ArchiveTicket(ctx context.Context, id string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE tickets SET archived_at = now(), updated_at = now() WHERE id = $1 OR parent_id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("archiving ticket: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) RestoreTicket(ctx context.Context, id string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE tickets SET archived_at = NULL, updated_at = now() WHERE id = $1 OR parent_id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("restoring ticket: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) DeleteTicket(ctx context.Context, id string) error {
@@ -751,7 +912,7 @@ func (db *DB) ListArchivedTickets(ctx context.Context, projectID string) ([]Tick
 		 FROM tickets WHERE project_id = $1 AND archived_at IS NOT NULL AND parent_id IS NULL
 		 ORDER BY archived_at DESC`, projectID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing archived tickets: %w", err)
 	}
 	defer rows.Close()
 	return scanTickets(rows)
@@ -777,7 +938,7 @@ func (db *DB) ListComments(ctx context.Context, ticketID string) ([]Comment, err
 		`SELECT c.id, c.ticket_id, c.user_id, c.agent_name, c.body_markdown, c.created_at
 		 FROM comments c WHERE c.ticket_id = $1 ORDER BY c.created_at`, ticketID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing comments: %w", err)
 	}
 	defer rows.Close()
 
@@ -785,7 +946,7 @@ func (db *DB) ListComments(ctx context.Context, ticketID string) ([]Comment, err
 	for rows.Next() {
 		var c Comment
 		if err := rows.Scan(&c.ID, &c.TicketID, &c.UserID, &c.AgentName, &c.BodyMarkdown, &c.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning comment: %w", err)
 		}
 		comments = append(comments, c)
 	}
@@ -798,7 +959,10 @@ func (db *DB) CreateActivity(ctx context.Context, ticketID string, userID *strin
 	_, err := db.Pool.Exec(ctx,
 		`INSERT INTO ticket_activities (ticket_id, user_id, agent_name, action, details_json) VALUES ($1, $2, $3, $4, $5)`,
 		ticketID, userID, agentName, action, detailsJSON)
-	return err
+	if err != nil {
+		return fmt.Errorf("creating activity: %w", err)
+	}
+	return nil
 }
 
 // ── WebAuthn Credentials ──────────────────────────────────────────
@@ -808,7 +972,10 @@ func (db *DB) CreateWebAuthnCredential(ctx context.Context, cred *WebAuthnCreden
 		`INSERT INTO webauthn_credentials (user_id, credential_id, public_key, attestation_type, authenticator_aaguid, sign_count, name)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		cred.UserID, cred.CredentialID, cred.PublicKey, cred.AttestationType, cred.AuthenticatorAAGUID, cred.SignCount, cred.Name)
-	return err
+	if err != nil {
+		return fmt.Errorf("creating webauthn credential: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ListWebAuthnCredentials(ctx context.Context, userID string) ([]WebAuthnCredential, error) {
@@ -816,7 +983,7 @@ func (db *DB) ListWebAuthnCredentials(ctx context.Context, userID string) ([]Web
 		`SELECT id, user_id, credential_id, public_key, attestation_type, authenticator_aaguid, sign_count, name, last_used_at, created_at
 		 FROM webauthn_credentials WHERE user_id = $1 ORDER BY created_at`, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing webauthn credentials: %w", err)
 	}
 	defer rows.Close()
 
@@ -824,7 +991,7 @@ func (db *DB) ListWebAuthnCredentials(ctx context.Context, userID string) ([]Web
 	for rows.Next() {
 		var c WebAuthnCredential
 		if err := rows.Scan(&c.ID, &c.UserID, &c.CredentialID, &c.PublicKey, &c.AttestationType, &c.AuthenticatorAAGUID, &c.SignCount, &c.Name, &c.LastUsedAt, &c.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning webauthn credential: %w", err)
 		}
 		creds = append(creds, c)
 	}
@@ -835,24 +1002,36 @@ func (db *DB) UpdateWebAuthnSignCount(ctx context.Context, credID string, signCo
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE webauthn_credentials SET sign_count = $1, last_used_at = $2 WHERE id = $3`,
 		signCount, time.Now(), credID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating webauthn sign count: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) DeleteWebAuthnCredential(ctx context.Context, credID string) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM webauthn_credentials WHERE id = $1`, credID)
-	return err
+	if err != nil {
+		return fmt.Errorf("deleting webauthn credential: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) DeleteAllWebAuthnCredentials(ctx context.Context, userID string) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM webauthn_credentials WHERE user_id = $1`, userID)
-	return err
+	if err != nil {
+		return fmt.Errorf("deleting all webauthn credentials: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) CountUserWebAuthnCredentials(ctx context.Context, userID string) (int, error) {
 	var count int
 	err := db.Pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM webauthn_credentials WHERE user_id = $1`, userID).Scan(&count)
-	return count, err
+	if err != nil {
+		return 0, fmt.Errorf("counting user webauthn credentials: %w", err)
+	}
+	return count, nil
 }
 
 // ── Users listing ──────────────────────────────────────────────────
@@ -879,7 +1058,7 @@ func (db *DB) GetAIConversation(ctx context.Context, id string) (*AIConversation
 		 FROM ai_conversations WHERE id = $1`, id,
 	).Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting ai conversation: %w", err)
 	}
 	return c, nil
 }
@@ -905,7 +1084,7 @@ func (db *DB) GetLatestAIConversation(ctx context.Context, userID string, projec
 		).Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting latest ai conversation: %w", err)
 	}
 	return c, nil
 }
@@ -913,13 +1092,19 @@ func (db *DB) GetLatestAIConversation(ctx context.Context, userID string, projec
 func (db *DB) UpdateAIConversationTitle(ctx context.Context, id, title string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE ai_conversations SET title = $1, updated_at = now() WHERE id = $2`, title, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating ai conversation title: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) TouchAIConversation(ctx context.Context, id string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE ai_conversations SET updated_at = now() WHERE id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("touching ai conversation: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ListAIConversations(ctx context.Context, userID string, limit int) ([]AIConversation, error) {
@@ -928,7 +1113,7 @@ func (db *DB) ListAIConversations(ctx context.Context, userID string, limit int)
 		 FROM ai_conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2`,
 		userID, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing ai conversations: %w", err)
 	}
 	defer rows.Close()
 
@@ -936,7 +1121,7 @@ func (db *DB) ListAIConversations(ctx context.Context, userID string, limit int)
 	for rows.Next() {
 		var c AIConversation
 		if err := rows.Scan(&c.ID, &c.UserID, &c.ProjectID, &c.Title, &c.CreatedAt, &c.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning ai conversation: %w", err)
 		}
 		convs = append(convs, c)
 	}
@@ -975,7 +1160,7 @@ func (db *DB) ListAIMessages(ctx context.Context, conversationID string) ([]AIMe
 		 FROM ai_messages WHERE conversation_id = $1 ORDER BY created_at`,
 		conversationID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing ai messages: %w", err)
 	}
 	defer rows.Close()
 
@@ -983,7 +1168,7 @@ func (db *DB) ListAIMessages(ctx context.Context, conversationID string) ([]AIMe
 	for rows.Next() {
 		var m AIMessage
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.UserID, &m.UserName, &m.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning ai message: %w", err)
 		}
 		msgs = append(msgs, m)
 	}
@@ -1008,7 +1193,10 @@ func (db *DB) GetOrCreateProjectConversation(ctx context.Context, projectID, cre
 
 func (db *DB) DeleteAIConversation(ctx context.Context, id string) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM ai_conversations WHERE id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("deleting ai conversation: %w", err)
+	}
+	return nil
 }
 
 // SearchTickets searches tickets by title matching a query within a project.
@@ -1032,7 +1220,7 @@ func (db *DB) SearchTickets(ctx context.Context, projectID, query string, ticket
 
 	rows, err := db.Pool.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("searching tickets: %w", err)
 	}
 	defer rows.Close()
 	return scanTickets(rows)
@@ -1063,7 +1251,7 @@ func (db *DB) GetProjectCost(ctx context.Context, id string) (*ProjectCost, erro
 		 FROM project_costs WHERE id = $1`, id,
 	).Scan(&c.ID, &c.ProjectID, &c.Month, &c.Category, &c.Name, &c.AmountCents, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting project cost: %w", err)
 	}
 	return c, nil
 }
@@ -1072,12 +1260,18 @@ func (db *DB) UpdateProjectCost(ctx context.Context, id string, amountCents int6
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE project_costs SET amount_cents = $1, updated_at = now() WHERE id = $2`,
 		amountCents, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating project cost: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) DeleteProjectCost(ctx context.Context, id string) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM project_costs WHERE id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("deleting project cost: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ListProjectCosts(ctx context.Context, projectID, month string) ([]ProjectCost, error) {
@@ -1086,7 +1280,7 @@ func (db *DB) ListProjectCosts(ctx context.Context, projectID, month string) ([]
 		 FROM project_costs WHERE project_id = $1 AND month = $2
 		 ORDER BY category, name`, projectID, month)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing project costs: %w", err)
 	}
 	defer rows.Close()
 
@@ -1094,7 +1288,7 @@ func (db *DB) ListProjectCosts(ctx context.Context, projectID, month string) ([]
 	for rows.Next() {
 		var c ProjectCost
 		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Month, &c.Category, &c.Name, &c.AmountCents, &c.CreatedAt, &c.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning project cost: %w", err)
 		}
 		costs = append(costs, c)
 	}
@@ -1109,7 +1303,7 @@ func (db *DB) ListOrgCostsByMonth(ctx context.Context, orgID, month string) ([]P
 		 WHERE p.org_id = $1 AND pc.month = $2
 		 ORDER BY p.name, pc.category, pc.name`, orgID, month)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing org costs by month: %w", err)
 	}
 	defer rows.Close()
 
@@ -1117,7 +1311,7 @@ func (db *DB) ListOrgCostsByMonth(ctx context.Context, orgID, month string) ([]P
 	for rows.Next() {
 		var c ProjectCost
 		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Month, &c.Category, &c.Name, &c.AmountCents, &c.CreatedAt, &c.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning org cost: %w", err)
 		}
 		costs = append(costs, c)
 	}
@@ -1131,7 +1325,10 @@ func (db *DB) CreateAIUsageEntry(ctx context.Context, orgID string, projectID *s
 		`INSERT INTO ai_usage_entries (org_id, project_id, user_id, model, label, input_tokens, output_tokens, cost_cents)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		orgID, projectID, userID, model, label, inputTokens, outputTokens, costCents)
-	return err
+	if err != nil {
+		return fmt.Errorf("creating ai usage entry: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) ListAIUsageByProjectMonth(ctx context.Context, projectID, month string) ([]AIUsageSummary, error) {
@@ -1145,7 +1342,7 @@ func (db *DB) ListAIUsageByProjectMonth(ctx context.Context, projectID, month st
 		 WHERE project_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
 		 GROUP BY model, label ORDER BY model`, projectID, month)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing ai usage by project month: %w", err)
 	}
 	defer rows.Close()
 
@@ -1153,7 +1350,7 @@ func (db *DB) ListAIUsageByProjectMonth(ctx context.Context, projectID, month st
 	for rows.Next() {
 		var s AIUsageSummary
 		if err := rows.Scan(&s.Model, &s.Label, &s.InputTokens, &s.OutputTokens, &s.TotalCents, &s.EntryCount); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning ai usage summary: %w", err)
 		}
 		summaries = append(summaries, s)
 	}
@@ -1171,7 +1368,7 @@ func (db *DB) ListAIUsageByOrgMonth(ctx context.Context, orgID, month string) ([
 		 WHERE org_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
 		 GROUP BY model, label ORDER BY model`, orgID, month)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing ai usage by org month: %w", err)
 	}
 	defer rows.Close()
 
@@ -1179,7 +1376,7 @@ func (db *DB) ListAIUsageByOrgMonth(ctx context.Context, orgID, month string) ([
 	for rows.Next() {
 		var s AIUsageSummary
 		if err := rows.Scan(&s.Model, &s.Label, &s.InputTokens, &s.OutputTokens, &s.TotalCents, &s.EntryCount); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning ai usage summary: %w", err)
 		}
 		summaries = append(summaries, s)
 	}
@@ -1193,7 +1390,10 @@ func (db *DB) GetTotalAIUsageCentsForOrgMonth(ctx context.Context, orgID, month 
 		 FROM ai_usage_entries
 		 WHERE org_id = $1 AND to_char(created_at, 'YYYY-MM') = $2`,
 		orgID, month).Scan(&total)
-	return total, err
+	if err != nil {
+		return 0, fmt.Errorf("getting total ai usage cents for org month: %w", err)
+	}
+	return total, nil
 }
 
 
@@ -1207,7 +1407,7 @@ func (db *DB) ListCostMonths(ctx context.Context, orgID string) ([]string, error
 		   SELECT to_char(a.created_at, 'YYYY-MM') AS month FROM ai_usage_entries a WHERE a.org_id = $1
 		 ) AS months ORDER BY month DESC`, orgID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing cost months: %w", err)
 	}
 	defer rows.Close()
 
@@ -1215,7 +1415,7 @@ func (db *DB) ListCostMonths(ctx context.Context, orgID string) ([]string, error
 	for rows.Next() {
 		var m string
 		if err := rows.Scan(&m); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning cost month: %w", err)
 		}
 		months = append(months, m)
 	}
@@ -1227,7 +1427,7 @@ func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 		`SELECT id, email, '', name, role, NULL, totp_verified, NULL, must_setup_2fa, preferred_2fa_method, created_at, updated_at
 		 FROM users ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing users: %w", err)
 	}
 	defer rows.Close()
 
@@ -1235,7 +1435,7 @@ func (db *DB) ListUsers(ctx context.Context) ([]User, error) {
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.TOTPSecret, &u.TOTPVerified, &u.RecoveryCodes, &u.MustSetup2FA, &u.Preferred2FAMethod, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning user: %w", err)
 		}
 		users = append(users, u)
 	}
@@ -1252,7 +1452,10 @@ func (db *DB) CreateAttachment(ctx context.Context, ticketID, fileName, filePath
 		 RETURNING id, ticket_id, file_name, file_path, content_type, size_bytes, uploaded_by, created_at`,
 		ticketID, fileName, filePath, contentType, sizeBytes, uploadedBy,
 	).Scan(&a.ID, &a.TicketID, &a.FileName, &a.FilePath, &a.ContentType, &a.SizeBytes, &a.UploadedBy, &a.CreatedAt)
-	return &a, err
+	if err != nil {
+		return nil, fmt.Errorf("creating attachment: %w", err)
+	}
+	return &a, nil
 }
 
 func (db *DB) ListAttachmentsByTicket(ctx context.Context, ticketID string) ([]TicketAttachment, error) {
@@ -1260,7 +1463,7 @@ func (db *DB) ListAttachmentsByTicket(ctx context.Context, ticketID string) ([]T
 		`SELECT id, ticket_id, file_name, file_path, content_type, size_bytes, uploaded_by, created_at
 		 FROM ticket_attachments WHERE ticket_id = $1 ORDER BY created_at`, ticketID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing attachments by ticket: %w", err)
 	}
 	defer rows.Close()
 
@@ -1268,7 +1471,7 @@ func (db *DB) ListAttachmentsByTicket(ctx context.Context, ticketID string) ([]T
 	for rows.Next() {
 		var a TicketAttachment
 		if err := rows.Scan(&a.ID, &a.TicketID, &a.FileName, &a.FilePath, &a.ContentType, &a.SizeBytes, &a.UploadedBy, &a.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning attachment: %w", err)
 		}
 		attachments = append(attachments, a)
 	}
@@ -1277,7 +1480,10 @@ func (db *DB) ListAttachmentsByTicket(ctx context.Context, ticketID string) ([]T
 
 func (db *DB) DeleteAttachment(ctx context.Context, id string) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM ticket_attachments WHERE id = $1`, id)
-	return err
+	if err != nil {
+		return fmt.Errorf("deleting attachment: %w", err)
+	}
+	return nil
 }
 
 // ── Reactions ─────────────────────────────────────────────────────
@@ -1323,7 +1529,7 @@ func (db *DB) ListReactionGroups(ctx context.Context, targetType, targetID, curr
 	for rows.Next() {
 		var g ReactionGroup
 		if err := rows.Scan(&g.Emoji, &g.Count, &g.UserReacted); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning reaction group: %w", err)
 		}
 		groups = append(groups, g)
 	}
@@ -1354,9 +1560,85 @@ func (db *DB) ListReactionGroupsBatch(ctx context.Context, targetType string, ta
 		var targetID string
 		var g ReactionGroup
 		if err := rows.Scan(&targetID, &g.Emoji, &g.Count, &g.UserReacted); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning reaction group batch: %w", err)
 		}
 		result[targetID] = append(result[targetID], g)
 	}
 	return result, rows.Err()
+}
+
+// ── Org-Scoped Queries (Data Isolation) ──────────────────────
+
+// GetTicketScoped fetches a ticket only if it belongs to a project within the given org.
+func (db *DB) GetTicketScoped(ctx context.Context, ticketID, orgID string) (*Ticket, error) {
+	t := &Ticket{}
+	err := db.Pool.QueryRow(ctx,
+		`SELECT t.id, t.project_id, t.parent_id, t.type, t.title, t.description_markdown,
+		        t.status, t.priority, t.date_start, t.date_end, t.agent_mode, t.agent_name,
+		        t.assigned_to, t.created_by, t.archived_at, t.created_at, t.updated_at
+		 FROM tickets t
+		 JOIN projects p ON p.id = t.project_id
+		 WHERE t.id = $1 AND p.org_id = $2`,
+		ticketID, orgID,
+	).Scan(&t.ID, &t.ProjectID, &t.ParentID, &t.Type, &t.Title, &t.DescriptionMarkdown,
+		&t.Status, &t.Priority, &t.DateStart, &t.DateEnd, &t.AgentMode, &t.AgentName,
+		&t.AssignedTo, &t.CreatedBy, &t.ArchivedAt, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("getting org-scoped ticket: %w", err)
+	}
+	return t, nil
+}
+
+// GetAttachmentByID fetches an attachment by ID for authorization checks.
+func (db *DB) GetAttachmentByID(ctx context.Context, id string) (*TicketAttachment, error) {
+	a := &TicketAttachment{}
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, ticket_id, file_name, file_path, content_type, size_bytes, uploaded_by, created_at
+		 FROM ticket_attachments WHERE id = $1`, id,
+	).Scan(&a.ID, &a.TicketID, &a.FileName, &a.FilePath, &a.ContentType, &a.SizeBytes, &a.UploadedBy, &a.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("getting attachment: %w", err)
+	}
+	return a, nil
+}
+
+// DeleteTicketTx wraps ticket deletion (children + parent) in a transaction.
+func (db *DB) DeleteTicketTx(ctx context.Context, ticketID string) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM tickets WHERE parent_id = $1`, ticketID); err != nil {
+		return fmt.Errorf("deleting child tickets: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM tickets WHERE id = $1`, ticketID); err != nil {
+		return fmt.Errorf("deleting ticket: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing delete ticket transaction: %w", err)
+	}
+	return nil
+}
+
+// UpdateTOTPLastUsed records when a TOTP code was last used (replay prevention).
+func (db *DB) UpdateTOTPLastUsed(ctx context.Context, userID string, usedAt time.Time) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE users SET totp_last_used_at = $1 WHERE id = $2`, usedAt, userID)
+	if err != nil {
+		return fmt.Errorf("updating totp last used: %w", err)
+	}
+	return nil
+}
+
+// GetTOTPLastUsed returns the last time a TOTP code was used for a user.
+func (db *DB) GetTOTPLastUsed(ctx context.Context, userID string) (*time.Time, error) {
+	var lastUsed *time.Time
+	err := db.Pool.QueryRow(ctx,
+		`SELECT totp_last_used_at FROM users WHERE id = $1`, userID).Scan(&lastUsed)
+	if err != nil {
+		return nil, fmt.Errorf("getting totp last used: %w", err)
+	}
+	return lastUsed, nil
 }

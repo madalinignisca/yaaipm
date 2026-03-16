@@ -104,8 +104,10 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 					"priority":    {Type: genai.TypeString, Description: "Ticket priority", Enum: []string{"low", "medium", "high", "critical"}},
 					"description": {Type: genai.TypeString, Description: "Detailed description in markdown"},
 					"parent_id":   {Type: genai.TypeString, Description: "UUID of the parent ticket. Required for tasks (parent is a feature) and subtasks (parent is a task). Must not be set for features or bugs."},
+					"date_start":  {Type: genai.TypeString, Description: "Start date in YYYY-MM-DD format (e.g. 2026-03-15). Used for timeline/Gantt view."},
+					"date_end":    {Type: genai.TypeString, Description: "End date in YYYY-MM-DD format (e.g. 2026-03-20). Used for timeline/Gantt view."},
 				},
-				Required: []string{"project_id", "title", "type", "priority"},
+				Required: []string{"project_id", "type", "priority"},
 			},
 		},
 		{
@@ -133,6 +135,23 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 			},
 		},
 		{
+			Name:        "update_ticket",
+			Description: "Update fields on an existing ticket (title, description, priority, dates, status). Use when the user asks to edit or modify a ticket's details. Only provided fields will be updated.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"ticket_id":   {Type: genai.TypeString, Description: "UUID of the ticket to update"},
+					"title":       {Type: genai.TypeString, Description: "New title (optional)"},
+					"description": {Type: genai.TypeString, Description: "New description in markdown (optional)"},
+					"priority":    {Type: genai.TypeString, Description: "New priority (optional)", Enum: []string{"low", "medium", "high", "critical"}},
+					"status":      {Type: genai.TypeString, Description: "New status (optional)", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
+					"date_start":  {Type: genai.TypeString, Description: "Start date in YYYY-MM-DD format (optional)"},
+					"date_end":    {Type: genai.TypeString, Description: "End date in YYYY-MM-DD format (optional)"},
+				},
+				Required: []string{"ticket_id"},
+			},
+		},
+		{
 			Name:        "update_project_brief",
 			Description: "Create or update the project brief (markdown). Use when the user asks to write, update, or replace the project brief content. The brief should be well-structured markdown.",
 			Parameters: &genai.Schema{
@@ -142,6 +161,97 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 					"brief_markdown": {Type: genai.TypeString, Description: "The full project brief content in markdown format"},
 				},
 				Required: []string{"brief_markdown"},
+			},
+		},
+		{
+			Name:        "get_ticket",
+			Description: "Get full details of a specific ticket including description, comments, and child tickets. Use when the user asks about a specific ticket or you need to see its full content.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"ticket_id": {Type: genai.TypeString, Description: "UUID of the ticket"},
+				},
+				Required: []string{"ticket_id"},
+			},
+		},
+		{
+			Name:        "list_tickets",
+			Description: "List tickets by type or by parent. Use to get all features in a project, all bugs, or all children (tasks/subtasks) of a specific ticket. More efficient than search when you want a complete list.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"project_id": {Type: genai.TypeString, Description: "UUID of the project (optional if conversation is scoped to a project)"},
+					"type":       {Type: genai.TypeString, Description: "Filter by ticket type", Enum: []string{"feature", "task", "subtask", "bug"}},
+					"parent_id":  {Type: genai.TypeString, Description: "List children of this ticket (overrides type filter)"},
+				},
+			},
+		},
+		{
+			Name:        "archive_ticket",
+			Description: "Archive a ticket (soft-delete). Staff/superadmin only. Use when a ticket is no longer needed but should be preserved for reference.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"ticket_id": {Type: genai.TypeString, Description: "UUID of the ticket to archive"},
+				},
+				Required: []string{"ticket_id"},
+			},
+		},
+		{
+			Name:        "restore_ticket",
+			Description: "Restore an archived ticket. Staff/superadmin only.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"ticket_id": {Type: genai.TypeString, Description: "UUID of the ticket to restore"},
+				},
+				Required: []string{"ticket_id"},
+			},
+		},
+		{
+			Name:        "delete_ticket",
+			Description: "Permanently delete a ticket. Staff/superadmin only. This action is irreversible — confirm with the user first.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"ticket_id": {Type: genai.TypeString, Description: "UUID of the ticket to permanently delete"},
+				},
+				Required: []string{"ticket_id"},
+			},
+		},
+		{
+			Name:        "update_agent_mode",
+			Description: "Set the agent mode and agent name on a ticket for orchestrator dispatch. Staff/superadmin only.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"ticket_id":  {Type: genai.TypeString, Description: "UUID of the ticket"},
+					"agent_mode": {Type: genai.TypeString, Description: "Agent mode. Use 'none' to clear.", Enum: []string{"plan", "implement", "none"}},
+					"agent_name": {Type: genai.TypeString, Description: "Agent to assign. Use 'none' to clear.", Enum: []string{"claude", "gemini", "codex", "mistral", "none"}},
+				},
+				Required: []string{"ticket_id"},
+			},
+		},
+		{
+			Name:        "update_repo_url",
+			Description: "Set or update the repository URL for a project. Staff/superadmin only.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"project_id": {Type: genai.TypeString, Description: "UUID of the project"},
+					"repo_url":   {Type: genai.TypeString, Description: "Repository URL (e.g. https://github.com/org/repo)"},
+				},
+				Required: []string{"project_id", "repo_url"},
+			},
+		},
+		{
+			Name:        "mark_brief_reviewed",
+			Description: "Mark the project brief as reviewed. Staff/superadmin only. Creates a revision record indicating the brief was reviewed.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"project_id": {Type: genai.TypeString, Description: "UUID of the project (optional if conversation is scoped to a project)"},
+				},
 			},
 		},
 	}
@@ -214,7 +324,12 @@ func (g *GeminiClient) StreamChat(ctx context.Context, opts ChatOpts, onChunk fu
 				if part.FunctionCall != nil {
 					functionCalls = append(functionCalls, part.FunctionCall)
 				}
-				modelParts = append(modelParts, part)
+				// Only keep parts that carry actual data — skip empty
+				// thinking-mode marker parts that have no text/call/data,
+				// as sending them back to the API triggers INVALID_ARGUMENT.
+				if part.Text != "" || part.FunctionCall != nil || part.FunctionResponse != nil || part.InlineData != nil {
+					modelParts = append(modelParts, part)
+				}
 			}
 		}
 

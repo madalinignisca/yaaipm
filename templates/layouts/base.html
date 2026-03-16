@@ -8,6 +8,8 @@
     <link rel="stylesheet" href="{{asset "css/app.css"}}">
     {{highlightCSS}}
     <script src="{{asset "js/bundle.js"}}" defer></script>
+    <meta name="htmx-config" content='{"historyCacheSize":0}'>
+    {{if .CSRFToken}}<meta name="csrf-token" content="{{.CSRFToken}}">{{end}}
     {{block "page_head" .}}{{end}}
 </head>
 <body hx-boost="true">

@@ -78,7 +78,11 @@ function chatWidget() {
           .replace(/\n/g, '<br>');
       }
       if (typeof marked !== 'undefined' && marked.parse) {
-        return marked.parse(text, { breaks: true });
+        var html = marked.parse(text, { breaks: true });
+        if (typeof DOMPurify !== 'undefined') {
+          html = DOMPurify.sanitize(html);
+        }
+        return html;
       }
       return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
     },

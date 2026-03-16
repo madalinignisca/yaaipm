@@ -3,6 +3,7 @@ package handlers
 import (
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/madalin/forgedesk/internal/auth"
@@ -267,6 +268,16 @@ func (h *ProjectHandler) UpdateRepoURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repoURL := strings.TrimSpace(r.FormValue("repo_url"))
+
+	// Validate repo URL scheme if non-empty
+	if repoURL != "" {
+		validSchemes := map[string]bool{"http": true, "https": true, "ssh": true, "git": true}
+		if u, err := url.Parse(repoURL); err != nil || (u.Scheme != "" && !validSchemes[u.Scheme]) {
+			http.Error(w, "Invalid repository URL (only http, https, ssh, git allowed)", http.StatusBadRequest)
+			return
+		}
+	}
+
 	if err := h.db.UpdateProjectRepoURL(r.Context(), proj.ID, repoURL); err != nil {
 		log.Printf("updating repo url: %v", err)
 		http.Error(w, "Failed to update", http.StatusInternalServerError)

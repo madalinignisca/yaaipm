@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/config"
@@ -16,6 +17,7 @@ type Dispatcher struct {
 	claude    *ai.AnthropicClient
 	cfg       *config.Config
 	workspace *WorkspaceManager
+	mu        sync.Mutex
 }
 
 // NewDispatcher creates a new Dispatcher.
@@ -29,7 +31,14 @@ func NewDispatcher(db *models.DB, claude *ai.AnthropicClient, cfg *config.Config
 }
 
 // ProcessTickets finds all agent-ready tickets and dispatches them.
+// Uses TryLock to prevent concurrent runs from overlapping.
 func (d *Dispatcher) ProcessTickets(ctx context.Context) {
+	if !d.mu.TryLock() {
+		log.Println("ProcessTickets already running, skipping")
+		return
+	}
+	defer d.mu.Unlock()
+
 	tickets, err := d.db.ListAgentReady(ctx)
 	if err != nil {
 		log.Printf("fetching agent-ready tickets: %v", err)

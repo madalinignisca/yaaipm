@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.24.4-alpine3.21 AS builder
 ENV GOTOOLCHAIN=auto
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -8,8 +8,9 @@ RUN sh scripts/bundle.sh
 RUN CGO_ENABLED=0 go build -o forgedesk ./cmd/server
 RUN CGO_ENABLED=0 go build -o orchestrator ./cmd/orchestrator
 
-FROM alpine:3.20
+FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
+RUN adduser -D -u 1000 forgedesk
 COPY --from=builder /app/forgedesk /usr/local/bin/
 COPY --from=builder /app/orchestrator /usr/local/bin/
 COPY --from=builder /app/templates /app/templates
@@ -17,4 +18,5 @@ COPY --from=builder /app/static /app/static
 COPY --from=builder /app/migrations /app/migrations
 WORKDIR /app
 EXPOSE 8080
+USER forgedesk
 CMD ["forgedesk"]
