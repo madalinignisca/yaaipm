@@ -21,7 +21,7 @@ require (
 	golang.org/x/crypto v0.48.0
 	golang.org/x/text v0.35.0
 	golang.org/x/time v0.15.0
-	google.golang.org/genai v1.48.0
+	google.golang.org/genai v1.51.0
 )
 
 require (
