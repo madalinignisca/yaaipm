@@ -3,7 +3,7 @@ package middleware
 import (
 	"net/http"
 
-	"github.com/gorilla/csrf"
+	csrf "filippo.io/csrf/gorilla"
 )
 
 // CSRFProtect returns CSRF middleware configured for ForgeDesk.

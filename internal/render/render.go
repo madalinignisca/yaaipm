@@ -14,7 +14,7 @@ import (
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/styles"
-	gorillacsrf "github.com/gorilla/csrf"
+	gorillacsrf "filippo.io/csrf/gorilla"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/static"
 	"github.com/microcosm-cc/bluemonday"
