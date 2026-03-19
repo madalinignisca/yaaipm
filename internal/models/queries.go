@@ -624,6 +624,29 @@ func (db *DB) UpdateProjectRepoURL(ctx context.Context, projectID, repoURL strin
 	return nil
 }
 
+func (db *DB) TransferProject(ctx context.Context, projectID, targetOrgID string) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx,
+		`UPDATE projects SET org_id = $1, updated_at = now() WHERE id = $2`, targetOrgID, projectID)
+	if err != nil {
+		return fmt.Errorf("transferring project: %w", err)
+	}
+
+	// Keep AI cost attribution consistent
+	_, err = tx.Exec(ctx,
+		`UPDATE ai_usage_entries SET org_id = $1 WHERE project_id = $2`, targetOrgID, projectID)
+	if err != nil {
+		return fmt.Errorf("updating ai usage org: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
 // ── Brief Revisions ──────────────────────────────────────────────
 
 func (db *DB) CreateBriefRevision(ctx context.Context, projectID, userID, action, previousBrief string) error {

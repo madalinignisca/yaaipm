@@ -28,6 +28,7 @@ type projectPageData struct {
 	Tickets   []models.Ticket
 	IsStaff   bool
 	Revisions []models.BriefRevision
+	AllOrgs   []models.Organization
 }
 
 func (h *ProjectHandler) getOrgAndProject(r *http.Request, user *models.User) (*models.Organization, *models.Project, error) {
@@ -245,13 +246,62 @@ func (h *ProjectHandler) ProjectSettings(w http.ResponseWriter, r *http.Request)
 	}
 
 	projects := middleware.GetProjects(r)
+	allOrgs, _ := h.db.ListAllOrgs(r.Context())
 
 	h.engine.Render(w, r, "project_settings.html", render.PageData{
 		Title: proj.Name + " — Settings", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "settings",
 		ProjectID: proj.ID,
-		Data:      projectPageData{Project: proj, Projects: projects, Tab: "settings", IsStaff: true},
+		Data:      projectPageData{Project: proj, Projects: projects, Tab: "settings", IsStaff: true, AllOrgs: allOrgs},
 	})
+}
+
+func (h *ProjectHandler) TransferProject(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	org, proj, err := h.getOrgAndProject(r, user)
+	if err != nil {
+		h.engine.RenderError(w, http.StatusNotFound, "Not found")
+		return
+	}
+
+	targetOrgID := r.FormValue("target_org_id")
+	if targetOrgID == "" || targetOrgID == org.ID {
+		http.Error(w, "Invalid target organization", http.StatusBadRequest)
+		return
+	}
+
+	targetOrg, err := h.db.GetOrgByID(r.Context(), targetOrgID)
+	if err != nil {
+		http.Error(w, "Target organization not found", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.TransferProject(r.Context(), proj.ID, targetOrgID); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			// Slug collision in target org
+			projects := middleware.GetProjects(r)
+			allOrgs, _ := h.db.ListAllOrgs(r.Context())
+			h.engine.Render(w, r, "project_settings.html", render.PageData{
+				Title: proj.Name + " — Settings", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
+				Projects: projects, ActiveProject: proj, ActiveTab: "settings",
+				ProjectID: proj.ID,
+				Flash:     "Cannot transfer: " + targetOrg.Name + " already has a project with slug \"" + proj.Slug + "\".",
+				FlashType: "error",
+				Data:      projectPageData{Project: proj, Projects: projects, Tab: "settings", IsStaff: true, AllOrgs: allOrgs},
+			})
+			return
+		}
+		log.Printf("transferring project: %v", err)
+		http.Error(w, "Failed to transfer project", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/orgs/"+targetOrg.Slug+"/projects/"+proj.Slug+"/settings", http.StatusSeeOther)
 }
 
 func (h *ProjectHandler) UpdateRepoURL(w http.ResponseWriter, r *http.Request) {

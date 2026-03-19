@@ -218,6 +218,7 @@ func main() {
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/archived", projH.ProjectArchived)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/settings", projH.ProjectSettings)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/settings/repo", projH.UpdateRepoURL)
+		r.Post("/orgs/{orgSlug}/projects/{projSlug}/transfer", projH.TransferProject)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.ProjectCosts)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.AddCostItem)
 		r.Get("/orgs/{orgSlug}/costs", costH.OrgCosts)

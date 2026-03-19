@@ -20,6 +20,36 @@
             <button type="submit" class="btn btn-primary">Save Repository URL</button>
         </form>
     </div>
+
+    {{if gt (len .AllOrgs) 1}}
+    <div class="card" x-data="{ confirm: false, targetName: '' }">
+        <h3 class="mb-sm" style="color: var(--red-600)">Transfer Project</h3>
+        <p class="text-sm text-muted mb-md">Move this project and all its tickets, comments, and costs to a different organization.</p>
+        <form method="POST" action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/transfer"
+              @submit.prevent="if (confirm) { $el.submit() } else { targetName = $refs.orgSelect.selectedOptions[0]?.text || ''; confirm = true; }">
+            {{csrfField}}
+            <div class="form-group mb-md">
+                <label class="form-label" for="target_org_id">Target Organization</label>
+                <select id="target_org_id" name="target_org_id" class="form-select" required x-ref="orgSelect" @change="confirm = false">
+                    <option value="">Select organization...</option>
+                    {{range .AllOrgs}}
+                    {{if ne .ID $.Org.ID}}
+                    <option value="{{.ID}}">{{.Name}}</option>
+                    {{end}}
+                    {{end}}
+                </select>
+            </div>
+            <template x-if="confirm">
+                <div class="mb-md" style="padding: .75rem; background: var(--red-50, #fef2f2); border: 1px solid var(--red-200, #fecaca); border-radius: var(--radius-md);">
+                    <p class="text-sm" style="color: var(--red-700, #b91c1c); margin: 0;">
+                        Transfer <strong>{{.Project.Name}}</strong> to <strong x-text="targetName"></strong>? All tickets, comments, and costs will move with it.
+                    </p>
+                </div>
+            </template>
+            <button type="submit" class="btn btn-danger" x-text="confirm ? 'Confirm Transfer' : 'Transfer Project'"></button>
+        </form>
+    </div>
+    {{end}}
 </div>
 {{end}}
 {{end}}
