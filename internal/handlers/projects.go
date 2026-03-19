@@ -23,12 +23,12 @@ func NewProjectHandler(db *models.DB, engine *render.Engine) *ProjectHandler {
 
 type projectPageData struct {
 	Project   *models.Project
-	Projects  []models.Project
 	Tab       string
+	Projects  []models.Project
 	Tickets   []models.Ticket
-	IsStaff   bool
 	Revisions []models.BriefRevision
 	AllOrgs   []models.Organization
+	IsStaff   bool
 }
 
 func (h *ProjectHandler) getOrgAndProject(r *http.Request, user *models.User) (*models.Organization, *models.Project, error) {
@@ -41,8 +41,8 @@ func (h *ProjectHandler) getOrgAndProject(r *http.Request, user *models.User) (*
 	}
 
 	if !auth.IsStaffOrAbove(user.Role) {
-		if _, err := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); err != nil {
-			return nil, nil, err
+		if _, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); memErr != nil {
+			return nil, nil, memErr
 		}
 	}
 
@@ -65,7 +65,7 @@ func (h *ProjectHandler) ProjectBrief(w http.ResponseWriter, r *http.Request) {
 	projects := middleware.GetProjects(r)
 	revisions, _ := h.db.ListBriefRevisions(r.Context(), proj.ID)
 
-	h.engine.Render(w, r, "project_brief.html", render.PageData{
+	_ = h.engine.Render(w, r, "project_brief.html", render.PageData{
 		Title: proj.Name + " — Brief", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "brief",
 		ProjectID: proj.ID,
@@ -94,7 +94,7 @@ func (h *ProjectHandler) UpdateBrief(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("HX-Redirect", r.URL.Path)
+	w.Header().Set("Hx-Redirect", r.URL.Path)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -112,7 +112,7 @@ func (h *ProjectHandler) MarkBriefReviewed(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	w.Header().Set("HX-Redirect", r.URL.Path)
+	w.Header().Set("Hx-Redirect", r.URL.Path)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -127,7 +127,7 @@ func (h *ProjectHandler) ProjectFeatures(w http.ResponseWriter, r *http.Request)
 	features, _ := h.db.ListFeatures(r.Context(), proj.ID)
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, r, "project_features.html", render.PageData{
+	_ = h.engine.Render(w, r, "project_features.html", render.PageData{
 		Title: proj.Name + " — Features", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "features",
 		ProjectID: proj.ID,
@@ -146,7 +146,7 @@ func (h *ProjectHandler) ProjectBugs(w http.ResponseWriter, r *http.Request) {
 	bugs, _ := h.db.ListBugs(r.Context(), proj.ID)
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, r, "project_bugs.html", render.PageData{
+	_ = h.engine.Render(w, r, "project_bugs.html", render.PageData{
 		Title: proj.Name + " — Bugs", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "bugs",
 		ProjectID: proj.ID,
@@ -165,7 +165,7 @@ func (h *ProjectHandler) ProjectGantt(w http.ResponseWriter, r *http.Request) {
 	tickets, _ := h.db.ListGanttTickets(r.Context(), proj.ID)
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, r, "project_gantt.html", render.PageData{
+	_ = h.engine.Render(w, r, "project_gantt.html", render.PageData{
 		Title: proj.Name + " — Timeline", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "gantt",
 		ProjectID: proj.ID,
@@ -190,8 +190,8 @@ func (h *ProjectHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !auth.IsStaffOrAbove(user.Role) {
-		mem, err := h.db.GetOrgMembership(r.Context(), user.ID, org.ID)
-		if err != nil || !auth.CanManageOrg(mem.Role) {
+		mem, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID)
+		if memErr != nil || !auth.CanManageOrg(mem.Role) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -224,7 +224,7 @@ func (h *ProjectHandler) ProjectArchived(w http.ResponseWriter, r *http.Request)
 	archived, _ := h.db.ListArchivedTickets(r.Context(), proj.ID)
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, r, "project_archived.html", render.PageData{
+	_ = h.engine.Render(w, r, "project_archived.html", render.PageData{
 		Title: proj.Name + " — Archived", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "archived",
 		ProjectID: proj.ID,
@@ -248,7 +248,7 @@ func (h *ProjectHandler) ProjectSettings(w http.ResponseWriter, r *http.Request)
 	projects := middleware.GetProjects(r)
 	allOrgs, _ := h.db.ListAllOrgs(r.Context())
 
-	h.engine.Render(w, r, "project_settings.html", render.PageData{
+	_ = h.engine.Render(w, r, "project_settings.html", render.PageData{
 		Title: proj.Name + " — Settings", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "settings",
 		ProjectID: proj.ID,
@@ -286,7 +286,7 @@ func (h *ProjectHandler) TransferProject(w http.ResponseWriter, r *http.Request)
 			// Slug collision in target org
 			projects := middleware.GetProjects(r)
 			allOrgs, _ := h.db.ListAllOrgs(r.Context())
-			h.engine.Render(w, r, "project_settings.html", render.PageData{
+			_ = h.engine.Render(w, r, "project_settings.html", render.PageData{
 				Title: proj.Name + " — Settings", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 				Projects: projects, ActiveProject: proj, ActiveTab: "settings",
 				ProjectID: proj.ID,
@@ -334,7 +334,6 @@ func (h *ProjectHandler) UpdateRepoURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("HX-Redirect", r.URL.Path[:strings.LastIndex(r.URL.Path, "/")])
+	w.Header().Set("Hx-Redirect", r.URL.Path[:strings.LastIndex(r.URL.Path, "/")])
 	w.WriteHeader(http.StatusOK)
 }
-

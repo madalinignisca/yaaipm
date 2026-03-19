@@ -239,7 +239,8 @@ func TestDeleteTicket(t *testing.T) {
 	}
 
 	// Delete the parent (should cascade children + comments)
-	if err := db.DeleteTicket(ctx, parent.ID); err != nil {
+	err = db.DeleteTicket(ctx, parent.ID)
+	if err != nil {
 		t.Fatalf("DeleteTicket: %v", err)
 	}
 
@@ -454,7 +455,8 @@ func TestAIConversationLifecycle(t *testing.T) {
 	}
 
 	// Update title
-	if err := db.UpdateAIConversationTitle(ctx, conv1.ID, "My Chat"); err != nil {
+	err = db.UpdateAIConversationTitle(ctx, conv1.ID, "My Chat")
+	if err != nil {
 		t.Fatalf("UpdateAIConversationTitle: %v", err)
 	}
 	updated, _ := db.GetAIConversation(ctx, conv1.ID)
@@ -466,7 +468,8 @@ func TestAIConversationLifecycle(t *testing.T) {
 	beforeTouch := updated.UpdatedAt
 	// Small delay to ensure different timestamp
 	time.Sleep(10 * time.Millisecond)
-	if err := db.TouchAIConversation(ctx, conv1.ID); err != nil {
+	err = db.TouchAIConversation(ctx, conv1.ID)
+	if err != nil {
 		t.Fatalf("TouchAIConversation: %v", err)
 	}
 	touched, _ := db.GetAIConversation(ctx, conv1.ID)
@@ -494,7 +497,8 @@ func TestAIConversationLifecycle(t *testing.T) {
 	}
 
 	// Delete conversation
-	if err := db.DeleteAIConversation(ctx, conv1.ID); err != nil {
+	err = db.DeleteAIConversation(ctx, conv1.ID)
+	if err != nil {
 		t.Fatalf("DeleteAIConversation: %v", err)
 	}
 	_, err = db.GetAIConversation(ctx, conv1.ID)
@@ -851,7 +855,8 @@ func TestProjectCosts(t *testing.T) {
 	}
 
 	// Update amount
-	if err := db.UpdateProjectCost(ctx, cost.ID, 7500); err != nil {
+	err = db.UpdateProjectCost(ctx, cost.ID, 7500)
+	if err != nil {
 		t.Fatalf("UpdateProjectCost: %v", err)
 	}
 	updated, _ := db.GetProjectCost(ctx, cost.ID)
@@ -860,7 +865,8 @@ func TestProjectCosts(t *testing.T) {
 	}
 
 	// Delete
-	if err := db.DeleteProjectCost(ctx, cost.ID); err != nil {
+	err = db.DeleteProjectCost(ctx, cost.ID)
+	if err != nil {
 		t.Fatalf("DeleteProjectCost: %v", err)
 	}
 	_, err = db.GetProjectCost(ctx, cost.ID)

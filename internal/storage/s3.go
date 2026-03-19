@@ -18,12 +18,12 @@ type S3Client struct {
 
 // S3Config holds S3 connection parameters.
 type S3Config struct {
-	Endpoint       string
-	AccessKeyID    string
+	Endpoint        string
+	AccessKeyID     string
 	SecretAccessKey string
-	Region         string
-	Bucket         string
-	ForcePathStyle bool
+	Region          string
+	Bucket          string
+	ForcePathStyle  bool
 }
 
 // NewS3Client creates a new S3-compatible storage client.

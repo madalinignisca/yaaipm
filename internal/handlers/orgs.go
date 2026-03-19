@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,12 +32,7 @@ func NewOrgHandler(db *models.DB, engine *render.Engine, sessions *auth.SessionS
 // isProtectedSuperadmin checks if an email is in the protected superadmins list.
 func (h *OrgHandler) isProtectedSuperadmin(email string) bool {
 	lower := strings.ToLower(email)
-	for _, e := range h.protectedSuperadmins {
-		if e == lower {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(h.protectedSuperadmins, lower)
 }
 
 var slugRegex = regexp.MustCompile(`[^a-z0-9]+`)
@@ -71,7 +67,7 @@ func (h *OrgHandler) OrgPage(w http.ResponseWriter, r *http.Request) {
 		projects, _ = h.db.ListProjects(r.Context(), org.ID)
 	}
 
-	h.engine.Render(w, r, "dashboard.html", render.PageData{
+	_ = h.engine.Render(w, r, "dashboard.html", render.PageData{
 		Title:       org.Name,
 		User:        user,
 		Org:         org,
@@ -158,7 +154,7 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 
 	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
 
-	h.engine.Render(w, r, "org_settings.html", render.PageData{
+	_ = h.engine.Render(w, r, "org_settings.html", render.PageData{
 		Title:       org.Name + " Settings",
 		User:        user,
 		Org:         org,
@@ -195,12 +191,14 @@ func (h *OrgHandler) renderMemberList(w http.ResponseWriter, r *http.Request, or
 		return
 	}
 	canManage := h.canManageOrgMembers(r, user, org.ID)
-	h.engine.RenderPartial(w, "member_list.html", map[string]any{
+	if err := h.engine.RenderPartial(w, "member_list.html", map[string]any{
 		"Members":       members,
 		"CanManage":     canManage,
 		"CurrentUserID": user.ID,
 		"OrgSlug":       org.Slug,
-	})
+	}); err != nil {
+		log.Printf("rendering member list partial: %v", err)
+	}
 }
 
 func (h *OrgHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
@@ -230,8 +228,8 @@ func (h *OrgHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check not already a member
-	if target, err := h.db.GetUserByEmail(r.Context(), email); err == nil {
-		if _, err := h.db.GetOrgMembership(r.Context(), target.ID, org.ID); err == nil {
+	if target, lookupErr := h.db.GetUserByEmail(r.Context(), email); lookupErr == nil {
+		if _, memErr := h.db.GetOrgMembership(r.Context(), target.ID, org.ID); memErr == nil {
 			http.Error(w, "User is already a member of this organization", http.StatusConflict)
 			return
 		}
@@ -274,11 +272,13 @@ func (h *OrgHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.engine.RenderPartial(w, "invite_result.html", map[string]any{
+	if err := h.engine.RenderPartial(w, "invite_result.html", map[string]any{
 		"InviteURL":    inviteURL,
 		"Email":        email,
 		"EmailEnabled": h.mailer.IsEnabled(),
-	})
+	}); err != nil {
+		log.Printf("rendering invite result partial: %v", err)
+	}
 }
 
 func (h *OrgHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {

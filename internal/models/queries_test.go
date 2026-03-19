@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -158,7 +159,8 @@ func TestOrgMembership(t *testing.T) {
 	}
 
 	// Upsert membership (change role)
-	if err := db.AddOrgMember(ctx, user.ID, org.ID, "admin"); err != nil {
+	err = db.AddOrgMember(ctx, user.ID, org.ID, "admin")
+	if err != nil {
 		t.Fatal(err)
 	}
 	mem2, _ := db.GetOrgMembership(ctx, user.ID, org.ID)
@@ -210,7 +212,8 @@ func TestProjectCRUD(t *testing.T) {
 	}
 
 	// Update brief
-	if err := db.UpdateProjectBrief(ctx, proj.ID, "# Brief\nThis is the brief."); err != nil {
+	err = db.UpdateProjectBrief(ctx, proj.ID, "# Brief\nThis is the brief.")
+	if err != nil {
 		t.Fatal(err)
 	}
 	updated, _ := db.GetProjectByID(ctx, proj.ID)
@@ -267,7 +270,8 @@ func TestTicketCRUD(t *testing.T) {
 	}
 
 	// Update status
-	if err := db.UpdateTicketStatus(ctx, ticket.ID, "ready"); err != nil {
+	err = db.UpdateTicketStatus(ctx, ticket.ID, "ready")
+	if err != nil {
 		t.Fatal(err)
 	}
 	found2, _ := db.GetTicket(ctx, ticket.ID)
@@ -278,7 +282,8 @@ func TestTicketCRUD(t *testing.T) {
 	// Update agent mode
 	mode := "plan"
 	agent := "claude"
-	if err := db.UpdateTicketAgentMode(ctx, ticket.ID, &mode, &agent); err != nil {
+	err = db.UpdateTicketAgentMode(ctx, ticket.ID, &mode, &agent)
+	if err != nil {
 		t.Fatal(err)
 	}
 	found3, _ := db.GetTicket(ctx, ticket.ID)
@@ -493,7 +498,8 @@ func TestWebAuthnCredentialCRUD(t *testing.T) {
 	}
 
 	// Update sign count
-	if err := db.UpdateWebAuthnSignCount(ctx, creds[0].ID, 5); err != nil {
+	err = db.UpdateWebAuthnSignCount(ctx, creds[0].ID, 5)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -576,7 +582,7 @@ func TestConsumeRecoveryCode(t *testing.T) {
 	}
 
 	updated, _ := db.GetUserByID(ctx, user.ID)
-	if string(updated.RecoveryCodes) != string(remainingCodes) {
+	if !bytes.Equal(updated.RecoveryCodes, remainingCodes) {
 		t.Errorf("recovery codes = %q, want %q", string(updated.RecoveryCodes), string(remainingCodes))
 	}
 
@@ -587,7 +593,7 @@ func TestConsumeRecoveryCode(t *testing.T) {
 	}
 
 	final, _ := db.GetUserByID(ctx, user.ID)
-	if string(final.RecoveryCodes) != string(emptyCodes) {
+	if !bytes.Equal(final.RecoveryCodes, emptyCodes) {
 		t.Errorf("recovery codes = %q, want %q", string(final.RecoveryCodes), string(emptyCodes))
 	}
 }
@@ -603,7 +609,8 @@ func TestUpdateUserEmail(t *testing.T) {
 	}
 
 	// Update email
-	if err := db.UpdateUserEmail(ctx, user.ID, "newemail@test.com"); err != nil {
+	err = db.UpdateUserEmail(ctx, user.ID, "newemail@test.com")
+	if err != nil {
 		t.Fatalf("UpdateUserEmail: %v", err)
 	}
 
@@ -772,7 +779,8 @@ func TestInvitationLifecycle(t *testing.T) {
 
 	// ResetInvitationToken
 	newExpiry := time.Now().Add(72 * time.Hour)
-	if err := db.ResetInvitationToken(ctx, inv.ID, "new-token-hash", newExpiry); err != nil {
+	err = db.ResetInvitationToken(ctx, inv.ID, "new-token-hash", newExpiry)
+	if err != nil {
 		t.Fatalf("ResetInvitationToken: %v", err)
 	}
 	// Old token should not work
@@ -790,7 +798,8 @@ func TestInvitationLifecycle(t *testing.T) {
 	}
 
 	// UpdateInvitationStatus - accept the invitation
-	if err := db.UpdateInvitationStatus(ctx, inv.ID, "accepted"); err != nil {
+	err = db.UpdateInvitationStatus(ctx, inv.ID, "accepted")
+	if err != nil {
 		t.Fatalf("UpdateInvitationStatus: %v", err)
 	}
 	accepted, _ := db.GetInvitationByID(ctx, inv.ID)
@@ -835,7 +844,8 @@ func TestExpireOldInvitations(t *testing.T) {
 	}
 
 	// Run expire
-	if err := db.ExpireOldInvitations(ctx); err != nil {
+	err = db.ExpireOldInvitations(ctx)
+	if err != nil {
 		t.Fatalf("ExpireOldInvitations: %v", err)
 	}
 

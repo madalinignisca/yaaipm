@@ -12,6 +12,8 @@ import (
 	"github.com/madalin/forgedesk/internal/models"
 )
 
+const agentClaude = "claude"
+
 // runAgentCLI shells out to the specified agent CLI in the given workDir.
 // Returns the agent's stdout output.
 func runAgentCLI(ctx context.Context, agentName, workDir, prompt string) (string, error) {
@@ -20,7 +22,7 @@ func runAgentCLI(ctx context.Context, agentName, workDir, prompt string) (string
 
 	var cmd *exec.Cmd
 	switch agentName {
-	case "claude":
+	case agentClaude:
 		cmd = exec.CommandContext(ctx, "claude", "-p", prompt, "--output-format", "text")
 	case "gemini":
 		cmd = exec.CommandContext(ctx, "gemini", "-p", prompt)

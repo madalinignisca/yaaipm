@@ -19,9 +19,11 @@ import (
 	"github.com/madalin/forgedesk/internal/static"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/yuin/goldmark"
+	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/util"
-	highlighting "github.com/yuin/goldmark-highlighting/v2"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 type Engine struct {
@@ -31,20 +33,20 @@ type Engine struct {
 
 // PageData holds common data passed to every template.
 type PageData struct {
-	Title            string
+	Data             any
+	ActiveProject    *models.Project
 	User             *models.User
 	Org              *models.Organization
-	Orgs             []models.Organization
-	Projects         []models.Project   // projects for sidebar (selected org)
-	ActiveProject    *models.Project    // current project (nil if not on a project page)
-	ActiveTab        string             // "brief", "features", "bugs", "gantt", "costs", "archived", "settings"
+	FlashType        string
+	ActiveTab        string
 	CSRFToken        string
 	Flash            string
-	FlashType        string // "success", "error", "warning"
+	Title            string
 	CurrentPath      string
-	Data             any
+	ProjectID        string
+	Projects         []models.Project
+	Orgs             []models.Organization
 	AssistantEnabled bool
-	ProjectID        string // set on project pages for the AI assistant
 }
 
 func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) {
@@ -92,16 +94,16 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				lang, _ := c.Language()
 				if string(lang) == "mermaid" {
 					if entering {
-						w.WriteString(`<pre class="mermaid">`)
+						_, _ = w.WriteString(`<pre class="mermaid">`)
 					} else {
-						w.WriteString("</pre>")
+						_, _ = w.WriteString("</pre>")
 					}
 					return
 				}
 				if entering {
-					w.WriteString("<pre class=\"chroma\"><code>")
+					_, _ = w.WriteString("<pre class=\"chroma\"><code>")
 				} else {
-					w.WriteString("</code></pre>")
+					_, _ = w.WriteString("</code></pre>")
 				}
 			}),
 		),
@@ -139,15 +141,16 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 			return t.Format("2006-01-02")
 		},
-		"upper": strings.ToUpper,
-		"lower": strings.ToLower,
-		"title": strings.Title,
+		"upper":     strings.ToUpper,
+		"lower":     strings.ToLower,
+		"title":     cases.Title(language.Und).String,
 		"hasPrefix": strings.HasPrefix,
 		"contains":  strings.Contains,
 		"statusColor": func(status string) string {
+			const colorGray = "gray"
 			switch status {
 			case "backlog":
-				return "gray"
+				return colorGray
 			case "ready":
 				return "blue"
 			case "planning", "plan_review":
@@ -160,13 +163,14 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				return "indigo"
 			case "done":
 				return "green"
-			case "cancelled":
+			case "canceled":
 				return "red"
 			default:
-				return "gray"
+				return colorGray
 			}
 		},
 		"priorityColor": func(p string) string {
+			const colorGray = "gray"
 			switch p {
 			case "critical":
 				return "red"
@@ -175,9 +179,9 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			case "medium":
 				return "yellow"
 			case "low":
-				return "gray"
+				return colorGray
 			default:
-				return "gray"
+				return colorGray
 			}
 		},
 		"derefStr": func(s *string) string {
@@ -279,16 +283,16 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 	}
 
 	for _, pattern := range pagePatterns {
-		pages, err := filepath.Glob(pattern)
-		if err != nil {
-			return nil, err
+		pages, globErr := filepath.Glob(pattern)
+		if globErr != nil {
+			return nil, globErr
 		}
 		for _, page := range pages {
 			files := append(append([]string{page}, layoutFiles...), componentFiles...)
 			name := filepath.Base(page)
-			t, err := template.New(name).Funcs(funcMap).ParseFiles(files...)
-			if err != nil {
-				return nil, fmt.Errorf("parsing %s: %w", name, err)
+			t, parseErr := template.New(name).Funcs(funcMap).ParseFiles(files...)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parsing %s: %w", name, parseErr)
 			}
 			e.templates[name] = t
 		}
@@ -348,7 +352,7 @@ func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, dat
 	}
 	t.Funcs(template.FuncMap{
 		"csrfField": func() template.HTML {
-			return template.HTML(gorillacsrf.TemplateField(r))
+			return gorillacsrf.TemplateField(r)
 		},
 		"csrfToken": func() string {
 			return gorillacsrf.Token(r)

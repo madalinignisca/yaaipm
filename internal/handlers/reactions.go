@@ -52,7 +52,7 @@ func (h *ReactionHandler) ToggleReaction(w http.ResponseWriter, r *http.Request)
 
 	groups, _ := h.db.ListReactionGroups(r.Context(), targetType, targetID, user.ID)
 
-	h.engine.RenderPartial(w, "reactions.html", map[string]any{
+	_ = h.engine.RenderPartial(w, "reactions.html", map[string]any{
 		"TargetType": targetType,
 		"TargetID":   targetID,
 		"Groups":     groups,

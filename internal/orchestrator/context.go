@@ -31,9 +31,9 @@ func assembleContext(ctx context.Context, db *models.DB, ticket models.Ticket) (
 
 	// Get parent epic if this ticket has one
 	if ticket.ParentID != nil {
-		parent, err := db.GetTicket(ctx, *ticket.ParentID)
-		if err != nil {
-			return nil, fmt.Errorf("getting parent ticket %s: %w", *ticket.ParentID, err)
+		parent, parentErr := db.GetTicket(ctx, *ticket.ParentID)
+		if parentErr != nil {
+			return nil, fmt.Errorf("getting parent ticket %s: %w", *ticket.ParentID, parentErr)
 		}
 		pctx.ParentEpic = parent
 	}
@@ -82,10 +82,10 @@ Keep the plan focused and practical — no unnecessary boilerplate or generic ad
 
 	// Ticket details
 	b.WriteString("## Ticket to Plan\n\n")
-	b.WriteString(fmt.Sprintf("**Type:** %s\n", pctx.Ticket.Type))
-	b.WriteString(fmt.Sprintf("**Title:** %s\n", pctx.Ticket.Title))
-	b.WriteString(fmt.Sprintf("**Priority:** %s\n", pctx.Ticket.Priority))
-	b.WriteString(fmt.Sprintf("**Status:** %s\n\n", pctx.Ticket.Status))
+	fmt.Fprintf(&b, "**Type:** %s\n", pctx.Ticket.Type)
+	fmt.Fprintf(&b, "**Title:** %s\n", pctx.Ticket.Title)
+	fmt.Fprintf(&b, "**Priority:** %s\n", pctx.Ticket.Priority)
+	fmt.Fprintf(&b, "**Status:** %s\n\n", pctx.Ticket.Status)
 	if pctx.Ticket.DescriptionMarkdown != "" {
 		b.WriteString("**Description:**\n\n")
 		b.WriteString(pctx.Ticket.DescriptionMarkdown)
@@ -95,7 +95,7 @@ Keep the plan focused and practical — no unnecessary boilerplate or generic ad
 	// Parent epic context
 	if pctx.ParentEpic != nil {
 		b.WriteString("---\n\n## Parent Epic\n\n")
-		b.WriteString(fmt.Sprintf("**Title:** %s\n\n", pctx.ParentEpic.Title))
+		fmt.Fprintf(&b, "**Title:** %s\n\n", pctx.ParentEpic.Title)
 		if pctx.ParentEpic.DescriptionMarkdown != "" {
 			b.WriteString(pctx.ParentEpic.DescriptionMarkdown)
 			b.WriteString("\n\n")
@@ -109,7 +109,7 @@ Keep the plan focused and practical — no unnecessary boilerplate or generic ad
 			if t.ID == pctx.Ticket.ID {
 				continue // skip the current ticket
 			}
-			b.WriteString(fmt.Sprintf("- [%s] **%s** (%s) — %s\n", t.Status, t.Title, t.Type, t.Priority))
+			fmt.Fprintf(&b, "- [%s] **%s** (%s) — %s\n", t.Status, t.Title, t.Type, t.Priority)
 		}
 		b.WriteString("\n")
 	}
@@ -124,7 +124,7 @@ Keep the plan focused and practical — no unnecessary boilerplate or generic ad
 			} else if c.UserID != nil {
 				author = "User"
 			}
-			b.WriteString(fmt.Sprintf("**%s** (%s):\n%s\n\n", author, c.CreatedAt.Format("2006-01-02 15:04"), c.BodyMarkdown))
+			fmt.Fprintf(&b, "**%s** (%s):\n%s\n\n", author, c.CreatedAt.Format("2006-01-02 15:04"), c.BodyMarkdown)
 		}
 	}
 
@@ -154,9 +154,9 @@ func buildImplementPrompt(pctx *planContext) string {
 
 	// Ticket details
 	b.WriteString("## Ticket to Implement\n\n")
-	b.WriteString(fmt.Sprintf("**Type:** %s\n", pctx.Ticket.Type))
-	b.WriteString(fmt.Sprintf("**Title:** %s\n", pctx.Ticket.Title))
-	b.WriteString(fmt.Sprintf("**Priority:** %s\n\n", pctx.Ticket.Priority))
+	fmt.Fprintf(&b, "**Type:** %s\n", pctx.Ticket.Type)
+	fmt.Fprintf(&b, "**Title:** %s\n", pctx.Ticket.Title)
+	fmt.Fprintf(&b, "**Priority:** %s\n\n", pctx.Ticket.Priority)
 	if pctx.Ticket.DescriptionMarkdown != "" {
 		b.WriteString("**Description:**\n\n")
 		b.WriteString(pctx.Ticket.DescriptionMarkdown)
@@ -166,7 +166,7 @@ func buildImplementPrompt(pctx *planContext) string {
 	// Parent epic context
 	if pctx.ParentEpic != nil {
 		b.WriteString("---\n\n## Parent Epic\n\n")
-		b.WriteString(fmt.Sprintf("**Title:** %s\n\n", pctx.ParentEpic.Title))
+		fmt.Fprintf(&b, "**Title:** %s\n\n", pctx.ParentEpic.Title)
 		if pctx.ParentEpic.DescriptionMarkdown != "" {
 			b.WriteString(pctx.ParentEpic.DescriptionMarkdown)
 			b.WriteString("\n\n")
@@ -175,13 +175,14 @@ func buildImplementPrompt(pctx *planContext) string {
 
 	// Find the approved plan from comments
 	for _, c := range pctx.Comments {
-		if strings.Contains(c.BodyMarkdown, "## Implementation Plan") {
-			b.WriteString("---\n\n## Approved Implementation Plan\n\n")
-			b.WriteString("Follow this plan closely:\n\n")
-			b.WriteString(c.BodyMarkdown)
-			b.WriteString("\n\n")
-			break
+		if !strings.Contains(c.BodyMarkdown, "## Implementation Plan") {
+			continue
 		}
+		b.WriteString("---\n\n## Approved Implementation Plan\n\n")
+		b.WriteString("Follow this plan closely:\n\n")
+		b.WriteString(c.BodyMarkdown)
+		b.WriteString("\n\n")
+		break
 	}
 
 	return b.String()

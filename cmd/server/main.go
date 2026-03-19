@@ -46,8 +46,8 @@ func main() {
 	}
 	defer pool.Close()
 
-	if err := pool.Ping(context.Background()); err != nil {
-		log.Fatalf("pinging database: %v", err)
+	if pingErr := pool.Ping(context.Background()); pingErr != nil {
+		log.Fatalf("pinging database: %v", pingErr) //nolint:gocritic // exitAfterDefer - acceptable at startup
 	}
 	log.Printf("Database connected (max_conns=%d, min_conns=%d)", poolCfg.MaxConns, poolCfg.MinConns)
 
@@ -88,12 +88,12 @@ func main() {
 	var s3Client *storage.S3Client
 	if cfg.S3Endpoint != "" && cfg.S3Bucket != "" {
 		s3Client, err = storage.NewS3Client(storage.S3Config{
-			Endpoint:       cfg.S3Endpoint,
-			AccessKeyID:    cfg.S3AccessKeyID,
+			Endpoint:        cfg.S3Endpoint,
+			AccessKeyID:     cfg.S3AccessKeyID,
 			SecretAccessKey: cfg.S3SecretAccessKey,
-			Region:         cfg.S3Region,
-			Bucket:         cfg.S3Bucket,
-			ForcePathStyle: cfg.S3ForcePathStyle,
+			Region:          cfg.S3Region,
+			Bucket:          cfg.S3Bucket,
+			ForcePathStyle:  cfg.S3ForcePathStyle,
 		})
 		if err != nil {
 			log.Printf("WARNING: Failed to create S3 client: %v", err)
@@ -146,7 +146,7 @@ func main() {
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	// CSRF protection for all HTML routes (auth, invitations, and protected)
@@ -275,8 +275,8 @@ func main() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			sessions.CleanExpired(context.Background())
-			db.ExpireOldInvitations(context.Background())
+			_ = sessions.CleanExpired(context.Background())
+			_ = db.ExpireOldInvitations(context.Background())
 		}
 	}()
 
@@ -288,12 +288,12 @@ func main() {
 		log.Println("Shutting down...")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		srv.Shutdown(ctx)
+		_ = srv.Shutdown(ctx)
 	}()
 
 	log.Printf("ForgeDesk server starting on %s", cfg.ListenAddr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
+	if listenErr := srv.ListenAndServe(); listenErr != nil && listenErr != http.ErrServerClosed {
+		log.Fatalf("server error: %v", listenErr)
 	}
 	log.Println("Server stopped")
 }

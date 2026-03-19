@@ -372,7 +372,7 @@ func (db *DB) ListAllOrgs(ctx context.Context) ([]Organization, error) {
 	return orgs, rows.Err()
 }
 
-func (db *DB) UpdateOrgBusinessDetails(ctx context.Context, orgID string, businessName, vatNumber, registrationNumber, addressStreet, addressExtra, postalCode, city, country, contactPhones, contactEmails string) error {
+func (db *DB) UpdateOrgBusinessDetails(ctx context.Context, orgID, businessName, vatNumber, registrationNumber, addressStreet, addressExtra, postalCode, city, country, contactPhones, contactEmails string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE organizations SET
 			business_name = $2, vat_number = $3, registration_number = $4,
@@ -629,7 +629,7 @@ func (db *DB) TransferProject(ctx context.Context, projectID, targetOrgID string
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx,
 		`UPDATE projects SET org_id = $1, updated_at = now() WHERE id = $2`, targetOrgID, projectID)
@@ -743,7 +743,7 @@ func (db *DB) ListFeatures(ctx context.Context, projectID string) ([]Ticket, err
 		return nil, fmt.Errorf("listing features: %w", err)
 	}
 	if err := db.populateChildCounts(ctx, tickets); err != nil {
-		return tickets, nil // non-fatal: return tickets without counts
+		return tickets, nil //nolint:nilerr // non-fatal: return partial results
 	}
 	return tickets, nil
 }
@@ -792,7 +792,7 @@ func (db *DB) ExpandParentDates(ctx context.Context, childStart, childEnd *time.
 	for i := 0; i < 5 && parentID != nil; i++ {
 		parent, err := db.GetTicket(ctx, *parentID)
 		if err != nil {
-			return nil // parent not found, nothing to expand
+			return nil //nolint:nilerr // parent not found is not an error
 		}
 
 		changed := false
@@ -943,7 +943,7 @@ func (db *DB) ListArchivedTickets(ctx context.Context, projectID string) ([]Tick
 
 // ── Comments ──────────────────────────────────────────────────────
 
-func (db *DB) CreateComment(ctx context.Context, ticketID string, userID *string, agentName *string, body string) (*Comment, error) {
+func (db *DB) CreateComment(ctx context.Context, ticketID string, userID, agentName *string, body string) (*Comment, error) {
 	c := &Comment{}
 	err := db.Pool.QueryRow(ctx,
 		`INSERT INTO comments (ticket_id, user_id, agent_name, body_markdown) VALUES ($1, $2, $3, $4)
@@ -978,7 +978,7 @@ func (db *DB) ListComments(ctx context.Context, ticketID string) ([]Comment, err
 
 // ── Activities ────────────────────────────────────────────────────
 
-func (db *DB) CreateActivity(ctx context.Context, ticketID string, userID *string, agentName *string, action, detailsJSON string) error {
+func (db *DB) CreateActivity(ctx context.Context, ticketID string, userID, agentName *string, action, detailsJSON string) error {
 	_, err := db.Pool.Exec(ctx,
 		`INSERT INTO ticket_activities (ticket_id, user_id, agent_name, action, details_json) VALUES ($1, $2, $3, $4, $5)`,
 		ticketID, userID, agentName, action, detailsJSON)
@@ -1237,7 +1237,6 @@ func (db *DB) SearchTickets(ctx context.Context, projectID, query string, ticket
 	if status != nil && *status != "" {
 		sql += fmt.Sprintf(" AND status = $%d", n)
 		args = append(args, *status)
-		n++
 	}
 	sql += " ORDER BY created_at DESC LIMIT 20"
 
@@ -1343,7 +1342,7 @@ func (db *DB) ListOrgCostsByMonth(ctx context.Context, orgID, month string) ([]P
 
 // ── AI Usage ──────────────────────────────────────────────────
 
-func (db *DB) CreateAIUsageEntry(ctx context.Context, orgID string, projectID *string, userID *string, model, label string, inputTokens, outputTokens int, costCents int64) error {
+func (db *DB) CreateAIUsageEntry(ctx context.Context, orgID string, projectID, userID *string, model, label string, inputTokens, outputTokens int, costCents int64) error {
 	_, err := db.Pool.Exec(ctx,
 		`INSERT INTO ai_usage_entries (org_id, project_id, user_id, model, label, input_tokens, output_tokens, cost_cents)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -1418,7 +1417,6 @@ func (db *DB) GetTotalAIUsageCentsForOrgMonth(ctx context.Context, orgID, month 
 	}
 	return total, nil
 }
-
 
 // ── Cost Months ───────────────────────────────────────────────
 
@@ -1631,7 +1629,7 @@ func (db *DB) DeleteTicketTx(ctx context.Context, ticketID string) error {
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `DELETE FROM tickets WHERE parent_id = $1`, ticketID); err != nil {
 		return fmt.Errorf("deleting child tickets: %w", err)

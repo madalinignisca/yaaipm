@@ -91,14 +91,14 @@ func (m *Mailer) sendSSL(addr string, auth smtp.Auth, to string, msg []byte) err
 	}
 	defer client.Close()
 
-	if err := client.Auth(auth); err != nil {
-		return fmt.Errorf("smtp auth: %w", err)
+	if authErr := client.Auth(auth); authErr != nil {
+		return fmt.Errorf("smtp auth: %w", authErr)
 	}
-	if err := client.Mail(m.from); err != nil {
-		return fmt.Errorf("smtp mail: %w", err)
+	if mailErr := client.Mail(m.from); mailErr != nil {
+		return fmt.Errorf("smtp mail: %w", mailErr)
 	}
-	if err := client.Rcpt(to); err != nil {
-		return fmt.Errorf("smtp rcpt: %w", err)
+	if rcptErr := client.Rcpt(to); rcptErr != nil {
+		return fmt.Errorf("smtp rcpt: %w", rcptErr)
 	}
 
 	w, err := client.Data()

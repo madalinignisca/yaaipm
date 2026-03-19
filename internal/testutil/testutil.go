@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	TestDBURL    = "postgres://testuser:testpass@localhost:5433/forgedesk_test?sslmode=disable"
-	TestAESKey   = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	TestSecret   = "test-session-secret-32-chars-long!"
+	TestDBURL  = "postgres://testuser:testpass@localhost:5433/forgedesk_test?sslmode=disable"
+	TestAESKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	TestSecret = "test-session-secret-32-chars-long!"
 )
 
 // SetupTestDB connects to the test database and cleans all data.
@@ -73,6 +73,6 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 
 // ProjectRoot returns the absolute path to the project root directory.
 func ProjectRoot() string {
-	_, filename, _, _ := runtime.Caller(0)
+	_, filename, _, _ := runtime.Caller(0) //nolint:dogsled // standard runtime.Caller idiom
 	return filepath.Join(filepath.Dir(filename), "..", "..")
 }

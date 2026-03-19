@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -171,11 +172,9 @@ func RequireRole(roles ...string) func(http.Handler) http.Handler {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
-			for _, role := range roles {
-				if user.Role == role {
-					next.ServeHTTP(w, r)
-					return
-				}
+			if slices.Contains(roles, user.Role) {
+				next.ServeHTTP(w, r)
+				return
 			}
 			http.Error(w, "Forbidden", http.StatusForbidden)
 		})

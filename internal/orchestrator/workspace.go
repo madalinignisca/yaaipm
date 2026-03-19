@@ -42,10 +42,9 @@ func (wm *WorkspaceManager) EnsureRepo(ctx context.Context, orgSlug, projectSlug
 			return "", fmt.Errorf("fetching repo: %w", err)
 		}
 		// Pull only if on a branch (not detached HEAD)
-		if branch, err := runGit(ctx, repoDir, "symbolic-ref", "--short", "HEAD"); err == nil && strings.TrimSpace(branch) != "" {
-			if _, err := runGit(ctx, repoDir, "pull", "--ff-only"); err != nil {
-				// Non-fatal: might have diverged
-			}
+		if branch, branchErr := runGit(ctx, repoDir, "symbolic-ref", "--short", "HEAD"); branchErr == nil && strings.TrimSpace(branch) != "" {
+			// Non-fatal: might have diverged, so we ignore pull errors
+			_, _ = runGit(ctx, repoDir, "pull", "--ff-only")
 		}
 		return repoDir, nil
 	}
@@ -67,7 +66,7 @@ func (wm *WorkspaceManager) CreateWorktree(ctx context.Context, orgSlug, project
 	wtDir = filepath.Join(wm.baseDir, orgSlug, projectSlug, "worktrees", "agent-"+shortID)
 
 	// Check if worktree already exists
-	if _, err := runGit(ctx, wtDir, "rev-parse", "--git-dir"); err == nil {
+	if _, checkErr := runGit(ctx, wtDir, "rev-parse", "--git-dir"); checkErr == nil {
 		// Already exists — just check out the branch
 		return wtDir, branchName, nil
 	}

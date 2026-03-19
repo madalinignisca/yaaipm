@@ -17,8 +17,8 @@ type AnthropicModels struct {
 
 // AnthropicClient wraps the Anthropic Messages API.
 type AnthropicClient struct {
-	client anthropic.Client
 	Models AnthropicModels
+	client anthropic.Client
 }
 
 // NewAnthropicClient creates a new Anthropic client with the given API key and models.

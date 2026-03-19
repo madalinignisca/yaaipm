@@ -9,68 +9,52 @@ import (
 )
 
 type Config struct {
-	DatabaseURL   string
-	SessionSecret string
-	AESKey        string
-	ListenAddr    string
-	BaseURL       string
-
-	// SMTP (optional — if SMTPHost is empty, email sending is disabled)
-	SMTPHost     string
-	SMTPPort     string
-	SMTPUsername string
-	SMTPPassword string
-	SMTPFrom     string
-	SMTPSSL      bool
-
-	// WebAuthn
-	RPDisplayName string
-	RPID          string
-	RPOrigins     []string
-
-	// Protected superadmins (comma-separated emails) — cannot be removed or demoted by anyone
-	ProtectedSuperadmins []string
-
-	// AI / Gemini (optional — if GeminiAPIKey is empty, assistant is hidden)
-	GeminiAPIKey      string
-	GeminiModel       string // default model (GEMINI_MODEL)
-	GeminiModelChat   string // chat assistant model (GEMINI_MODEL_CHAT)
-	GeminiModelPro    string // pro model (GEMINI_MODEL_PRO)
-	GeminiModelImage  string // image model (GEMINI_MODEL_IMAGE)
-	GeminiModelImagePro string // pro image model (GEMINI_MODEL_IMAGE_PRO)
-
-	// Gemini pricing (cents per million tokens)
-	GeminiGoogleSearchCents     int64 // GEMINI_MODEL_GOOGLE_SEARCH
-	GeminiInputPrice            int64 // GEMINI_MODEL_INPUT_PRICE
-	GeminiOutputPrice           int64 // GEMINI_MODEL_OUTPUT_PRICE
-	GeminiProInputPrice         int64 // GEMINI_MODEL_PRO_INPUT_PRICE
-	GeminiProOutputPrice        int64 // GEMINI_MODEL_PRO_OUTPUT_PRICE
-	GeminiImageInputPrice       int64 // GEMINI_MODEL_IMAGE_INPUT_PRICE
-	GeminiImageTextOutPrice     int64 // GEMINI_MODEL_IMAGE_TEXT_OUTPUT_PRICE
-	GeminiImageImageOutPrice    int64 // GEMINI_MODEL_IMAGE_IMAGE_OUTPUT_PRICE
-	GeminiImageProInputPrice    int64 // GEMINI_MODEL_IMAGE_PRO_INPUT_PRICE
-	GeminiImageProTextOutPrice  int64 // GEMINI_MODEL_IMAGE_PRO_TEXT_OUTPUT_PRICE
-	GeminiImageProImageOutPrice int64 // GEMINI_MODEL_IMAGE_PRO_IMAGE_OUTPUT_PRICE
-
-	// AI / Anthropic (optional — if AnthropicAPIKey is empty, orchestrator agent dispatch is disabled)
-	AnthropicAPIKey          string
-	AnthropicModel           string // default model for planning (ANTHROPIC_MODEL)
-	AnthropicModelContent    string // content model for implementation (ANTHROPIC_MODEL_CONTENT)
-	AnthropicInputPrice      int64  // cents per million tokens (sonnet)
-	AnthropicOutputPrice     int64
-	AnthropicContentInputPrice  int64 // cents per million tokens (opus)
+	AnthropicModel              string
+	GeminiAPIKey                string
+	AESKey                      string
+	ListenAddr                  string
+	BaseURL                     string
+	SMTPHost                    string
+	SMTPPort                    string
+	SMTPUsername                string
+	SMTPPassword                string
+	SMTPFrom                    string
+	S3Bucket                    string
+	RPDisplayName               string
+	RPID                        string
+	S3Region                    string
+	S3SecretAccessKey           string
+	S3AccessKeyID               string
+	GeminiModel                 string
+	GeminiModelChat             string
+	GeminiModelPro              string
+	GeminiModelImage            string
+	GeminiModelImagePro         string
+	S3Endpoint                  string
+	SessionSecret               string
+	WorkspacesDir               string
+	AnthropicModelContent       string
+	DatabaseURL                 string
+	AnthropicAPIKey             string
+	ProtectedSuperadmins        []string
+	RPOrigins                   []string
+	GeminiImageTextOutPrice     int64
+	AnthropicOutputPrice        int64
+	GeminiImageProImageOutPrice int64
+	GeminiImageInputPrice       int64
+	GeminiProOutputPrice        int64
+	AnthropicInputPrice         int64
 	AnthropicContentOutputPrice int64
-
-	// Workspaces (orchestrator — directory for git repos and worktrees)
-	WorkspacesDir string
-
-	// S3 storage (optional — if S3Endpoint is empty, file uploads are disabled)
-	S3Endpoint       string // S3_ENDPOINT
-	S3AccessKeyID    string // S3_ACCESS_KEY_ID
-	S3SecretAccessKey string // S3_SECRET_ACCESS_KEY
-	S3Region         string // S3_REGION
-	S3Bucket         string // S3_PUBLIC_BUCKET
-	S3ForcePathStyle bool   // S3_FORCE_PATH_STYLE
+	GeminiProInputPrice         int64
+	AnthropicContentInputPrice  int64
+	GeminiImageProTextOutPrice  int64
+	GeminiInputPrice            int64
+	GeminiGoogleSearchCents     int64
+	GeminiOutputPrice           int64
+	GeminiImageProInputPrice    int64
+	GeminiImageImageOutPrice    int64
+	SMTPSSL                     bool
+	S3ForcePathStyle            bool
 }
 
 func envInt64(key string, fallback int64) int64 {
@@ -126,7 +110,7 @@ func Load() (*Config, error) {
 
 	var protectedSuperadmins []string
 	if raw := os.Getenv("PROTECTED_SUPERADMINS"); raw != "" {
-		for _, email := range strings.Split(raw, ",") {
+		for email := range strings.SplitSeq(raw, ",") {
 			if e := strings.TrimSpace(email); e != "" {
 				protectedSuperadmins = append(protectedSuperadmins, strings.ToLower(e))
 			}
@@ -153,27 +137,27 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		DatabaseURL:   dbURL,
-		SessionSecret: sessionSecret,
-		AESKey:        aesKey,
-		ListenAddr:    listenAddr,
-		BaseURL:       baseURL,
-		SMTPHost:      os.Getenv("SMTP_HOST"),
-		SMTPPort:      smtpPort,
-		SMTPUsername:  smtpUsername,
-		SMTPPassword:  os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:      smtpFrom,
+		DatabaseURL:          dbURL,
+		SessionSecret:        sessionSecret,
+		AESKey:               aesKey,
+		ListenAddr:           listenAddr,
+		BaseURL:              baseURL,
+		SMTPHost:             os.Getenv("SMTP_HOST"),
+		SMTPPort:             smtpPort,
+		SMTPUsername:         smtpUsername,
+		SMTPPassword:         os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:             smtpFrom,
 		SMTPSSL:              isSSL,
 		ProtectedSuperadmins: protectedSuperadmins,
 		RPDisplayName:        "ForgeDesk",
-		RPID:          rpID,
-		RPOrigins:     []string{baseURL},
-		GeminiAPIKey:      os.Getenv("GEMINI_API_KEY"),
-		GeminiModel:       envOrDefault("GEMINI_MODEL", "gemini-2.5-flash"),
-		GeminiModelChat:   envOrDefault("GEMINI_MODEL_CHAT", "gemini-2.5-flash"),
-		GeminiModelPro:    envOrDefault("GEMINI_MODEL_PRO", "gemini-2.5-pro"),
-		GeminiModelImage:  envOrDefault("GEMINI_MODEL_IMAGE", "gemini-2.5-flash"),
-		GeminiModelImagePro: envOrDefault("GEMINI_MODEL_IMAGE_PRO", "gemini-2.5-pro"),
+		RPID:                 rpID,
+		RPOrigins:            []string{baseURL},
+		GeminiAPIKey:         os.Getenv("GEMINI_API_KEY"),
+		GeminiModel:          envOrDefault("GEMINI_MODEL", "gemini-2.5-flash"),
+		GeminiModelChat:      envOrDefault("GEMINI_MODEL_CHAT", "gemini-2.5-flash"),
+		GeminiModelPro:       envOrDefault("GEMINI_MODEL_PRO", "gemini-2.5-pro"),
+		GeminiModelImage:     envOrDefault("GEMINI_MODEL_IMAGE", "gemini-2.5-flash"),
+		GeminiModelImagePro:  envOrDefault("GEMINI_MODEL_IMAGE_PRO", "gemini-2.5-pro"),
 
 		GeminiGoogleSearchCents:     envInt64("GEMINI_MODEL_GOOGLE_SEARCH", 1400),
 		GeminiInputPrice:            envInt64("GEMINI_MODEL_INPUT_PRICE", 50),
@@ -195,12 +179,12 @@ func Load() (*Config, error) {
 		AnthropicContentInputPrice:  envInt64("ANTHROPIC_CONTENT_INPUT_PRICE", 1500),
 		AnthropicContentOutputPrice: envInt64("ANTHROPIC_CONTENT_OUTPUT_PRICE", 7500),
 
-		S3Endpoint:       os.Getenv("S3_ENDPOINT"),
-		S3AccessKeyID:    os.Getenv("S3_ACCESS_KEY_ID"),
+		S3Endpoint:        os.Getenv("S3_ENDPOINT"),
+		S3AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
 		S3SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
-		S3Region:         envOrDefault("S3_REGION", "us-east-1"),
-		S3Bucket:         os.Getenv("S3_PUBLIC_BUCKET"),
-		S3ForcePathStyle: os.Getenv("S3_FORCE_PATH_STYLE") == "true",
+		S3Region:          envOrDefault("S3_REGION", "us-east-1"),
+		S3Bucket:          os.Getenv("S3_PUBLIC_BUCKET"),
+		S3ForcePathStyle:  os.Getenv("S3_FORCE_PATH_STYLE") == "true",
 
 		WorkspacesDir: workspacesDir,
 	}, nil

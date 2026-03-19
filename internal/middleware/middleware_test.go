@@ -25,7 +25,7 @@ func TestAuthMiddlewarePublicRoutes(t *testing.T) {
 
 	for _, path := range publicPaths {
 		t.Run(path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req := httptest.NewRequest(http.MethodGet, path, http.NoBody)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
@@ -45,7 +45,7 @@ func TestAuthMiddlewareRedirectsUnauthenticated(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -66,14 +66,14 @@ func TestAuthMiddlewareRedirectsToSetup2FA(t *testing.T) {
 	var u1ID string
 	pool.QueryRow(ctx, `INSERT INTO users (email, password_hash, name, role) VALUES ('mw@test.com', 'hash', 'MW', 'client') RETURNING id`).Scan(&u1ID)
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 	token, _ := sessions.CreateSession(ctx, u1ID, true, req)
 
 	handler := AuthMiddleware(sessions, db)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req2.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req2)
@@ -98,7 +98,7 @@ func TestAuthMiddlewareRedirectsToVerify2FA(t *testing.T) {
 		t.Fatalf("inserting user: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 	token, err := sessions.CreateSession(ctx, u2ID, false, req)
 	if err != nil {
 		t.Fatalf("creating session: %v", err)
@@ -108,7 +108,7 @@ func TestAuthMiddlewareRedirectsToVerify2FA(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req2.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req2)
@@ -130,7 +130,7 @@ func TestAuthMiddlewarePassesFullyAuthenticated(t *testing.T) {
 	var u3ID string
 	pool.QueryRow(ctx, `INSERT INTO users (email, password_hash, name, role, must_setup_2fa) VALUES ('full@test.com', 'hash', 'Full', 'client', false) RETURNING id`).Scan(&u3ID)
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 	token, _ := sessions.CreateSession(ctx, u3ID, false, req)
 	sess, _ := sessions.GetSession(ctx, token)
 	sessions.MarkTwoFactorVerified(ctx, sess.ID)
@@ -141,7 +141,7 @@ func TestAuthMiddlewarePassesFullyAuthenticated(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req2 := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/dashboard", http.NoBody)
 	req2.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req2)
@@ -165,7 +165,7 @@ func TestRequireRoleAllowed(t *testing.T) {
 	handler := RequireRole("superadmin")(inner)
 
 	user := &models.User{Role: "superadmin"}
-	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin", http.NoBody)
 	ctx := context.WithValue(req.Context(), UserContextKey, user)
 	req = req.WithContext(ctx)
 
@@ -185,7 +185,7 @@ func TestRequireRoleForbidden(t *testing.T) {
 	handler := RequireRole("superadmin")(inner)
 
 	user := &models.User{Role: "client"}
-	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin", http.NoBody)
 	ctx := context.WithValue(req.Context(), UserContextKey, user)
 	req = req.WithContext(ctx)
 
@@ -204,7 +204,7 @@ func TestRequireRoleNoUser(t *testing.T) {
 
 	handler := RequireRole("superadmin")(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -219,7 +219,7 @@ func TestLoggingMiddleware(t *testing.T) {
 	})
 
 	handler := Logging(inner)
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequest(http.MethodGet, "/test", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -234,7 +234,7 @@ func TestRecoverMiddleware(t *testing.T) {
 	})
 
 	handler := Recover(inner)
-	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	req := httptest.NewRequest(http.MethodGet, "/panic", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

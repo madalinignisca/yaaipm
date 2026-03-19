@@ -32,7 +32,7 @@ func (h *AdminHandler) AdminPage(w http.ResponseWriter, r *http.Request) {
 
 	platform, _ := h.db.GetPlatformSettings(r.Context())
 
-	h.engine.Render(w, r, "admin.html", render.PageData{
+	if err := h.engine.Render(w, r, "admin.html", render.PageData{
 		Title:       "Admin Panel",
 		User:        user,
 		Orgs:        orgs,
@@ -43,7 +43,9 @@ func (h *AdminHandler) AdminPage(w http.ResponseWriter, r *http.Request) {
 			"Orgs":     orgs,
 			"Platform": platform,
 		},
-	})
+	}); err != nil {
+		log.Printf("rendering admin page: %v", err)
+	}
 }
 
 func (h *AdminHandler) UpdatePlatformBusiness(w http.ResponseWriter, r *http.Request) {

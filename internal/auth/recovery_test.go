@@ -20,7 +20,7 @@ func TestGenerateRecoveryCodes(t *testing.T) {
 			t.Errorf("code[%d] length = %d, want 8", i, len(code))
 		}
 		for _, c := range code {
-			if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			if (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 				t.Errorf("code[%d] contains invalid char %c", i, c)
 			}
 		}

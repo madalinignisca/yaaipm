@@ -23,11 +23,11 @@ type Client struct {
 	Hub       *Hub
 	Conn      *websocket.Conn
 	send      chan []byte
+	User      *models.User
+	OnMessage MessageHandler
 	ProjectID string
 	UserID    string
 	UserName  string
-	User      *models.User
-	OnMessage MessageHandler
 }
 
 // NewClient creates a new WebSocket client.
@@ -62,9 +62,9 @@ func (c *Client) ReadPump() {
 	}()
 
 	c.Conn.SetReadLimit(maxMessageSize)
-	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	_ = c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.Conn.SetPongHandler(func(string) error {
-		c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+		_ = c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
 
@@ -94,10 +94,10 @@ func (c *Client) WritePump() {
 	for {
 		select {
 		case message, ok := <-c.send:
-			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				// Hub closed the channel
-				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				_ = c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 			if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
@@ -105,7 +105,7 @@ func (c *Client) WritePump() {
 			}
 
 		case <-ticker.C:
-			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}

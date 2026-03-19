@@ -23,7 +23,7 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// Create session
-	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req := httptest.NewRequest(http.MethodPost, "/login", http.NoBody)
 	req.Header.Set("User-Agent", "test-agent")
 	token, err := store.CreateSession(ctx, userID, true, req)
 	if err != nil {
@@ -49,7 +49,8 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// Mark 2FA verified
-	if err := store.MarkTwoFactorVerified(ctx, sess.ID); err != nil {
+	err = store.MarkTwoFactorVerified(ctx, sess.ID)
+	if err != nil {
 		t.Fatalf("MarkTwoFactorVerified: %v", err)
 	}
 
@@ -59,7 +60,8 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// Mark 2FA setup complete
-	if err := store.Mark2FASetupComplete(ctx, sess.ID); err != nil {
+	err = store.Mark2FASetupComplete(ctx, sess.ID)
+	if err != nil {
 		t.Fatalf("Mark2FASetupComplete: %v", err)
 	}
 	sess3, _ := store.GetSession(ctx, token)
@@ -68,12 +70,14 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// Extend session
-	if err := store.ExtendSession(ctx, sess.ID); err != nil {
+	err = store.ExtendSession(ctx, sess.ID)
+	if err != nil {
 		t.Fatalf("ExtendSession: %v", err)
 	}
 
 	// Delete session
-	if err := store.DeleteSession(ctx, sess.ID); err != nil {
+	err = store.DeleteSession(ctx, sess.ID)
+	if err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
 
@@ -95,7 +99,7 @@ func TestDeleteAllUserSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 	t1, _ := store.CreateSession(ctx, userID, false, req)
 	t2, _ := store.CreateSession(ctx, userID, false, req)
 
@@ -131,7 +135,7 @@ func TestDeleteOtherSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 	t1, _ := store.CreateSession(ctx, userID, false, req)
 	t2, _ := store.CreateSession(ctx, userID, false, req)
 

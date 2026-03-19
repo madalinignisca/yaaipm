@@ -27,8 +27,8 @@ func main() {
 	}
 
 	// Ensure workspaces directory exists
-	if err := os.MkdirAll(cfg.WorkspacesDir, 0755); err != nil {
-		log.Fatalf("creating workspaces dir %s: %v", cfg.WorkspacesDir, err)
+	if mkdirErr := os.MkdirAll(cfg.WorkspacesDir, 0o750); mkdirErr != nil {
+		log.Fatalf("creating workspaces dir %s: %v", cfg.WorkspacesDir, mkdirErr)
 	}
 	log.Printf("Workspaces directory: %s", cfg.WorkspacesDir)
 
@@ -39,7 +39,7 @@ func main() {
 	defer pool.Close()
 
 	if err := pool.Ping(context.Background()); err != nil {
-		log.Fatalf("pinging database: %v", err)
+		log.Fatalf("pinging database: %v", err) //nolint:gocritic // exitAfterDefer - acceptable at startup
 	}
 
 	db := models.NewDB(pool)

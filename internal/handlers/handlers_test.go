@@ -116,6 +116,13 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	return r, db, sessions, engine
 }
 
+// setupTestRouterOnly returns just the router for tests that don't need DB/sessions/engine.
+func setupTestRouterOnly(t *testing.T) *chi.Mux {
+	t.Helper()
+	router, _, _, _ := setupTestRouter(t) //nolint:dogsled // test helper
+	return router
+}
+
 // createAuthenticatedUser creates a fully authenticated user and returns the session cookie.
 func createAuthenticatedUser(t *testing.T, db *models.DB, sessions *auth.SessionStore, email, role string) *http.Cookie {
 	t.Helper()
@@ -130,7 +137,7 @@ func createAuthenticatedUser(t *testing.T, db *models.DB, sessions *auth.Session
 	// Mark 2FA as done so user is fully authenticated
 	db.Pool.Exec(ctx, `UPDATE users SET must_setup_2fa = false WHERE id = $1`, user.ID)
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 	token, err := sessions.CreateSession(ctx, user.ID, false, req)
 	if err != nil {
 		t.Fatal(err)
@@ -143,9 +150,9 @@ func createAuthenticatedUser(t *testing.T, db *models.DB, sessions *auth.Session
 }
 
 func TestLoginPageRenders(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req := httptest.NewRequest(http.MethodGet, "/login", http.NoBody)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -158,9 +165,9 @@ func TestLoginPageRenders(t *testing.T) {
 }
 
 func TestRegisterPageRenders(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/register", nil)
+	req := httptest.NewRequest(http.MethodGet, "/register", http.NoBody)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -173,7 +180,7 @@ func TestRegisterPageRenders(t *testing.T) {
 }
 
 func TestRegisterAndLogin(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
 	// Register (first user = superadmin)
 	form := url.Values{"name": {"Admin"}, "email": {"admin@test.com"}, "password": {"SecurePassword123!"}}
@@ -223,7 +230,7 @@ func TestRegisterAndLogin(t *testing.T) {
 }
 
 func TestRegisterShortPassword(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
 	form := url.Values{"name": {"Short"}, "email": {"short@test.com"}, "password": {"short"}}
 	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
@@ -237,7 +244,7 @@ func TestRegisterShortPassword(t *testing.T) {
 }
 
 func TestRegisterMissingFields(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
 	form := url.Values{"name": {""}, "email": {""}, "password": {""}}
 	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
@@ -272,7 +279,7 @@ func TestLoginWrongPassword(t *testing.T) {
 }
 
 func TestLoginNonexistentUser(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
 	form := url.Values{"email": {"ghost@test.com"}, "password": {"doesntmatter1"}}
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
@@ -286,9 +293,9 @@ func TestLoginNonexistentUser(t *testing.T) {
 }
 
 func TestDashboardRequiresAuth(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -301,7 +308,7 @@ func TestDashboardAuthenticated(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	cookie := createAuthenticatedUser(t, db, sessions, "dash@test.com", "superadmin")
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -341,7 +348,7 @@ func TestOrgPage(t *testing.T) {
 
 	db.CreateOrg(ctx, "View Org", "view-org")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/view-org", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/view-org", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -378,7 +385,7 @@ func TestProjectBriefPage(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Brief Org", "brief-org")
 	db.CreateProject(ctx, org.ID, "Brief Project", "brief-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/brief-org/projects/brief-proj/brief", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/brief-org/projects/brief-proj/brief", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -396,7 +403,7 @@ func TestProjectFeaturesPage(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Feat Org", "feat-org")
 	db.CreateProject(ctx, org.ID, "Feat Project", "feat-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/feat-org/projects/feat-proj/features", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/feat-org/projects/feat-proj/features", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -414,7 +421,7 @@ func TestProjectBugsPage(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Bugs Org", "bugs-org")
 	db.CreateProject(ctx, org.ID, "Bugs Project", "bugs-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/bugs-org/projects/bugs-proj/bugs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/bugs-org/projects/bugs-proj/bugs", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -432,7 +439,7 @@ func TestProjectGanttPage(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Gantt Org", "gantt-org")
 	db.CreateProject(ctx, org.ID, "Gantt Project", "gantt-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/gantt-org/projects/gantt-proj/gantt", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/gantt-org/projects/gantt-proj/gantt", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -483,7 +490,7 @@ func TestTicketDetail(t *testing.T) {
 	}
 	db.CreateTicket(ctx, ticket)
 
-	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID, http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -565,7 +572,7 @@ func TestAdminPageSuperadminOnly(t *testing.T) {
 
 	// Client should be forbidden
 	clientCookie := createAuthenticatedUser(t, db, sessions, "client@test.com", "client")
-	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin", http.NoBody)
 	req.AddCookie(clientCookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -576,7 +583,7 @@ func TestAdminPageSuperadminOnly(t *testing.T) {
 
 	// Superadmin should see admin page
 	adminCookie := createAuthenticatedUser(t, db, sessions, "admin@test.com", "superadmin")
-	req2 := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/admin", http.NoBody)
 	req2.AddCookie(adminCookie)
 	rec2 := httptest.NewRecorder()
 	r.ServeHTTP(rec2, req2)
@@ -593,7 +600,7 @@ func TestLogout(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	cookie := createAuthenticatedUser(t, db, sessions, "logout@test.com", "superadmin")
 
-	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req := httptest.NewRequest(http.MethodPost, "/logout", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -665,7 +672,7 @@ func TestOrgSettingsPage(t *testing.T) {
 
 	db.CreateOrg(ctx, "Settings Org", "settings-org")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/settings-org/settings", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/settings-org/settings", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)

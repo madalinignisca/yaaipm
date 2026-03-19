@@ -19,6 +19,8 @@ import (
 	"github.com/madalin/forgedesk/internal/storage"
 )
 
+const roleStaff = "staff"
+
 // FileHandler handles file upload, generation, and serving.
 type FileHandler struct {
 	s3     *storage.S3Client
@@ -49,7 +51,7 @@ func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	io.Copy(w, body)
+	_, _ = io.Copy(w, body)
 }
 
 // UploadImage handles multipart image upload to S3.
@@ -74,7 +76,7 @@ func (h *FileHandler) UploadImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse multipart (max 10MB)
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
+	if parseErr := r.ParseMultipartForm(10 << 20); parseErr != nil {
 		jsonError(w, "File too large (max 10MB)", http.StatusBadRequest)
 		return
 	}
@@ -106,7 +108,7 @@ func (h *FileHandler) UploadImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson // marshal cannot fail
 		"data": map[string]string{
 			"filePath": "/files/" + key,
 		},
@@ -172,7 +174,7 @@ func (h *FileHandler) GenerateImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson // marshal cannot fail
 		"data": map[string]string{
 			"filePath": "/files/" + key,
 		},
@@ -206,7 +208,7 @@ func (h *FileHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse multipart (max 50MB)
-	if err := r.ParseMultipartForm(50 << 20); err != nil {
+	if parseErr := r.ParseMultipartForm(50 << 20); parseErr != nil {
 		jsonError(w, "File too large (max 50MB)", http.StatusBadRequest)
 		return
 	}
@@ -227,8 +229,8 @@ func (h *FileHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	fileID := uuid.New().String()
 	key := fmt.Sprintf("orgs/%s/projects/%s/attachments/%s%s", orgID, ticket.ProjectID, fileID, ext)
 
-	if err := h.s3.Upload(r.Context(), key, file, ct); err != nil {
-		log.Printf("s3 upload error: %v", err)
+	if uploadErr := h.s3.Upload(r.Context(), key, file, ct); uploadErr != nil {
+		log.Printf("s3 upload error: %v", uploadErr)
 		jsonError(w, "Upload failed", http.StatusInternalServerError)
 		return
 	}
@@ -242,7 +244,7 @@ func (h *FileHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson // marshal cannot fail
 		"data": map[string]any{
 			"id":          att.ID,
 			"fileName":    att.FileName,
@@ -287,7 +289,7 @@ func (h *FileHandler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only the uploader or staff can delete
-	if att.UploadedBy != user.ID && user.Role != "superadmin" && user.Role != "staff" {
+	if att.UploadedBy != user.ID && user.Role != roleSuperadmin && user.Role != roleStaff {
 		jsonError(w, "Only the uploader or staff can delete attachments", http.StatusForbidden)
 		return
 	}
@@ -298,7 +300,7 @@ func (h *FileHandler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("HX-Refresh", "true")
+	w.Header().Set("Hx-Refresh", "true")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -308,7 +310,7 @@ func (h *FileHandler) checkProjectAccess(r *http.Request, user *models.User, pro
 	if err != nil {
 		return "", fmt.Errorf("project not found")
 	}
-	if user.Role != "superadmin" && user.Role != "staff" {
+	if user.Role != roleSuperadmin && user.Role != roleStaff {
 		if _, err := h.db.GetOrgMembership(r.Context(), user.ID, proj.OrgID); err != nil {
 			return "", fmt.Errorf("no access")
 		}
@@ -319,7 +321,7 @@ func (h *FileHandler) checkProjectAccess(r *http.Request, user *models.User, pro
 func jsonError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg}) //nolint:errchkjson // marshal cannot fail
 }
 
 func mimeToExt(ct string) string {

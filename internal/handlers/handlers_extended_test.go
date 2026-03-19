@@ -78,7 +78,7 @@ func TestParseMonth(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/costs?month="+tc.query, nil)
+			req := httptest.NewRequest(http.MethodGet, "/costs?month="+tc.query, http.NoBody)
 			got := parseMonth(req)
 			if got != tc.expected {
 				t.Errorf("parseMonth with query %q = %q, want %q", tc.query, got, tc.expected)
@@ -122,7 +122,7 @@ func TestProjectCosts(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Cost Org", "cost-org")
 	db.CreateProject(ctx, org.ID, "Cost Proj", "cost-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/cost-org/projects/cost-proj/costs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/cost-org/projects/cost-proj/costs", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -140,7 +140,7 @@ func TestProjectCostsWithMonth(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "CostM Org", "costm-org")
 	db.CreateProject(ctx, org.ID, "CostM Proj", "costm-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/costm-org/projects/costm-proj/costs?month=2025-03", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/costm-org/projects/costm-proj/costs?month=2025-03", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -158,7 +158,7 @@ func TestProjectCostsForbiddenForNonMember(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "CostNon Org", "costnon-org")
 	db.CreateProject(ctx, org.ID, "CostNon Proj", "costnon-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/costnon-org/projects/costnon-proj/costs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/costnon-org/projects/costnon-proj/costs", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -377,7 +377,7 @@ func TestDeleteCostItem(t *testing.T) {
 		t.Fatalf("creating cost: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/costs/"+cost.ID, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/costs/"+cost.ID, http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -387,7 +387,7 @@ func TestDeleteCostItem(t *testing.T) {
 	}
 
 	// Verify HX-Redirect header is set
-	hxRedirect := rec.Header().Get("HX-Redirect")
+	hxRedirect := rec.Header().Get("Hx-Redirect")
 	if hxRedirect == "" {
 		t.Error("expected HX-Redirect header to be set")
 	}
@@ -412,7 +412,7 @@ func TestDeleteCostItemForbiddenForClient(t *testing.T) {
 
 	cost, _ := db.CreateProjectCost(ctx, proj.ID, "2025-06", "base_fee", "Item", 1000)
 
-	req := httptest.NewRequest(http.MethodDelete, "/costs/"+cost.ID, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/costs/"+cost.ID, http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -426,7 +426,7 @@ func TestDeleteCostItemNotFound(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	cookie := createAuthenticatedUser(t, db, sessions, "costdelnf@test.com", "superadmin")
 
-	req := httptest.NewRequest(http.MethodDelete, "/costs/00000000-0000-0000-0000-000000000000", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/costs/00000000-0000-0000-0000-000000000000", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -608,7 +608,7 @@ func TestAccountSettingsPage(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	cookie := createAuthenticatedUser(t, db, sessions, "acctpage@test.com", "superadmin")
 
-	req := httptest.NewRequest(http.MethodGet, "/account/settings", nil)
+	req := httptest.NewRequest(http.MethodGet, "/account/settings", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)

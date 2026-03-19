@@ -100,7 +100,8 @@ func TestContentHashChanges(t *testing.T) {
 
 	// Second version with different content.
 	content2 := []byte("body { color: green; }")
-	if err := os.WriteFile(filePath, content2, 0o644); err != nil {
+	err = os.WriteFile(filePath, content2, 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 	m2, err := NewManifest(dir)
@@ -114,7 +115,8 @@ func TestContentHashChanges(t *testing.T) {
 	}
 
 	// Same content again should produce the same hash.
-	if err := os.WriteFile(filePath, content1, 0o644); err != nil {
+	err = os.WriteFile(filePath, content1, 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 	m3, err := NewManifest(dir)
@@ -145,7 +147,7 @@ func TestHandlerHashedURL(t *testing.T) {
 	// Get the hashed path (strip the "/static/" prefix since the handler receives the path without it).
 	hashedPath := strings.TrimPrefix(m.AssetPath("app.css"), "/static/")
 
-	req := httptest.NewRequest(http.MethodGet, "/"+hashedPath, nil)
+	req := httptest.NewRequest(http.MethodGet, "/"+hashedPath, http.NoBody)
 	req.URL.Path = hashedPath
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -179,7 +181,7 @@ func TestHandlerUnhashedURL(t *testing.T) {
 	handler := m.Handler()
 
 	// Request the file by its logical (unhashed) name.
-	req := httptest.NewRequest(http.MethodGet, "/script.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/script.js", http.NoBody)
 	req.URL.Path = "script.js"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

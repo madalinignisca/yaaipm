@@ -16,6 +16,8 @@ import (
 	"github.com/madalin/forgedesk/internal/render"
 )
 
+const statusPending = "pending"
+
 type InviteHandler struct {
 	db           *models.DB
 	sessions     *auth.SessionStore
@@ -43,7 +45,7 @@ func hashInviteToken(raw string) string {
 	return hex.EncodeToString(h[:])
 }
 
-func generateInviteToken() (raw string, hash string, err error) {
+func generateInviteToken() (raw, hash string, err error) {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return "", "", err
@@ -60,7 +62,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 
 	inv, err := h.db.GetInvitationByToken(r.Context(), tokenHash)
 	if err != nil {
-		h.engine.Render(w, r, "invite_register.html", render.PageData{
+		_ = h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Invalid Invitation",
 			Flash: "This invitation link is invalid or has expired.", FlashType: "error",
 		})
@@ -69,7 +71,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 
 	// If user already exists, redirect to login
 	if _, err := h.db.GetUserByEmail(r.Context(), inv.Email); err == nil {
-		h.engine.Render(w, r, "login.html", render.PageData{
+		_ = h.engine.Render(w, r, "login.html", render.PageData{
 			Title: "Login",
 			Flash: "You already have an account. Please log in to accept the invitation.", FlashType: "success",
 		})
@@ -88,7 +90,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 		inviterName = inviter.Name
 	}
 
-	h.engine.Render(w, r, "invite_register.html", render.PageData{
+	_ = h.engine.Render(w, r, "invite_register.html", render.PageData{
 		Title: "Join " + orgName,
 		Data: map[string]any{
 			"Email":       inv.Email,
@@ -106,7 +108,7 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 
 	inv, err := h.db.GetInvitationByToken(r.Context(), tokenHash)
 	if err != nil {
-		h.engine.Render(w, r, "invite_register.html", render.PageData{
+		_ = h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Invalid Invitation",
 			Flash: "This invitation link is invalid or has expired.", FlashType: "error",
 		})
@@ -128,7 +130,7 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderErr := func(msg string) {
-		h.engine.Render(w, r, "invite_register.html", render.PageData{
+		_ = h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Join " + orgName, Flash: msg, FlashType: "error",
 			Data: map[string]any{
 				"Email":       inv.Email,
@@ -169,11 +171,11 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Accept invitation and add org membership
-	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); err != nil {
-		log.Printf("accepting invitation: %v", err)
+	if statusErr := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); statusErr != nil {
+		log.Printf("accepting invitation: %v", statusErr)
 	}
-	if err := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
-		log.Printf("adding org member from invite: %v", err)
+	if memberErr := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); memberErr != nil {
+		log.Printf("adding org member from invite: %v", memberErr)
 	}
 
 	// Create session
@@ -213,7 +215,7 @@ func (h *InviteHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if inv.Status != "pending" || inv.ExpiresAt.Before(time.Now()) {
+	if inv.Status != statusPending || inv.ExpiresAt.Before(time.Now()) {
 		http.Error(w, "Invitation is no longer valid", http.StatusGone)
 		return
 	}
@@ -230,7 +232,7 @@ func (h *InviteHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request)
 
 	// Return empty string to remove the card via hx-swap="outerHTML"
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(""))
+	_, _ = w.Write([]byte(""))
 }
 
 // DeclineInvitation declines a pending invitation.
@@ -249,7 +251,7 @@ func (h *InviteHandler) DeclineInvitation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if inv.Status != "pending" {
+	if inv.Status != statusPending {
 		http.Error(w, "Invitation is no longer valid", http.StatusGone)
 		return
 	}
@@ -261,7 +263,7 @@ func (h *InviteHandler) DeclineInvitation(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(""))
+	_, _ = w.Write([]byte(""))
 }
 
 // RevokeInvitation revokes a pending invitation (org admin action).
@@ -295,11 +297,13 @@ func (h *InviteHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request)
 
 	// Re-render invitation list
 	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
-	h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
+	if err := h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
 		"Invitations": invitations,
 		"OrgSlug":     org.Slug,
 		"CanManage":   true,
-	})
+	}); err != nil {
+		log.Printf("rendering invitation list partial: %v", err)
+	}
 }
 
 // ResendInvitation generates a new token and resends the invitation email.
@@ -325,7 +329,7 @@ func (h *InviteHandler) ResendInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if inv.Status != "pending" {
+	if inv.Status != statusPending {
 		http.Error(w, "Only pending invitations can be resent", http.StatusBadRequest)
 		return
 	}
@@ -351,11 +355,13 @@ func (h *InviteHandler) ResendInvitation(w http.ResponseWriter, r *http.Request)
 
 	// Re-render invitation list
 	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
-	h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
+	if err := h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
 		"Invitations": invitations,
 		"OrgSlug":     org.Slug,
 		"CanManage":   true,
-	})
+	}); err != nil {
+		log.Printf("rendering invitation list partial: %v", err)
+	}
 }
 
 // canManageOrg is a shared helper to check org management permission.
