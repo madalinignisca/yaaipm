@@ -1,0 +1,153 @@
+version: "2"
+
+linters:
+  enable:
+    # Default (already enabled)
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # Bug detection
+    - asasalint
+    - bidichk
+    - bodyclose
+    - contextcheck
+    - durationcheck
+    - errchkjson
+    - errorlint
+    - fatcontext
+    - forcetypeassert
+    - makezero
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - nosprintfhostport
+    - rowserrcheck
+    - sqlclosecheck
+
+    # Security
+    - gosec
+
+    # Style & quality
+    - asciicheck
+    - canonicalheader
+    - copyloopvar
+    - dogsled
+    - dupword
+    - errname
+    - exptostd
+    - goconst
+    - gocritic
+    - gocheckcompilerdirectives
+    - goprintffuncname
+    - intrange
+    - misspell
+    - modernize
+    - musttag
+    - nakedret
+    - nestif
+    - nolintlint
+    - predeclared
+    - prealloc
+    - reassign
+    - recvcheck
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+
+    # SQL
+    - unqueryvet
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+
+    govet:
+      enable-all: true
+
+    gosec:
+      excludes:
+        - G104  # Unhandled errors (errcheck covers this)
+        - G304  # File path from variable (needed for template loading)
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam  # Too strict for handler functions with PageData
+        - rangeValCopy
+
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: increment-decrement
+        - name: var-naming
+        - name: range
+        - name: receiver-naming
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+
+    nakedret:
+      max-func-lines: 30
+
+    nestif:
+      min-complexity: 5
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    misspell:
+      locale: US
+
+  exclusions:
+    # Don't lint test files as strictly
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+          - forcetypeassert
+          - goconst
+      - path: internal/testutil/
+        linters:
+          - errcheck
+          - gosec
+
+    # Common false positives
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
+
+run:
+  timeout: 5m
+  tests: true
