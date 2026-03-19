@@ -65,6 +65,7 @@
             <button @click="open = !open" class="btn btn-secondary btn-sm">Add Cost Item</button>
             <div x-show="open" x-transition class="card card-compact mt-lg" style="max-width:32rem">
                 <form method="POST" action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/costs">
+                    {{csrfField}}
                     <input type="hidden" name="month" value="{{.Month}}">
                     <div class="stack">
                         <div class="form-group">

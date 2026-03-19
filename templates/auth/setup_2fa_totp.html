@@ -19,6 +19,7 @@
     {{end}}
 
     <form method="POST" action="/setup-2fa/totp/verify" class="stack-lg">
+        {{csrfField}}
         <div class="form-group">
             <label for="code" class="form-label">Verification code</label>
             <input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autofocus

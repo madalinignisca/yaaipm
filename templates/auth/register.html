@@ -7,6 +7,7 @@
         </p>
     </div>
     <form method="POST" action="/register" class="stack-lg" style="text-align:left">
+        {{csrfField}}
         <div class="form-group">
             <label for="name" class="form-label">Full name</label>
             <input id="name" name="name" type="text" required class="form-input">

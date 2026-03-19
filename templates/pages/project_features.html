@@ -9,6 +9,7 @@
             <button @click="open = !open" class="btn btn-primary btn-sm">New Feature</button>
             <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:20rem" @click.stop>
                 <form method="POST" action="/tickets" class="dropdown-form">
+                    {{csrfField}}
                     <input type="hidden" name="project_id" value="{{.Project.ID}}">
                     <input type="hidden" name="type" value="feature">
                     <div class="stack">

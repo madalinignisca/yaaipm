@@ -105,6 +105,7 @@
                 <div x-show="open" @click.outside="open = false" x-transition class="user-menu">
                     <a href="/account/settings">Account Settings</a>
                     <form method="POST" action="/logout">
+                        {{csrfField}}
                         <button type="submit">Sign Out</button>
                     </form>
                 </div>

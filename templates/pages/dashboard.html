@@ -13,12 +13,14 @@
             <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:14rem">
                 {{if .Org}}
                 <form method="POST" action="/orgs/{{.Org.Slug}}/projects" class="dropdown-form" @click.stop>
+                    {{csrfField}}
                     <label class="form-label">New Project</label>
                     <input type="text" name="name" placeholder="Project name" required class="form-input mb-sm">
                     <button type="submit" class="btn btn-primary btn-sm btn-block">Create Project</button>
                 </form>
                 {{end}}
                 <form method="POST" action="/orgs" class="dropdown-form" style="border-top:1px solid var(--gray-100)" @click.stop>
+                    {{csrfField}}
                     <label class="form-label">New Organization</label>
                     <input type="text" name="name" placeholder="Org name" required class="form-input mb-sm">
                     <button type="submit" class="btn btn-primary btn-sm btn-block">Create Organization</button>

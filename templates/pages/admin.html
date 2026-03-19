@@ -17,6 +17,7 @@
                 <h2 class="mb-md">Platform Business Details</h2>
                 <p class="text-sm text-muted mb-md">Your company's legal and contact information. Used alongside organization details for contract agreements.</p>
                 <form method="POST" action="/admin/settings/business">
+                    {{csrfField}}
                     <div class="form-group mb-md">
                         <label class="form-label" for="p_business_name">Business Name</label>
                         <input type="text" id="p_business_name" name="business_name" class="form-input"

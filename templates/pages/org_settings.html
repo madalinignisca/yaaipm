@@ -9,6 +9,7 @@
         <h2 class="mb-md">Business Details</h2>
         <p class="text-sm text-muted mb-md">Legal and contact information for this organization.</p>
         <form method="POST" action="/orgs/{{.OrgSlug}}/settings/business">
+            {{csrfField}}
             <div class="form-group mb-md">
                 <label class="form-label" for="business_name">Business Name</label>
                 <input type="text" id="business_name" name="business_name" class="form-input"
@@ -113,6 +114,7 @@
         <h2 class="mb-md">AI Cost Margin</h2>
         <p class="text-sm text-muted mb-md">Percentage markup applied to AI usage costs for client billing.</p>
         <form method="POST" action="/orgs/{{.OrgSlug}}/settings/margin" class="flex items-center gap-md">
+            {{csrfField}}
             <input type="number" name="ai_margin_percent" value="{{$.Org.AIMarginPercent}}"
                    min="0" max="500" class="form-input" style="width:6rem">
             <span class="text-sm text-muted">%</span>
@@ -123,6 +125,7 @@
         <h2 class="mb-md">Display Currency</h2>
         <p class="text-sm text-muted mb-md">Currency used to display costs for this organization. Does not convert amounts.</p>
         <form method="POST" action="/orgs/{{.OrgSlug}}/settings/currency" class="flex items-center gap-md">
+            {{csrfField}}
             <select name="currency_code" class="form-select" style="width:auto">
                 {{$cur := $.Org.CurrencyCode}}
                 <option value="EUR" {{if eq $cur "EUR"}}selected{{end}}>EUR — €</option>

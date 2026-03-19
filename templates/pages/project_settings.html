@@ -9,6 +9,7 @@
         <h3 class="mb-sm">Repository</h3>
         <p class="text-sm text-muted mb-md">Git repository URL for this project. Required for the orchestrator to clone code and create agent worktrees.</p>
         <form method="POST" action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/settings/repo">
+            {{csrfField}}
             <div class="form-group mb-md">
                 <label class="form-label" for="repo_url">Repository URL</label>
                 <input type="url" id="repo_url" name="repo_url" class="form-input"
