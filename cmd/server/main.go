@@ -32,7 +32,15 @@ func main() {
 		log.Fatalf("loading config: %v", err)
 	}
 
-	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("parsing database config: %v", err)
+	}
+	poolCfg.MaxConns = 15
+	poolCfg.MinConns = 2
+	poolCfg.HealthCheckPeriod = 30 * time.Second
+
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		log.Fatalf("connecting to database: %v", err)
 	}
@@ -41,7 +49,7 @@ func main() {
 	if err := pool.Ping(context.Background()); err != nil {
 		log.Fatalf("pinging database: %v", err)
 	}
-	log.Println("Database connected")
+	log.Printf("Database connected (max_conns=%d, min_conns=%d)", poolCfg.MaxConns, poolCfg.MinConns)
 
 	db := models.NewDB(pool)
 	sessions := auth.NewSessionStore(pool)
@@ -117,10 +125,14 @@ func main() {
 	}
 	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient, chatHub, cfg)
 
+	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
+	authLimiter := middleware.NewRateLimiter(0.5, 5)
+
 	r := chi.NewRouter()
 
 	// Global middleware
 	r.Use(middleware.Recover)
+	r.Use(middleware.SecurityHeaders)
 	r.Use(middleware.Logging)
 
 	// Static files (content-hashed URLs get immutable cache headers)
@@ -137,18 +149,21 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	// Public auth routes
-	r.Get("/login", authH.LoginPage)
-	r.Post("/login", authH.Login)
-	r.Get("/register", authH.RegisterPage)
-	r.Post("/register", authH.Register)
+	// Public auth routes (rate-limited)
+	r.Group(func(r chi.Router) {
+		r.Use(authLimiter.Limit)
+		r.Get("/login", authH.LoginPage)
+		r.Post("/login", authH.Login)
+		r.Get("/register", authH.RegisterPage)
+		r.Post("/register", authH.Register)
 
-	// 2FA routes (need session cookie but not full auth)
-	r.Get("/setup-2fa", authH.Setup2FAPage)
-	r.Get("/setup-2fa/totp", authH.Setup2FATOTP)
-	r.Post("/setup-2fa/totp/verify", authH.VerifySetupTOTP)
-	r.Get("/verify-2fa", authH.Verify2FAPage)
-	r.Post("/verify-2fa", authH.Verify2FA)
+		// 2FA routes (need session cookie but not full auth)
+		r.Get("/setup-2fa", authH.Setup2FAPage)
+		r.Get("/setup-2fa/totp", authH.Setup2FATOTP)
+		r.Post("/setup-2fa/totp/verify", authH.VerifySetupTOTP)
+		r.Get("/verify-2fa", authH.Verify2FAPage)
+		r.Post("/verify-2fa", authH.Verify2FA)
+	})
 
 	// Invitation routes (public — new users registering)
 	r.Get("/invite/{token}", inviteH.InviteRegisterPage)
@@ -157,6 +172,7 @@ func main() {
 	// Protected routes
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AuthMiddleware(sessions, db))
+		r.Use(middleware.CSRFProtect([]byte(cfg.SessionSecret[:32]), secureCookie))
 
 		r.Post("/logout", authH.Logout)
 		r.Get("/", dashH.Dashboard)

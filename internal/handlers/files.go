@@ -253,7 +253,7 @@ func (h *FileHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DeleteAttachment removes an attachment record (S3 object remains for cache).
+// DeleteAttachment removes an attachment record after verifying authorization.
 func (h *FileHandler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 	if user == nil {
@@ -264,6 +264,31 @@ func (h *FileHandler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	attachmentID := r.PathValue("attachmentID")
 	if attachmentID == "" {
 		jsonError(w, "attachment ID required", http.StatusBadRequest)
+		return
+	}
+
+	// Fetch attachment to verify authorization
+	att, err := h.db.GetAttachmentByID(r.Context(), attachmentID)
+	if err != nil {
+		jsonError(w, "Attachment not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify project access via ticket
+	ticket, err := h.db.GetTicket(r.Context(), att.TicketID)
+	if err != nil {
+		jsonError(w, "Ticket not found", http.StatusNotFound)
+		return
+	}
+
+	if _, err := h.checkProjectAccess(r, user, ticket.ProjectID); err != nil {
+		jsonError(w, "Access denied", http.StatusForbidden)
+		return
+	}
+
+	// Only the uploader or staff can delete
+	if att.UploadedBy != user.ID && user.Role != "superadmin" && user.Role != "staff" {
+		jsonError(w, "Only the uploader or staff can delete attachments", http.StatusForbidden)
 		return
 	}
 
@@ -297,8 +322,8 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-func mimeToExt(mime string) string {
-	switch mime {
+func mimeToExt(ct string) string {
+	switch ct {
 	case "image/png":
 		return ".png"
 	case "image/jpeg":
@@ -307,7 +332,25 @@ func mimeToExt(mime string) string {
 		return ".gif"
 	case "image/webp":
 		return ".webp"
+	case "image/svg+xml":
+		return ".svg"
+	case "application/pdf":
+		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	case "text/csv":
+		return ".csv"
+	case "application/json":
+		return ".json"
+	case "application/zip":
+		return ".zip"
+	case "application/gzip":
+		return ".gz"
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		return ".xlsx"
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		return ".docx"
 	default:
-		return ".png"
+		return ".bin"
 	}
 }

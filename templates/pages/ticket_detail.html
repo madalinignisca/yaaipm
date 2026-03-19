@@ -104,6 +104,16 @@
                     <label class="form-label">Description</label>
                     <textarea x-ref="descTextarea" name="description" rows="12" class="form-textarea font-mono">{{.Ticket.DescriptionMarkdown}}</textarea>
                 </div>
+                <div class="form-row mb-sm">
+                    <div class="form-group">
+                        <label class="form-label">Start date</label>
+                        <input type="date" name="date_start" value="{{formatDateInput .Ticket.DateStart}}" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">End date</label>
+                        <input type="date" name="date_end" value="{{formatDateInput .Ticket.DateEnd}}" class="form-input">
+                    </div>
+                </div>
                 <div class="flex gap-sm">
                     <button type="submit" class="btn btn-primary">Save</button>
                     <button type="button" @click="cancelEditing()" class="btn btn-secondary">Cancel</button>
@@ -111,14 +121,16 @@
             </form>
         </div>
 
-        {{template "reactions.html" dict "TargetType" "ticket" "TargetID" .Ticket.ID "Groups" .TicketReactions}}
-
         {{if or .Ticket.DateStart .Ticket.DateEnd}}
-        <div class="ticket-dates">
-            {{if .Ticket.DateStart}}<span>Start: {{formatDateInput .Ticket.DateStart}}</span>{{end}}
-            {{if .Ticket.DateEnd}}<span>End: {{formatDateInput .Ticket.DateEnd}}</span>{{end}}
+        <div class="ticket-dates" x-show="!editing">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            {{if .Ticket.DateStart}}<span>{{formatDate .Ticket.DateStart}}</span>{{end}}
+            {{if and .Ticket.DateStart .Ticket.DateEnd}}<span>→</span>{{end}}
+            {{if .Ticket.DateEnd}}<span>{{formatDate .Ticket.DateEnd}}</span>{{end}}
         </div>
         {{end}}
+
+        {{template "reactions.html" dict "TargetType" "ticket" "TargetID" .Ticket.ID "Groups" .TicketReactions}}
     </div>
 
     <!-- Attachments -->
@@ -171,6 +183,16 @@
                                 <label class="form-label">Description</label>
                                 <textarea name="description" rows="3" required placeholder="Describe the task..." class="form-textarea"></textarea>
                             </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label class="form-label">Start</label>
+                                    <input type="date" name="date_start" class="form-input">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">End</label>
+                                    <input type="date" name="date_end" class="form-input">
+                                </div>
+                            </div>
                             <button type="submit" class="btn btn-primary btn-block">Create</button>
                         </div>
                     </form>
@@ -181,8 +203,23 @@
         <div class="stack-sm">
             {{range .Children}}
             <a href="/tickets/{{.ID}}" class="sub-item">
-                <span class="sub-item-title">{{.Title}}</span>
-                <span class="badge badge-{{statusColor .Status}}">{{.Status}}</span>
+                <div class="sub-item-content">
+                    <div class="sub-item-header">
+                        <span class="sub-item-title">{{.Title}}</span>
+                        <div class="sub-item-badges">
+                            <span class="badge badge-{{statusColor .Status}}">{{.Status}}</span>
+                            <span class="badge badge-{{priorityColor .Priority}}">{{.Priority}}</span>
+                        </div>
+                    </div>
+                    {{if .DescriptionMarkdown}}
+                    <span class="sub-item-desc">{{truncate .DescriptionMarkdown 120}}</span>
+                    {{end}}
+                    {{if or .DateStart .DateEnd}}
+                    <span class="sub-item-dates">
+                        {{if .DateStart}}{{formatDate .DateStart}}{{end}}{{if and .DateStart .DateEnd}} → {{end}}{{if .DateEnd}}{{formatDate .DateEnd}}{{end}}
+                    </span>
+                    {{end}}
+                </div>
             </a>
             {{end}}
         </div>

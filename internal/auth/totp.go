@@ -43,6 +43,19 @@ func ValidateTOTP(code, secret string) bool {
 	return valid
 }
 
+// ValidateTOTPOnce validates a TOTP code and prevents replay within the same time step.
+// Returns true if the code is valid AND hasn't been used in the last 30 seconds.
+func ValidateTOTPOnce(code, secret string, lastUsedAt *time.Time) bool {
+	if !ValidateTOTP(code, secret) {
+		return false
+	}
+	// Reject if the same code was used within the last 30s (one TOTP period)
+	if lastUsedAt != nil && time.Since(*lastUsedAt) < 30*time.Second {
+		return false
+	}
+	return true
+}
+
 // EncryptTOTPSecret encrypts a TOTP secret for storage.
 func EncryptTOTPSecret(secret, aesKey string) ([]byte, error) {
 	return crypto.Encrypt([]byte(secret), aesKey)

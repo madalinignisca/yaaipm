@@ -6,15 +6,14 @@
     <h2 class="mb-md">Timeline</h2>
 
     {{if .Tickets}}
-    <div id="gantt-chart" class="card" style="min-height:400px;overflow-x:auto">
-        <script>
-            document.addEventListener('DOMContentLoaded', function() {
-                if (typeof renderGantt === 'function') {
-                    renderGantt('#gantt-chart', {{.Tickets}});
-                }
-            });
-        </script>
-    </div>
+    <div id="gantt-chart" class="gantt-container"></div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof renderGantt === 'function') {
+                renderGantt('#gantt-chart', {{toJSON .Tickets}});
+            }
+        });
+    </script>
     {{else}}
     <div class="empty-state">
         <p>No tickets with dates set. Add start/end dates to tickets to see them on the timeline.</p>

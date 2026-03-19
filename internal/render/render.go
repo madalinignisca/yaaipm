@@ -2,7 +2,9 @@ package render
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"html"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -12,8 +14,10 @@ import (
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/styles"
+	gorillacsrf "github.com/gorilla/csrf"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/static"
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/util"
@@ -65,6 +69,12 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 	_ = chromaFmt.WriteCSS(&cssBuf, chromaStyle)
 	highlightCSSStr := cssBuf.String()
 
+	// HTML sanitizer for markdown output — prevents stored XSS while
+	// allowing safe formatting, Chroma syntax highlighting, and Mermaid diagrams.
+	sanitizer := bluemonday.UGCPolicy()
+	sanitizer.AllowAttrs("class").OnElements("pre", "code", "span", "div")
+	sanitizer.AllowAttrs("style").OnElements("span") // Chroma inline styles
+
 	md := goldmark.New(goldmark.WithExtensions(
 		extension.Table,
 		extension.Strikethrough,
@@ -107,10 +117,18 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			if err := md.Convert([]byte(src), &buf); err != nil {
 				return template.HTML(template.HTMLEscapeString(src))
 			}
-			return template.HTML(buf.String())
+			return template.HTML(sanitizer.Sanitize(buf.String()))
 		},
-		"formatDate": func(t time.Time) string {
-			return t.Format("Jan 2, 2006")
+		"formatDate": func(t any) string {
+			switch v := t.(type) {
+			case time.Time:
+				return v.Format("Jan 2, 2006")
+			case *time.Time:
+				if v != nil {
+					return v.Format("Jan 2, 2006")
+				}
+			}
+			return ""
 		},
 		"formatDateTime": func(t time.Time) string {
 			return t.Format("Jan 2, 2006 3:04 PM")
@@ -190,6 +208,22 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		"humanize": func(s string) string {
 			return strings.ReplaceAll(s, "_", " ")
 		},
+		"truncate": func(s string, maxLen int) string {
+			// Strip newlines for single-line previews
+			s = strings.ReplaceAll(s, "\n", " ")
+			s = strings.TrimSpace(s)
+			if len(s) <= maxLen {
+				return s
+			}
+			return s[:maxLen] + "…"
+		},
+		"toJSON": func(v any) template.JS {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return "[]"
+			}
+			return template.JS(b)
+		},
 		"formatBytes": func(b int64) string {
 			const unit = 1024
 			if b < unit {
@@ -201,6 +235,12 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				exp++
 			}
 			return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+		},
+		"csrfField": func() template.HTML {
+			return ""
+		},
+		"csrfToken": func() string {
+			return ""
 		},
 		"fileIcon": func(ct string) template.HTML {
 			switch {
@@ -303,6 +343,33 @@ func (e *Engine) Render(w http.ResponseWriter, name string, data PageData) error
 	return t.ExecuteTemplate(w, "base", data)
 }
 
+// RenderWithRequest renders a full page, injecting CSRF token from the request context.
+func (e *Engine) RenderWithRequest(w http.ResponseWriter, r *http.Request, name string, data PageData) error {
+	t, ok := e.templates[name]
+	if !ok {
+		return fmt.Errorf("template %q not found", name)
+	}
+	data.AssistantEnabled = e.AssistantEnabled
+	data.CSRFToken = gorillacsrf.Token(r)
+
+	// Clone template with request-specific CSRF funcs
+	t, err := t.Clone()
+	if err != nil {
+		return fmt.Errorf("cloning template: %w", err)
+	}
+	t.Funcs(template.FuncMap{
+		"csrfField": func() template.HTML {
+			return template.HTML(gorillacsrf.TemplateField(r))
+		},
+		"csrfToken": func() string {
+			return gorillacsrf.Token(r)
+		},
+	})
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	return t.ExecuteTemplate(w, "base", data)
+}
+
 // RenderPartial renders an HTMX partial (no layout).
 func (e *Engine) RenderPartial(w http.ResponseWriter, name string, data any) error {
 	key := "partial:" + name
@@ -322,5 +389,5 @@ func (e *Engine) RenderPartial(w http.ResponseWriter, name string, data any) err
 func (e *Engine) RenderError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Error</title></head><body><h1>%d</h1><p>%s</p></body></html>`, status, message)
+	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Error</title></head><body><h1>%d</h1><p>%s</p></body></html>`, status, html.EscapeString(message))
 }

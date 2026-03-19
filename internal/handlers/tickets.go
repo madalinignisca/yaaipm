@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -32,6 +33,16 @@ func NewTicketHandler(db *models.DB, engine *render.Engine, ai titleGenerator, c
 	return &TicketHandler{db: db, engine: engine, ai: ai, cfg: cfg}
 }
 
+// Valid ticket field values for input validation
+var (
+	validTicketTypes      = map[string]bool{"epic": true, "feature": true, "task": true, "subtask": true, "bug": true}
+	validTicketPriorities = map[string]bool{"low": true, "medium": true, "high": true, "critical": true}
+	validTicketStatuses   = map[string]bool{
+		"backlog": true, "ready": true, "planning": true, "plan_review": true,
+		"implementing": true, "testing": true, "review": true, "done": true, "cancelled": true,
+	}
+)
+
 type ticketDetailData struct {
 	Ticket           *models.Ticket
 	Children         []models.Ticket
@@ -46,7 +57,20 @@ func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 	ticketID := r.PathValue("ticketID")
 
-	ticket, err := h.db.GetTicket(r.Context(), ticketID)
+	var ticket *models.Ticket
+	var err error
+
+	// For client users, enforce org-scoped access
+	if auth.IsStaffOrAbove(user.Role) {
+		ticket, err = h.db.GetTicket(r.Context(), ticketID)
+	} else {
+		org := middleware.GetOrg(r)
+		if org == nil {
+			h.engine.RenderError(w, http.StatusNotFound, "Ticket not found")
+			return
+		}
+		ticket, err = h.db.GetTicketScoped(r.Context(), ticketID, org.ID)
+	}
 	if err != nil {
 		h.engine.RenderError(w, http.StatusNotFound, "Ticket not found")
 		return
@@ -133,6 +157,10 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	if ticketType == "" {
 		ticketType = "task"
 	}
+	if !validTicketTypes[ticketType] {
+		http.Error(w, "Invalid ticket type", http.StatusBadRequest)
+		return
+	}
 
 	var dateStart, dateEnd *time.Time
 	if ds := r.FormValue("date_start"); ds != "" {
@@ -162,6 +190,10 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	if ticket.Priority == "" {
 		ticket.Priority = "medium"
 	}
+	if !validTicketPriorities[ticket.Priority] {
+		http.Error(w, "Invalid priority", http.StatusBadRequest)
+		return
+	}
 
 	if err := h.db.CreateTicket(r.Context(), ticket); err != nil {
 		log.Printf("creating ticket: %v", err)
@@ -169,11 +201,19 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redirect back
-	referer := r.Header.Get("Referer")
-	if referer != "" {
-		http.Redirect(w, r, referer, http.StatusSeeOther)
-		return
+	// Auto-expand parent dates to encompass this child
+	if ticket.ParentID != nil && (ticket.DateStart != nil || ticket.DateEnd != nil) {
+		if err := h.db.ExpandParentDates(r.Context(), ticket.DateStart, ticket.DateEnd, ticket.ParentID); err != nil {
+			log.Printf("expanding parent dates: %v", err)
+		}
+	}
+
+	// Redirect back (only to same host to prevent open redirect)
+	if referer := r.Header.Get("Referer"); referer != "" {
+		if u, err := url.Parse(referer); err == nil && (u.Host == "" || u.Host == r.Host) {
+			http.Redirect(w, r, referer, http.StatusSeeOther)
+			return
+		}
 	}
 	w.Header().Set("HX-Refresh", "true")
 	w.WriteHeader(http.StatusCreated)
@@ -214,6 +254,13 @@ func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-expand parent dates if this ticket's dates changed
+	if ticket.ParentID != nil && (ticket.DateStart != nil || ticket.DateEnd != nil) {
+		if err := h.db.ExpandParentDates(r.Context(), ticket.DateStart, ticket.DateEnd, ticket.ParentID); err != nil {
+			log.Printf("expanding parent dates: %v", err)
+		}
+	}
+
 	w.Header().Set("HX-Refresh", "true")
 	w.WriteHeader(http.StatusOK)
 }
@@ -225,6 +272,10 @@ func (h *TicketHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 
 	if newStatus == "" {
 		http.Error(w, "Status is required", http.StatusBadRequest)
+		return
+	}
+	if !validTicketStatuses[newStatus] {
+		http.Error(w, "Invalid status", http.StatusBadRequest)
 		return
 	}
 
@@ -316,7 +367,7 @@ func (h *TicketHandler) DeleteTicket(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Ticket %s (%s) permanently deleted by user %s (%s)", ticketID, ticket.Title, user.ID, user.Email)
 
-	if err := h.db.DeleteTicket(r.Context(), ticketID); err != nil {
+	if err := h.db.DeleteTicketTx(r.Context(), ticketID); err != nil {
 		log.Printf("deleting ticket: %v", err)
 		http.Error(w, "Failed to delete", http.StatusInternalServerError)
 		return

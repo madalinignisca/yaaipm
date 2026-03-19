@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"google.golang.org/genai"
 
 	"github.com/madalin/forgedesk/internal/ai"
+	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
@@ -21,7 +24,17 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // same-origin requests may omit Origin
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return u.Host == r.Host
+	},
 }
 
 type AssistantHandler struct {
@@ -384,7 +397,7 @@ func (h *AssistantHandler) DeleteConversation(w http.ResponseWriter, r *http.Req
 // buildSystemPrompt creates a context-aware system prompt.
 func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.User, conv *models.AIConversation) string {
 	var sb strings.Builder
-	sb.WriteString("You are ForgeDesk Assistant, an AI helper for project management. ")
+	sb.WriteString("You are Simona, the ForgeDesk AI assistant for project management. ")
 	sb.WriteString("You help users manage their projects, tickets, and tasks. ")
 	sb.WriteString("Be concise, helpful, and professional. Use markdown formatting in your responses.\n\n")
 
@@ -392,7 +405,7 @@ func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.U
 	sb.WriteString("User messages are prefixed with [Name] to identify who is speaking. ")
 	sb.WriteString("Address users by name when appropriate.\n\n")
 
-	sb.WriteString(fmt.Sprintf("Current user: %s (role: %s)\n", user.Name, user.Role))
+	sb.WriteString(fmt.Sprintf("Current user: %s (role: %s)\n", sanitizeForPrompt(user.Name, 100), user.Role))
 
 	if conv.ProjectID != nil {
 		proj, err := h.db.GetProjectByID(ctx, *conv.ProjectID)
@@ -401,7 +414,7 @@ func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.U
 			if orgErr == nil {
 				sb.WriteString(fmt.Sprintf("\nCurrent organization: %s\n", org.Name))
 			}
-			sb.WriteString(fmt.Sprintf("Current project: %s (ID: %s)\n", proj.Name, proj.ID))
+			sb.WriteString(fmt.Sprintf("Current project: %s (ID: %s)\n", sanitizeForPrompt(proj.Name, 200), proj.ID))
 			sb.WriteString("You are scoped to this project. Use this project's ID for all tool calls.\n")
 			if proj.BriefMarkdown != "" {
 				brief := proj.BriefMarkdown
@@ -425,12 +438,27 @@ func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.U
 
 	sb.WriteString("When using tools:\n")
 	sb.WriteString("- Use search_tickets to find existing tickets before creating duplicates\n")
+	sb.WriteString("- Use list_tickets with parent_id to see all children of a feature or task\n")
+	sb.WriteString("- Use list_tickets with type='feature' or type='bug' to list all features or bugs in the project\n")
+	sb.WriteString("- Use get_ticket for full ticket detail including description, comments, and children\n")
 	sb.WriteString("- When adding tasks to a feature, first search for the feature to get its ID, then create tasks with that parent_id\n")
+	sb.WriteString("- Title is optional when creating tickets — if omitted, it's auto-generated from the description\n")
 	sb.WriteString("- Use the current project ID when creating tickets or searching\n")
-	sb.WriteString("- Use update_project_brief to write or update the project brief when the user asks you to\n")
-	sb.WriteString("- When updating the brief, write well-structured markdown with headings, lists, and sections\n")
-	sb.WriteString("- Confirm destructive actions with the user before executing\n")
+	sb.WriteString("- Use update_project_brief to write or update the project brief. Write well-structured markdown with headings, lists, and sections\n")
+	sb.WriteString("- Use update_ticket to modify any ticket field: title, description, priority, status, dates\n")
+	sb.WriteString("- Set date_start and date_end (YYYY-MM-DD) on tickets for timeline/Gantt planning\n")
+	sb.WriteString("- Child ticket dates auto-expand the parent's date range, so set dates on children and parents will adjust automatically\n")
+	sb.WriteString("- Confirm destructive actions (archive, delete) with the user before executing\n")
 	sb.WriteString("- Report tool results clearly to the user\n")
+
+	if auth.IsStaffOrAbove(user.Role) {
+		sb.WriteString("\nStaff tools available to you:\n")
+		sb.WriteString("- archive_ticket / restore_ticket: soft-delete and restore tickets\n")
+		sb.WriteString("- delete_ticket: permanently delete a ticket (irreversible, always confirm first)\n")
+		sb.WriteString("- update_agent_mode: assign tickets to AI agents (claude, gemini, codex, mistral) with mode (plan, implement)\n")
+		sb.WriteString("- update_repo_url: set the project's repository URL\n")
+		sb.WriteString("- mark_brief_reviewed: record that the brief has been reviewed\n")
+	}
 
 	return sb.String()
 }
@@ -496,10 +524,28 @@ func (e *toolExecutor) Execute(ctx context.Context, name string, args map[string
 		return e.createTicket(ctx, args)
 	case "update_ticket_status":
 		return e.updateTicketStatus(ctx, args)
+	case "update_ticket":
+		return e.updateTicket(ctx, args)
 	case "post_comment":
 		return e.postComment(ctx, args)
 	case "update_project_brief":
 		return e.updateProjectBrief(ctx, args)
+	case "get_ticket":
+		return e.getTicket(ctx, args)
+	case "list_tickets":
+		return e.listTickets(ctx, args)
+	case "archive_ticket":
+		return e.archiveTicket(ctx, args)
+	case "restore_ticket":
+		return e.restoreTicket(ctx, args)
+	case "delete_ticket":
+		return e.deleteTicket(ctx, args)
+	case "update_agent_mode":
+		return e.updateAgentMode(ctx, args)
+	case "update_repo_url":
+		return e.updateRepoURL(ctx, args)
+	case "mark_brief_reviewed":
+		return e.markBriefReviewed(ctx, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -541,13 +587,36 @@ func (e *toolExecutor) searchTickets(ctx context.Context, args map[string]any) (
 
 	var results []map[string]any
 	for _, t := range tickets {
-		results = append(results, map[string]any{
-			"id":       t.ID,
-			"title":    t.Title,
-			"type":     t.Type,
-			"status":   t.Status,
-			"priority": t.Priority,
-		})
+		r := map[string]any{
+			"id":         t.ID,
+			"title":      t.Title,
+			"type":       t.Type,
+			"status":     t.Status,
+			"priority":   t.Priority,
+			"created_by": t.CreatedBy,
+			"created_at": t.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at": t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+		if t.DescriptionMarkdown != "" {
+			desc := t.DescriptionMarkdown
+			if len(desc) > 300 {
+				desc = desc[:300] + "..."
+			}
+			r["description"] = desc
+		}
+		if t.DateStart != nil {
+			r["date_start"] = t.DateStart.Format("2006-01-02")
+		}
+		if t.DateEnd != nil {
+			r["date_end"] = t.DateEnd.Format("2006-01-02")
+		}
+		if t.ParentID != nil {
+			r["parent_id"] = *t.ParentID
+		}
+		if t.AssignedTo != nil {
+			r["assigned_to"] = *t.AssignedTo
+		}
+		results = append(results, r)
 	}
 
 	return map[string]any{"tickets": results, "count": len(results)}, nil
@@ -602,8 +671,16 @@ func (e *toolExecutor) createTicket(ctx context.Context, args map[string]any) (m
 	desc, _ := args["description"].(string)
 	parentID, _ := args["parent_id"].(string)
 
-	if title == "" || ticketType == "" || priority == "" {
-		return map[string]any{"error": "title, type, and priority are required"}, nil
+	if ticketType == "" || priority == "" {
+		return map[string]any{"error": "type and priority are required"}, nil
+	}
+
+	// Auto-generate title from description if not provided
+	if title == "" && desc != "" {
+		title = generateTitle(desc)
+	}
+	if title == "" {
+		return map[string]any{"error": "title or description is required"}, nil
 	}
 
 	if (ticketType == "task" || ticketType == "subtask") && parentID == "" {
@@ -622,19 +699,43 @@ func (e *toolExecutor) createTicket(ctx context.Context, args map[string]any) (m
 	if parentID != "" {
 		ticket.ParentID = &parentID
 	}
+	if ds, ok := args["date_start"].(string); ok && ds != "" {
+		if t, err := time.Parse("2006-01-02", ds); err == nil {
+			ticket.DateStart = &t
+		}
+	}
+	if de, ok := args["date_end"].(string); ok && de != "" {
+		if t, err := time.Parse("2006-01-02", de); err == nil {
+			ticket.DateEnd = &t
+		}
+	}
 
 	if err := e.db.CreateTicket(ctx, ticket); err != nil {
 		return nil, fmt.Errorf("creating ticket: %w", err)
 	}
 
-	return map[string]any{
+	// Auto-expand parent dates to encompass this child
+	if ticket.ParentID != nil && (ticket.DateStart != nil || ticket.DateEnd != nil) {
+		if err := e.db.ExpandParentDates(ctx, ticket.DateStart, ticket.DateEnd, ticket.ParentID); err != nil {
+			log.Printf("expanding parent dates: %v", err)
+		}
+	}
+
+	result := map[string]any{
 		"id":       ticket.ID,
 		"title":    ticket.Title,
 		"type":     ticket.Type,
 		"status":   ticket.Status,
 		"priority": ticket.Priority,
 		"message":  fmt.Sprintf("Ticket '%s' created successfully", ticket.Title),
-	}, nil
+	}
+	if ticket.DateStart != nil {
+		result["date_start"] = ticket.DateStart.Format("2006-01-02")
+	}
+	if ticket.DateEnd != nil {
+		result["date_end"] = ticket.DateEnd.Format("2006-01-02")
+	}
+	return result, nil
 }
 
 func (e *toolExecutor) updateTicketStatus(ctx context.Context, args map[string]any) (map[string]any, error) {
@@ -659,11 +760,90 @@ func (e *toolExecutor) updateTicketStatus(ctx context.Context, args map[string]a
 		return nil, fmt.Errorf("updating status: %w", err)
 	}
 
+	details, _ := json.Marshal(map[string]string{"new_status": newStatus})
+	e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "status_change", string(details))
+
 	return map[string]any{
 		"ticket_id":  ticketID,
 		"old_status": oldStatus,
 		"new_status": newStatus,
 		"message":    fmt.Sprintf("Status updated from '%s' to '%s'", oldStatus, newStatus),
+	}, nil
+}
+
+func (e *toolExecutor) updateTicket(ctx context.Context, args map[string]any) (map[string]any, error) {
+	ticketID, _ := args["ticket_id"].(string)
+	if ticketID == "" {
+		return map[string]any{"error": "ticket_id is required"}, nil
+	}
+
+	ticket, err := e.db.GetTicket(ctx, ticketID)
+	if err != nil {
+		return map[string]any{"error": "ticket not found"}, nil
+	}
+
+	if err := e.checkProjectAccess(ctx, ticket.ProjectID); err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+
+	var changes []string
+	if title, ok := args["title"].(string); ok && title != "" {
+		ticket.Title = title
+		changes = append(changes, "title")
+	}
+	if desc, ok := args["description"].(string); ok {
+		ticket.DescriptionMarkdown = desc
+		changes = append(changes, "description")
+	}
+	if pri, ok := args["priority"].(string); ok && pri != "" {
+		ticket.Priority = pri
+		changes = append(changes, "priority")
+	}
+	if status, ok := args["status"].(string); ok && status != "" {
+		ticket.Status = status
+		changes = append(changes, "status")
+	}
+	if ds, ok := args["date_start"].(string); ok && ds != "" {
+		if t, err := time.Parse("2006-01-02", ds); err == nil {
+			ticket.DateStart = &t
+			changes = append(changes, "date_start")
+		}
+	}
+	if de, ok := args["date_end"].(string); ok && de != "" {
+		if t, err := time.Parse("2006-01-02", de); err == nil {
+			ticket.DateEnd = &t
+			changes = append(changes, "date_end")
+		}
+	}
+
+	if len(changes) == 0 {
+		return map[string]any{"error": "no fields to update"}, nil
+	}
+
+	if err := e.db.UpdateTicket(ctx, ticket); err != nil {
+		return nil, fmt.Errorf("updating ticket: %w", err)
+	}
+
+	// Log activity for status changes
+	for _, c := range changes {
+		if c == "status" {
+			details, _ := json.Marshal(map[string]string{"new_status": ticket.Status})
+			e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "status_change", string(details))
+			break
+		}
+	}
+
+	// Auto-expand parent dates if dates changed
+	if ticket.ParentID != nil && (ticket.DateStart != nil || ticket.DateEnd != nil) {
+		if err := e.db.ExpandParentDates(ctx, ticket.DateStart, ticket.DateEnd, ticket.ParentID); err != nil {
+			log.Printf("expanding parent dates: %v", err)
+		}
+	}
+
+	return map[string]any{
+		"ticket_id": ticketID,
+		"updated":   changes,
+		"message":   fmt.Sprintf("Ticket updated: %s", strings.Join(changes, ", ")),
 	}, nil
 }
 
@@ -688,6 +868,8 @@ func (e *toolExecutor) postComment(ctx context.Context, args map[string]any) (ma
 	if err != nil {
 		return nil, fmt.Errorf("creating comment: %w", err)
 	}
+
+	e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "comment", "{}")
 
 	return map[string]any{
 		"comment_id": comment.ID,
@@ -717,6 +899,14 @@ func (e *toolExecutor) updateProjectBrief(ctx context.Context, args map[string]a
 		return map[string]any{"error": "brief_markdown is required"}, nil
 	}
 
+	// Save revision before overwriting (matches web UI behavior)
+	proj, err := e.db.GetProjectByID(ctx, projectID)
+	if err == nil {
+		if revErr := e.db.CreateBriefRevision(ctx, projectID, e.userID, "edit", proj.BriefMarkdown); revErr != nil {
+			log.Printf("saving brief revision: %v", revErr)
+		}
+	}
+
 	if err := e.db.UpdateProjectBrief(ctx, projectID, briefMarkdown); err != nil {
 		return nil, fmt.Errorf("updating project brief: %w", err)
 	}
@@ -742,4 +932,370 @@ func (e *toolExecutor) checkProjectAccess(ctx context.Context, projectID string)
 		return fmt.Errorf("you don't have access to this project")
 	}
 	return nil
+}
+
+// resolveProjectID gets the project ID from args or conversation context.
+func (e *toolExecutor) resolveProjectID(ctx context.Context, args map[string]any) string {
+	if pid, ok := args["project_id"].(string); ok && pid != "" {
+		return pid
+	}
+	conv, err := e.db.GetAIConversation(ctx, e.convID)
+	if err == nil && conv.ProjectID != nil {
+		return *conv.ProjectID
+	}
+	return ""
+}
+
+// ticketToMap converts a Ticket to a response map.
+func ticketToMap(t *models.Ticket) map[string]any {
+	r := map[string]any{
+		"id":         t.ID,
+		"title":      t.Title,
+		"type":       t.Type,
+		"status":     t.Status,
+		"priority":   t.Priority,
+		"created_by": t.CreatedBy,
+		"created_at": t.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		"updated_at": t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if t.DescriptionMarkdown != "" {
+		desc := t.DescriptionMarkdown
+		if len(desc) > 300 {
+			desc = desc[:300] + "..."
+		}
+		r["description"] = desc
+	}
+	if t.DateStart != nil {
+		r["date_start"] = t.DateStart.Format("2006-01-02")
+	}
+	if t.DateEnd != nil {
+		r["date_end"] = t.DateEnd.Format("2006-01-02")
+	}
+	if t.ParentID != nil {
+		r["parent_id"] = *t.ParentID
+	}
+	if t.AssignedTo != nil {
+		r["assigned_to"] = *t.AssignedTo
+	}
+	return r
+}
+
+func (e *toolExecutor) getTicket(ctx context.Context, args map[string]any) (map[string]any, error) {
+	ticketID, _ := args["ticket_id"].(string)
+	if ticketID == "" {
+		return map[string]any{"error": "ticket_id is required"}, nil
+	}
+
+	ticket, err := e.db.GetTicket(ctx, ticketID)
+	if err != nil {
+		return map[string]any{"error": "ticket not found"}, nil
+	}
+
+	if err := e.checkProjectAccess(ctx, ticket.ProjectID); err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+
+	result := map[string]any{
+		"id":         ticket.ID,
+		"title":      ticket.Title,
+		"type":       ticket.Type,
+		"status":     ticket.Status,
+		"priority":   ticket.Priority,
+		"created_by": ticket.CreatedBy,
+		"created_at": ticket.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		"updated_at": ticket.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if ticket.DescriptionMarkdown != "" {
+		result["description"] = ticket.DescriptionMarkdown
+	}
+	if ticket.DateStart != nil {
+		result["date_start"] = ticket.DateStart.Format("2006-01-02")
+	}
+	if ticket.DateEnd != nil {
+		result["date_end"] = ticket.DateEnd.Format("2006-01-02")
+	}
+	if ticket.ParentID != nil {
+		result["parent_id"] = *ticket.ParentID
+	}
+	if ticket.AssignedTo != nil {
+		result["assigned_to"] = *ticket.AssignedTo
+	}
+
+	// Load children
+	children, _ := e.db.ListTicketsByParent(ctx, ticket.ID)
+	if len(children) > 0 {
+		var childList []map[string]any
+		for _, c := range children {
+			childList = append(childList, ticketToMap(&c))
+		}
+		result["children"] = childList
+	}
+
+	// Load comments
+	comments, _ := e.db.ListComments(ctx, ticket.ID)
+	if len(comments) > 0 {
+		var commentList []map[string]any
+		for _, c := range comments {
+			cm := map[string]any{
+				"id":         c.ID,
+				"body":       c.BodyMarkdown,
+				"created_at": c.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			}
+			if c.UserID != nil {
+				cm["user_id"] = *c.UserID
+			}
+			if c.AgentName != nil {
+				cm["agent_name"] = *c.AgentName
+			}
+			commentList = append(commentList, cm)
+		}
+		result["comments"] = commentList
+	}
+
+	return result, nil
+}
+
+func (e *toolExecutor) listTickets(ctx context.Context, args map[string]any) (map[string]any, error) {
+	parentID, _ := args["parent_id"].(string)
+
+	// If parent_id is specified, list children of that ticket
+	if parentID != "" {
+		parent, err := e.db.GetTicket(ctx, parentID)
+		if err != nil {
+			return map[string]any{"error": "parent ticket not found"}, nil
+		}
+		if err := e.checkProjectAccess(ctx, parent.ProjectID); err != nil {
+			return map[string]any{"error": err.Error()}, nil
+		}
+		children, err := e.db.ListTicketsByParent(ctx, parentID)
+		if err != nil {
+			return nil, fmt.Errorf("listing children: %w", err)
+		}
+		var results []map[string]any
+		for _, t := range children {
+			results = append(results, ticketToMap(&t))
+		}
+		return map[string]any{
+			"parent_id": parentID,
+			"tickets":   results,
+			"count":     len(results),
+		}, nil
+	}
+
+	// Otherwise list by project + type
+	projectID := e.resolveProjectID(ctx, args)
+	if projectID == "" {
+		return map[string]any{"error": "project_id or parent_id is required"}, nil
+	}
+	if err := e.checkProjectAccess(ctx, projectID); err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+
+	ticketType, _ := args["type"].(string)
+
+	var tickets []models.Ticket
+	var err error
+	switch ticketType {
+	case "feature":
+		tickets, err = e.db.ListFeatures(ctx, projectID)
+	case "bug":
+		tickets, err = e.db.ListBugs(ctx, projectID)
+	default:
+		if ticketType == "" {
+			ticketType = "feature"
+		}
+		tickets, err = e.db.ListTickets(ctx, projectID, ticketType)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing tickets: %w", err)
+	}
+
+	var results []map[string]any
+	for _, t := range tickets {
+		results = append(results, ticketToMap(&t))
+	}
+	return map[string]any{
+		"type":    ticketType,
+		"tickets": results,
+		"count":   len(results),
+	}, nil
+}
+
+func (e *toolExecutor) archiveTicket(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if !auth.IsStaffOrAbove(e.user.Role) {
+		return map[string]any{"error": "forbidden: staff or superadmin role required"}, nil
+	}
+
+	ticketID, _ := args["ticket_id"].(string)
+	if ticketID == "" {
+		return map[string]any{"error": "ticket_id is required"}, nil
+	}
+
+	ticket, err := e.db.GetTicket(ctx, ticketID)
+	if err != nil {
+		return map[string]any{"error": "ticket not found"}, nil
+	}
+
+	if err := e.db.ArchiveTicket(ctx, ticketID); err != nil {
+		return nil, fmt.Errorf("archiving ticket: %w", err)
+	}
+
+	log.Printf("Ticket %s archived by user %s (%s) via AI assistant", ticketID, e.userID, e.user.Email)
+
+	return map[string]any{
+		"ticket_id": ticketID,
+		"title":     ticket.Title,
+		"message":   fmt.Sprintf("Ticket '%s' archived successfully", ticket.Title),
+	}, nil
+}
+
+func (e *toolExecutor) restoreTicket(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if !auth.IsStaffOrAbove(e.user.Role) {
+		return map[string]any{"error": "forbidden: staff or superadmin role required"}, nil
+	}
+
+	ticketID, _ := args["ticket_id"].(string)
+	if ticketID == "" {
+		return map[string]any{"error": "ticket_id is required"}, nil
+	}
+
+	if err := e.db.RestoreTicket(ctx, ticketID); err != nil {
+		return nil, fmt.Errorf("restoring ticket: %w", err)
+	}
+
+	log.Printf("Ticket %s restored by user %s (%s) via AI assistant", ticketID, e.userID, e.user.Email)
+
+	return map[string]any{
+		"ticket_id": ticketID,
+		"message":   "Ticket restored successfully",
+	}, nil
+}
+
+func (e *toolExecutor) deleteTicket(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if !auth.IsStaffOrAbove(e.user.Role) {
+		return map[string]any{"error": "forbidden: staff or superadmin role required"}, nil
+	}
+
+	ticketID, _ := args["ticket_id"].(string)
+	if ticketID == "" {
+		return map[string]any{"error": "ticket_id is required"}, nil
+	}
+
+	ticket, err := e.db.GetTicket(ctx, ticketID)
+	if err != nil {
+		return map[string]any{"error": "ticket not found"}, nil
+	}
+
+	log.Printf("Ticket %s (%s) permanently deleted by user %s (%s) via AI assistant", ticketID, ticket.Title, e.userID, e.user.Email)
+
+	if err := e.db.DeleteTicket(ctx, ticketID); err != nil {
+		return nil, fmt.Errorf("deleting ticket: %w", err)
+	}
+
+	return map[string]any{
+		"ticket_id": ticketID,
+		"title":     ticket.Title,
+		"message":   fmt.Sprintf("Ticket '%s' permanently deleted", ticket.Title),
+	}, nil
+}
+
+func (e *toolExecutor) updateAgentMode(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if !auth.IsStaffOrAbove(e.user.Role) {
+		return map[string]any{"error": "forbidden: staff or superadmin role required"}, nil
+	}
+
+	ticketID, _ := args["ticket_id"].(string)
+	if ticketID == "" {
+		return map[string]any{"error": "ticket_id is required"}, nil
+	}
+
+	mode, _ := args["agent_mode"].(string)
+	agent, _ := args["agent_name"].(string)
+
+	var modePtr, agentPtr *string
+	if mode != "" && mode != "none" {
+		modePtr = &mode
+	}
+	if agent != "" && agent != "none" {
+		agentPtr = &agent
+	}
+
+	if err := e.db.UpdateTicketAgentMode(ctx, ticketID, modePtr, agentPtr); err != nil {
+		return nil, fmt.Errorf("updating agent mode: %w", err)
+	}
+
+	result := map[string]any{
+		"ticket_id": ticketID,
+		"message":   "Agent mode updated",
+	}
+	if mode != "" {
+		result["agent_mode"] = mode
+	}
+	if agent != "" {
+		result["agent_name"] = agent
+	}
+	return result, nil
+}
+
+func (e *toolExecutor) updateRepoURL(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if !auth.IsStaffOrAbove(e.user.Role) {
+		return map[string]any{"error": "forbidden: staff or superadmin role required"}, nil
+	}
+
+	projectID := e.resolveProjectID(ctx, args)
+	if projectID == "" {
+		return map[string]any{"error": "project_id is required"}, nil
+	}
+
+	repoURL, _ := args["repo_url"].(string)
+
+	if err := e.db.UpdateProjectRepoURL(ctx, projectID, strings.TrimSpace(repoURL)); err != nil {
+		return nil, fmt.Errorf("updating repo url: %w", err)
+	}
+
+	return map[string]any{
+		"project_id": projectID,
+		"repo_url":   repoURL,
+		"message":    "Repository URL updated",
+	}, nil
+}
+
+func (e *toolExecutor) markBriefReviewed(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if !auth.IsStaffOrAbove(e.user.Role) {
+		return map[string]any{"error": "forbidden: staff or superadmin role required"}, nil
+	}
+
+	projectID := e.resolveProjectID(ctx, args)
+	if projectID == "" {
+		return map[string]any{"error": "project_id is required"}, nil
+	}
+
+	if err := e.checkProjectAccess(ctx, projectID); err != nil {
+		return map[string]any{"error": err.Error()}, nil
+	}
+
+	if err := e.db.CreateBriefRevision(ctx, projectID, e.userID, "reviewed", ""); err != nil {
+		return nil, fmt.Errorf("marking brief reviewed: %w", err)
+	}
+
+	return map[string]any{
+		"project_id": projectID,
+		"message":    "Brief marked as reviewed",
+	}, nil
+}
+
+// sanitizeForPrompt strips control characters and limits length for safe AI prompt injection.
+func sanitizeForPrompt(s string, maxLen int) string {
+	// Strip control characters (except common whitespace)
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\n' || r == '\t' || r >= 32 {
+			b.WriteRune(r)
+		}
+	}
+	result := b.String()
+	if len(result) > maxLen {
+		result = result[:maxLen]
+	}
+	return result
 }

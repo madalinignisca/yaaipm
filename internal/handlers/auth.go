@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/middleware"
@@ -40,6 +41,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.db.GetUserByEmail(r.Context(), email)
 	if err != nil {
+		// Hash the password anyway to equalize timing (prevents user enumeration)
+		auth.HashPassword(password)
 		h.engine.Render(w, "login.html", render.PageData{
 			Title: "Login", Flash: "Invalid email or password.", FlashType: "error",
 		})
@@ -335,13 +338,17 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try TOTP first
+	// Try TOTP first (with replay prevention)
 	if user.TOTPVerified && user.TOTPSecret != nil {
 		secret, err := auth.DecryptTOTPSecret(user.TOTPSecret, h.aesKey)
-		if err == nil && auth.ValidateTOTP(code, secret) {
-			h.sessions.MarkTwoFactorVerified(r.Context(), sess.ID)
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
+		if err == nil {
+			lastUsed, _ := h.db.GetTOTPLastUsed(r.Context(), user.ID)
+			if auth.ValidateTOTPOnce(code, secret, lastUsed) {
+				h.db.UpdateTOTPLastUsed(r.Context(), user.ID, time.Now())
+				h.sessions.MarkTwoFactorVerified(r.Context(), sess.ID)
+				http.Redirect(w, r, "/", http.StatusSeeOther)
+				return
+			}
 		}
 	}
 

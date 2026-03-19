@@ -8,6 +8,8 @@
     <link rel="stylesheet" href="{{asset "css/app.css"}}">
     {{highlightCSS}}
     <script src="{{asset "js/bundle.js"}}" defer></script>
+    <meta name="htmx-config" content='{"historyCacheSize":0}'>
+    {{if .CSRFToken}}<meta name="csrf-token" content="{{.CSRFToken}}">{{end}}
     {{block "page_head" .}}{{end}}
 </head>
 <body hx-boost="true">
@@ -128,7 +130,7 @@
              data-user-id="{{.User.ID}}" data-user-name="{{.User.Name}}">
             <!-- FAB -->
             <button @click="toggle()" class="chat-fab" :aria-label="open ? 'Close assistant' : 'Open assistant'">
-                <svg x-show="!open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                <img x-show="!open" src="/static/img/simona-avatar.png" alt="Simona" class="chat-fab-avatar">
                 <svg x-show="open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 <span x-show="!open && unreadCount > 0" x-text="unreadCount > 99 ? '99+' : unreadCount" x-transition class="chat-badge"></span>
             </button>
@@ -136,7 +138,10 @@
             <!-- Chat Panel -->
             <div x-show="open" x-transition.opacity class="chat-panel" :class="{ 'chat-panel-enlarged': enlarged }">
                 <div class="chat-header">
-                    <span class="chat-header-title">Project Chat</span>
+                    <div class="chat-header-identity">
+                        <img src="/static/img/simona-avatar.png" alt="Simona" class="chat-header-avatar">
+                        <span class="chat-header-title">Simona</span>
+                    </div>
                     <div class="chat-header-actions">
                         <button @click="toggleEnlarge()" class="chat-header-btn" :title="enlarged ? 'Shrink' : 'Enlarge'">
                             <svg x-show="!enlarged" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
@@ -151,31 +156,46 @@
                 <div class="chat-messages" x-ref="chatMessages">
                     <template x-if="messages.length === 0 && !streamingText && !loading">
                         <div class="chat-empty">
-                            <p>Ask the team assistant anything about this project.</p>
+                            <img src="/static/img/simona-avatar.png" alt="Simona" class="chat-empty-avatar">
+                            <p>Hi, I'm <strong>Simona</strong>. Ask me anything about this project.</p>
                         </div>
                     </template>
                     <template x-for="(msg, i) in messages" :key="msg.id || i">
-                        <div class="chat-msg"
-                             :class="{
-                                'chat-msg-user': msg.role === 'user',
-                                'chat-msg-self': msg.role === 'user' && msg.user_id === _currentUserID,
-                                'chat-msg-other': msg.role === 'user' && msg.user_id && msg.user_id !== _currentUserID,
-                                'chat-msg-assistant': msg.role === 'assistant'
-                             }">
-                            <template x-if="msg.role === 'user' && msg.user_name">
-                                <div class="chat-msg-author" x-text="msg.user_name"></div>
-                            </template>
-                            <div x-html="renderMd(msg.content, msg.role)"></div>
-                        </div>
+                        <template x-if="msg.role === 'assistant'">
+                            <div class="chat-msg-row chat-msg-row-assistant">
+                                <img src="/static/img/simona-avatar.png" alt="Simona" class="chat-msg-avatar">
+                                <div class="chat-msg chat-msg-assistant">
+                                    <div x-html="renderMd(msg.content, msg.role)"></div>
+                                </div>
+                            </div>
+                        </template>
+                        <template x-if="msg.role === 'user'">
+                            <div class="chat-msg chat-msg-user"
+                                 :class="{
+                                    'chat-msg-self': msg.user_id === _currentUserID,
+                                    'chat-msg-other': msg.user_id && msg.user_id !== _currentUserID
+                                 }">
+                                <template x-if="msg.user_name">
+                                    <div class="chat-msg-author" x-text="msg.user_name"></div>
+                                </template>
+                                <div x-html="renderMd(msg.content, msg.role)"></div>
+                            </div>
+                        </template>
                     </template>
                     <template x-if="streamingText">
-                        <div class="chat-msg chat-msg-streaming" x-html="renderMd(streamingText, 'assistant')"></div>
+                        <div class="chat-msg-row chat-msg-row-assistant">
+                            <img src="/static/img/simona-avatar.png" alt="Simona" class="chat-msg-avatar">
+                            <div class="chat-msg chat-msg-streaming" x-html="renderMd(streamingText, 'assistant')"></div>
+                        </div>
                     </template>
                     <template x-if="loading && !streamingText">
-                        <div class="chat-typing">
-                            <div class="chat-typing-dot"></div>
-                            <div class="chat-typing-dot"></div>
-                            <div class="chat-typing-dot"></div>
+                        <div class="chat-msg-row chat-msg-row-assistant">
+                            <img src="/static/img/simona-avatar.png" alt="Simona" class="chat-msg-avatar">
+                            <div class="chat-typing">
+                                <div class="chat-typing-dot"></div>
+                                <div class="chat-typing-dot"></div>
+                                <div class="chat-typing-dot"></div>
+                            </div>
                         </div>
                     </template>
                 </div>

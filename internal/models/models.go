@@ -101,6 +101,7 @@ type Ticket struct {
 	ArchivedAt          *time.Time `db:"archived_at"`
 	CreatedAt           time.Time  `db:"created_at"`
 	UpdatedAt           time.Time  `db:"updated_at"`
+	ChildCount          int        `db:"-"` // populated by specific queries, not a DB column
 }
 
 type Comment struct {
