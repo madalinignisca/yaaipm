@@ -60,7 +60,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 
 	inv, err := h.db.GetInvitationByToken(r.Context(), tokenHash)
 	if err != nil {
-		h.engine.Render(w, "invite_register.html", render.PageData{
+		h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Invalid Invitation",
 			Flash: "This invitation link is invalid or has expired.", FlashType: "error",
 		})
@@ -69,7 +69,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 
 	// If user already exists, redirect to login
 	if _, err := h.db.GetUserByEmail(r.Context(), inv.Email); err == nil {
-		h.engine.Render(w, "login.html", render.PageData{
+		h.engine.Render(w, r, "login.html", render.PageData{
 			Title: "Login",
 			Flash: "You already have an account. Please log in to accept the invitation.", FlashType: "success",
 		})
@@ -88,7 +88,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 		inviterName = inviter.Name
 	}
 
-	h.engine.Render(w, "invite_register.html", render.PageData{
+	h.engine.Render(w, r, "invite_register.html", render.PageData{
 		Title: "Join " + orgName,
 		Data: map[string]any{
 			"Email":       inv.Email,
@@ -106,7 +106,7 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 
 	inv, err := h.db.GetInvitationByToken(r.Context(), tokenHash)
 	if err != nil {
-		h.engine.Render(w, "invite_register.html", render.PageData{
+		h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Invalid Invitation",
 			Flash: "This invitation link is invalid or has expired.", FlashType: "error",
 		})
@@ -128,7 +128,7 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderErr := func(msg string) {
-		h.engine.Render(w, "invite_register.html", render.PageData{
+		h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Join " + orgName, Flash: msg, FlashType: "error",
 			Data: map[string]any{
 				"Email":       inv.Email,

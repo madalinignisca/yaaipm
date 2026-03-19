@@ -32,7 +32,7 @@ func (h *AdminHandler) AdminPage(w http.ResponseWriter, r *http.Request) {
 
 	platform, _ := h.db.GetPlatformSettings(r.Context())
 
-	h.engine.Render(w, "admin.html", render.PageData{
+	h.engine.Render(w, r, "admin.html", render.PageData{
 		Title:       "Admin Panel",
 		User:        user,
 		Orgs:        orgs,

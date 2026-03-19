@@ -332,19 +332,8 @@ func currencySymbol(code string) string {
 	}
 }
 
-// Render renders a full page (with layout).
-func (e *Engine) Render(w http.ResponseWriter, name string, data PageData) error {
-	t, ok := e.templates[name]
-	if !ok {
-		return fmt.Errorf("template %q not found", name)
-	}
-	data.AssistantEnabled = e.AssistantEnabled
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return t.ExecuteTemplate(w, "base", data)
-}
-
-// RenderWithRequest renders a full page, injecting CSRF token from the request context.
-func (e *Engine) RenderWithRequest(w http.ResponseWriter, r *http.Request, name string, data PageData) error {
+// Render renders a full page (with layout), injecting CSRF token from the request context.
+func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, data PageData) error {
 	t, ok := e.templates[name]
 	if !ok {
 		return fmt.Errorf("template %q not found", name)

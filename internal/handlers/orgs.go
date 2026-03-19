@@ -71,7 +71,7 @@ func (h *OrgHandler) OrgPage(w http.ResponseWriter, r *http.Request) {
 		projects, _ = h.db.ListProjects(r.Context(), org.ID)
 	}
 
-	h.engine.Render(w, "dashboard.html", render.PageData{
+	h.engine.Render(w, r, "dashboard.html", render.PageData{
 		Title:       org.Name,
 		User:        user,
 		Org:         org,
@@ -158,7 +158,7 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 
 	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
 
-	h.engine.Render(w, "org_settings.html", render.PageData{
+	h.engine.Render(w, r, "org_settings.html", render.PageData{
 		Title:       org.Name + " Settings",
 		User:        user,
 		Org:         org,

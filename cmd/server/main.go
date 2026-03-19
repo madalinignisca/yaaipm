@@ -149,8 +149,12 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
+	// CSRF protection for all HTML routes (auth, invitations, and protected)
+	csrfMiddleware := middleware.CSRFProtect([]byte(cfg.SessionSecret[:32]), secureCookie)
+
 	// Public auth routes (rate-limited)
 	r.Group(func(r chi.Router) {
+		r.Use(csrfMiddleware)
 		r.Use(authLimiter.Limit)
 		r.Get("/login", authH.LoginPage)
 		r.Post("/login", authH.Login)
@@ -166,13 +170,16 @@ func main() {
 	})
 
 	// Invitation routes (public — new users registering)
-	r.Get("/invite/{token}", inviteH.InviteRegisterPage)
-	r.Post("/invite/{token}", inviteH.InviteRegister)
+	r.Group(func(r chi.Router) {
+		r.Use(csrfMiddleware)
+		r.Get("/invite/{token}", inviteH.InviteRegisterPage)
+		r.Post("/invite/{token}", inviteH.InviteRegister)
+	})
 
 	// Protected routes
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AuthMiddleware(sessions, db))
-		r.Use(middleware.CSRFProtect([]byte(cfg.SessionSecret[:32]), secureCookie))
+		r.Use(csrfMiddleware)
 
 		r.Post("/logout", authH.Logout)
 		r.Get("/", dashH.Dashboard)

@@ -25,7 +25,7 @@ func NewAuthHandler(db *models.DB, sessions *auth.SessionStore, engine *render.E
 }
 
 func (h *AuthHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
-	h.engine.Render(w, "login.html", render.PageData{Title: "Login"})
+	h.engine.Render(w, r, "login.html", render.PageData{Title: "Login"})
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +33,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 
 	if email == "" || password == "" {
-		h.engine.Render(w, "login.html", render.PageData{
+		h.engine.Render(w, r, "login.html", render.PageData{
 			Title: "Login", Flash: "Email and password are required.", FlashType: "error",
 		})
 		return
@@ -43,7 +43,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Hash the password anyway to equalize timing (prevents user enumeration)
 		auth.HashPassword(password)
-		h.engine.Render(w, "login.html", render.PageData{
+		h.engine.Render(w, r, "login.html", render.PageData{
 			Title: "Login", Flash: "Invalid email or password.", FlashType: "error",
 		})
 		return
@@ -51,7 +51,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	ok, err := auth.VerifyPassword(password, user.PasswordHash)
 	if err != nil || !ok {
-		h.engine.Render(w, "login.html", render.PageData{
+		h.engine.Render(w, r, "login.html", render.PageData{
 			Title: "Login", Flash: "Invalid email or password.", FlashType: "error",
 		})
 		return
@@ -106,7 +106,7 @@ func (h *AuthHandler) RegisterPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	h.engine.Render(w, "register.html", render.PageData{Title: "Register"})
+	h.engine.Render(w, r, "register.html", render.PageData{Title: "Register"})
 }
 
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
@@ -121,14 +121,14 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 
 	if email == "" || password == "" || name == "" {
-		h.engine.Render(w, "register.html", render.PageData{
+		h.engine.Render(w, r, "register.html", render.PageData{
 			Title: "Register", Flash: "All fields are required.", FlashType: "error",
 		})
 		return
 	}
 
 	if len(password) < 12 {
-		h.engine.Render(w, "register.html", render.PageData{
+		h.engine.Render(w, r, "register.html", render.PageData{
 			Title: "Register", Flash: "Password must be at least 12 characters.", FlashType: "error",
 		})
 		return
@@ -147,7 +147,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	_, err = h.db.CreateUser(r.Context(), email, hash, name, role)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
-			h.engine.Render(w, "register.html", render.PageData{
+			h.engine.Render(w, r, "register.html", render.PageData{
 				Title: "Register", Flash: "Email already registered.", FlashType: "error",
 			})
 			return
@@ -157,13 +157,13 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.engine.Render(w, "login.html", render.PageData{
+	h.engine.Render(w, r, "login.html", render.PageData{
 		Title: "Login", Flash: "Account created. Please log in.", FlashType: "success",
 	})
 }
 
 func (h *AuthHandler) Setup2FAPage(w http.ResponseWriter, r *http.Request) {
-	h.engine.Render(w, "setup_2fa.html", render.PageData{Title: "Set Up Two-Factor Authentication"})
+	h.engine.Render(w, r, "setup_2fa.html", render.PageData{Title: "Set Up Two-Factor Authentication"})
 }
 
 func (h *AuthHandler) Setup2FATOTP(w http.ResponseWriter, r *http.Request) {
@@ -201,7 +201,7 @@ func (h *AuthHandler) Setup2FATOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.engine.Render(w, "setup_2fa_totp.html", render.PageData{
+	h.engine.Render(w, r, "setup_2fa_totp.html", render.PageData{
 		Title: "Set Up Authenticator App",
 		Data: map[string]string{
 			"QRCode":    qrBase64,
@@ -219,7 +219,7 @@ func (h *AuthHandler) VerifySetupTOTP(w http.ResponseWriter, r *http.Request) {
 
 	code := strings.TrimSpace(r.FormValue("code"))
 	if code == "" {
-		h.engine.Render(w, "setup_2fa_totp.html", render.PageData{
+		h.engine.Render(w, r, "setup_2fa_totp.html", render.PageData{
 			Title: "Set Up Authenticator App", Flash: "Please enter the 6-digit code.", FlashType: "error",
 		})
 		return
@@ -239,7 +239,7 @@ func (h *AuthHandler) VerifySetupTOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !auth.ValidateTOTP(code, secret) {
-		h.engine.Render(w, "setup_2fa_totp.html", render.PageData{
+		h.engine.Render(w, r, "setup_2fa_totp.html", render.PageData{
 			Title: "Set Up Authenticator App", Flash: "Invalid code. Please try again.", FlashType: "error",
 			Data: map[string]string{"ManualKey": secret},
 		})
@@ -286,7 +286,7 @@ func (h *AuthHandler) VerifySetupTOTP(w http.ResponseWriter, r *http.Request) {
 	h.sessions.Mark2FASetupComplete(r.Context(), sess.ID)
 	h.sessions.MarkTwoFactorVerified(r.Context(), sess.ID)
 
-	h.engine.Render(w, "recovery_codes.html", render.PageData{
+	h.engine.Render(w, r, "recovery_codes.html", render.PageData{
 		Title: "Recovery Codes",
 		Data:  codes,
 	})
@@ -310,7 +310,7 @@ func (h *AuthHandler) Verify2FAPage(w http.ResponseWriter, r *http.Request) {
 		method = *user.Preferred2FAMethod
 	}
 
-	h.engine.Render(w, "verify_2fa.html", render.PageData{
+	h.engine.Render(w, r, "verify_2fa.html", render.PageData{
 		Title: "Two-Factor Verification",
 		Data:  map[string]string{"Method": method},
 	})
@@ -325,7 +325,7 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 
 	code := strings.TrimSpace(r.FormValue("code"))
 	if code == "" {
-		h.engine.Render(w, "verify_2fa.html", render.PageData{
+		h.engine.Render(w, r, "verify_2fa.html", render.PageData{
 			Title: "Two-Factor Verification", Flash: "Please enter the code.", FlashType: "error",
 			Data: map[string]string{"Method": "totp"},
 		})
@@ -370,7 +370,7 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.engine.Render(w, "verify_2fa.html", render.PageData{
+	h.engine.Render(w, r, "verify_2fa.html", render.PageData{
 		Title: "Two-Factor Verification", Flash: "Invalid code.", FlashType: "error",
 		Data: map[string]string{"Method": "totp"},
 	})

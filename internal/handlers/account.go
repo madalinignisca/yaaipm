@@ -24,7 +24,7 @@ func NewAccountHandler(db *models.DB, sessions *auth.SessionStore, engine *rende
 func (h *AccountHandler) AccountSettingsPage(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 
-	h.engine.Render(w, "account_settings.html", render.PageData{
+	h.engine.Render(w, r, "account_settings.html", render.PageData{
 		Title:       "Account Settings",
 		User:        user,
 		Orgs:        middleware.GetOrgs(r),
@@ -123,7 +123,7 @@ func (h *AccountHandler) ChangeEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AccountHandler) renderPage(w http.ResponseWriter, r *http.Request, user *models.User, flash, flashType string) {
-	h.engine.Render(w, "account_settings.html", render.PageData{
+	h.engine.Render(w, r, "account_settings.html", render.PageData{
 		Title:       "Account Settings",
 		User:        user,
 		Orgs:        middleware.GetOrgs(r),

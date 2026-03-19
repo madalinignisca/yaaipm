@@ -101,7 +101,7 @@ func (h *CostHandler) ProjectCosts(w http.ResponseWriter, r *http.Request) {
 
 	canEdit := auth.IsStaffOrAbove(user.Role)
 
-	h.engine.Render(w, "project_costs.html", render.PageData{
+	h.engine.Render(w, r, "project_costs.html", render.PageData{
 		Title: proj.Name + " — Costs", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "costs",
 		ProjectID: proj.ID,
@@ -180,7 +180,7 @@ func (h *CostHandler) OrgCosts(w http.ResponseWriter, r *http.Request) {
 
 	canEdit := auth.IsStaffOrAbove(user.Role)
 
-	h.engine.Render(w, "org_costs.html", render.PageData{
+	h.engine.Render(w, r, "org_costs.html", render.PageData{
 		Title: org.Name + " — Costs", User: user, Org: org, Orgs: middleware.GetOrgs(r), Projects: middleware.GetProjects(r), CurrentPath: r.URL.Path,
 		Data: map[string]any{
 			"Month":              month,

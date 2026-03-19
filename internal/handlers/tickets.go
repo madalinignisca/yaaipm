@@ -103,7 +103,7 @@ func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
 		org, _ = h.db.GetOrgByID(r.Context(), proj.OrgID)
 	}
 
-	h.engine.Render(w, "ticket_detail.html", render.PageData{
+	h.engine.Render(w, r, "ticket_detail.html", render.PageData{
 		Title: ticket.Title, User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: middleware.GetProjects(r), ActiveProject: proj,
 		ProjectID: ticket.ProjectID,

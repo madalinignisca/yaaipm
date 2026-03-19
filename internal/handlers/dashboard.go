@@ -39,7 +39,7 @@ func (h *DashboardHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.engine.Render(w, "dashboard.html", render.PageData{
+	h.engine.Render(w, r, "dashboard.html", render.PageData{
 		Title:       "Dashboard",
 		User:        user,
 		Orgs:        orgs,

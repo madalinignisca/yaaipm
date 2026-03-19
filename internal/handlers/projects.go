@@ -64,7 +64,7 @@ func (h *ProjectHandler) ProjectBrief(w http.ResponseWriter, r *http.Request) {
 	projects := middleware.GetProjects(r)
 	revisions, _ := h.db.ListBriefRevisions(r.Context(), proj.ID)
 
-	h.engine.Render(w, "project_brief.html", render.PageData{
+	h.engine.Render(w, r, "project_brief.html", render.PageData{
 		Title: proj.Name + " — Brief", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "brief",
 		ProjectID: proj.ID,
@@ -126,7 +126,7 @@ func (h *ProjectHandler) ProjectFeatures(w http.ResponseWriter, r *http.Request)
 	features, _ := h.db.ListFeatures(r.Context(), proj.ID)
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, "project_features.html", render.PageData{
+	h.engine.Render(w, r, "project_features.html", render.PageData{
 		Title: proj.Name + " — Features", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "features",
 		ProjectID: proj.ID,
@@ -145,7 +145,7 @@ func (h *ProjectHandler) ProjectBugs(w http.ResponseWriter, r *http.Request) {
 	bugs, _ := h.db.ListBugs(r.Context(), proj.ID)
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, "project_bugs.html", render.PageData{
+	h.engine.Render(w, r, "project_bugs.html", render.PageData{
 		Title: proj.Name + " — Bugs", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "bugs",
 		ProjectID: proj.ID,
@@ -164,7 +164,7 @@ func (h *ProjectHandler) ProjectGantt(w http.ResponseWriter, r *http.Request) {
 	tickets, _ := h.db.ListGanttTickets(r.Context(), proj.ID)
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, "project_gantt.html", render.PageData{
+	h.engine.Render(w, r, "project_gantt.html", render.PageData{
 		Title: proj.Name + " — Timeline", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "gantt",
 		ProjectID: proj.ID,
@@ -223,7 +223,7 @@ func (h *ProjectHandler) ProjectArchived(w http.ResponseWriter, r *http.Request)
 	archived, _ := h.db.ListArchivedTickets(r.Context(), proj.ID)
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, "project_archived.html", render.PageData{
+	h.engine.Render(w, r, "project_archived.html", render.PageData{
 		Title: proj.Name + " — Archived", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "archived",
 		ProjectID: proj.ID,
@@ -246,7 +246,7 @@ func (h *ProjectHandler) ProjectSettings(w http.ResponseWriter, r *http.Request)
 
 	projects := middleware.GetProjects(r)
 
-	h.engine.Render(w, "project_settings.html", render.PageData{
+	h.engine.Render(w, r, "project_settings.html", render.PageData{
 		Title: proj.Name + " — Settings", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "settings",
 		ProjectID: proj.ID,
