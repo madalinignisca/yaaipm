@@ -1188,7 +1188,7 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   border-radius: var(--radius-full);
   background: var(--brand-600);
   color: #fff;
-  border: none;
+  border: 2px solid #fff;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1196,16 +1196,25 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   box-shadow: var(--shadow-lg);
   transition: background var(--duration) var(--ease), transform var(--duration) var(--ease);
   z-index: 90;
+  overflow: hidden;
+  padding: 0;
 }
 
 .chat-fab:hover {
   background: var(--brand-700);
-  transform: scale(1.05);
+  transform: scale(1.08);
 }
 
 .chat-fab svg {
   width: 1.5rem;
   height: 1.5rem;
+}
+
+.chat-fab-avatar {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-full);
+  object-fit: cover;
 }
 
 .chat-panel {
@@ -1241,6 +1250,19 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   border-bottom: 1px solid var(--gray-200);
   background: var(--gray-50);
   flex-shrink: 0;
+}
+
+.chat-header-identity {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+
+.chat-header-avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--radius-full);
+  object-fit: cover;
 }
 
 .chat-header-title {
@@ -1291,12 +1313,42 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
 .chat-empty {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   color: var(--gray-400);
   font-size: var(--text-sm);
   text-align: center;
   padding: 2rem;
+  gap: .75rem;
+}
+
+.chat-empty-avatar {
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-full);
+  object-fit: cover;
+  opacity: .6;
+}
+
+.chat-msg-row {
+  display: flex;
+  gap: .5rem;
+  align-items: flex-start;
+}
+
+.chat-msg-row-assistant {
+  align-self: flex-start;
+  max-width: 90%;
+}
+
+.chat-msg-avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--radius-full);
+  object-fit: cover;
+  flex-shrink: 0;
+  margin-top: .25rem;
 }
 
 .chat-msg {
@@ -1306,6 +1358,10 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   font-size: var(--text-sm);
   line-height: 1.5;
   word-break: break-word;
+}
+
+.chat-msg-row .chat-msg {
+  max-width: none;
 }
 
 .chat-msg-user {

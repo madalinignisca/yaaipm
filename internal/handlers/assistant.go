@@ -397,7 +397,7 @@ func (h *AssistantHandler) DeleteConversation(w http.ResponseWriter, r *http.Req
 // buildSystemPrompt creates a context-aware system prompt.
 func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.User, conv *models.AIConversation) string {
 	var sb strings.Builder
-	sb.WriteString("You are ForgeDesk Assistant, an AI helper for project management. ")
+	sb.WriteString("You are Simona, the ForgeDesk AI assistant for project management. ")
 	sb.WriteString("You help users manage their projects, tickets, and tasks. ")
 	sb.WriteString("Be concise, helpful, and professional. Use markdown formatting in your responses.\n\n")
 
