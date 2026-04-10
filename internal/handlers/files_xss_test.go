@@ -200,6 +200,34 @@ func TestServeFileReturnsNotFoundForMissingKey(t *testing.T) {
 	}
 }
 
+// TestServeFileRejectsPathTraversal — defense in depth for #24. Even if
+// a future code path (or a router misconfiguration) let a key with ".."
+// reach ServeFile, we must reject it explicitly. To prove the defense
+// is real and not just an artifact of the store saying "not found", we
+// seed a fake object at the literal traversal-shaped key and verify
+// that ServeFile still rejects it WITHOUT serving the content.
+func TestServeFileRejectsPathTraversal(t *testing.T) {
+	fake := newFakeObjectStore()
+	// Seed an object at a literal "..-shaped" key. S3 keys are opaque
+	// strings so this is legal at the storage layer — the point of
+	// the handler check is to refuse to forward such keys.
+	traversalKey := "orgs/o1/../../secret.bin"
+	fake.seedAttachment(t, traversalKey, "application/octet-stream", "SECRET")
+
+	h := &FileHandler{s3: fake}
+
+	req := httptest.NewRequest(http.MethodGet, "/files/"+traversalKey, http.NoBody)
+	rec := httptest.NewRecorder()
+	h.ServeFile(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for path-traversal-shaped key, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "SECRET") {
+		t.Error("handler served a traversal-shaped key — defense not in place")
+	}
+}
+
 // ── DeleteAttachment S3-cleanup test ─────────────────────────────────
 
 // seedAttachmentFixture creates org + project + ticket + attachment row
@@ -270,6 +298,90 @@ func TestDeleteAttachmentRemovesS3Object(t *testing.T) {
 	}
 	if _, err := db.GetAttachmentByID(context.Background(), att.ID); err == nil {
 		t.Error("attachment row should have been deleted from DB")
+	}
+}
+
+// TestDeleteAttachmentSkipsS3WhenPathHasNoFilesPrefix — defense in depth
+// for #24. If a future code path stored an attachment row with a FilePath
+// that doesn't start with /files/ (e.g. an external URL), DeleteAttachment
+// must not try to pass a malformed key to the S3 client. The DB row
+// should still be removed so the handler is idempotent.
+func TestDeleteAttachmentSkipsS3WhenPathHasNoFilesPrefix(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := models.NewDB(pool)
+	fake := newFakeObjectStore()
+	h := &FileHandler{s3: fake, db: db}
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "odd@test.com", "x", "Odd", "superadmin")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	org, _ := db.CreateOrg(ctx, "Odd Org", "odd-org")
+	proj, _ := db.CreateProject(ctx, org.ID, "Odd Proj", "odd-proj")
+	ticket := &models.Ticket{
+		ProjectID: proj.ID, Type: "task", Title: "t",
+		Status: "backlog", Priority: "medium", CreatedBy: user.ID,
+	}
+	if err = db.CreateTicket(ctx, ticket); err != nil {
+		t.Fatalf("create ticket: %v", err)
+	}
+	// Anomalous path — no /files/ prefix. Simulates legacy/external data.
+	att, err := db.CreateAttachment(ctx, ticket.ID, "ext.bin", "external://weird",
+		"application/octet-stream", 1, user.ID)
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	rec := callDeleteAttachment(h, user, att.ID)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(fake.deleted) != 0 {
+		t.Errorf("no S3 delete should be attempted for non-/files/ paths, got %v", fake.deleted)
+	}
+	if _, err := db.GetAttachmentByID(ctx, att.ID); err == nil {
+		t.Error("DB row should still be removed even when no S3 object is tied to it")
+	}
+}
+
+// TestDeleteAttachmentSkipsS3WhenKeyIsEmpty — if a row has exactly
+// "/files/" as its path (degenerate/corrupt state), CutPrefix returns an
+// empty key and we must not pass "" to the S3 client.
+func TestDeleteAttachmentSkipsS3WhenKeyIsEmpty(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := models.NewDB(pool)
+	fake := newFakeObjectStore()
+	h := &FileHandler{s3: fake, db: db}
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "empty@test.com", "x", "Empty", "superadmin")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	org, _ := db.CreateOrg(ctx, "Empty Org", "empty-org")
+	proj, _ := db.CreateProject(ctx, org.ID, "Empty Proj", "empty-proj")
+	ticket := &models.Ticket{
+		ProjectID: proj.ID, Type: "task", Title: "t",
+		Status: "backlog", Priority: "medium", CreatedBy: user.ID,
+	}
+	if err = db.CreateTicket(ctx, ticket); err != nil {
+		t.Fatalf("create ticket: %v", err)
+	}
+	att, err := db.CreateAttachment(ctx, ticket.ID, "empty.bin", "/files/",
+		"application/octet-stream", 0, user.ID)
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	rec := callDeleteAttachment(h, user, att.ID)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(fake.deleted) != 0 {
+		t.Errorf("no S3 delete should be attempted for an empty key, got %v", fake.deleted)
 	}
 }
 

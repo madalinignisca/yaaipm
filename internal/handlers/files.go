@@ -80,6 +80,17 @@ func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #24 defense in depth: refuse any key containing ".." segments
+	// or a leading slash. S3 treats the key as an opaque string so
+	// such values are not attacker-reachable through the current
+	// Upload paths, but an explicit reject documents the invariant
+	// and protects against a future refactor that turns the key into
+	// a filesystem operation.
+	if strings.Contains(key, "..") || strings.HasPrefix(key, "/") {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
 	body, storedCT, err := h.s3.Get(r.Context(), key)
 	if err != nil {
 		http.Error(w, "Not found", http.StatusNotFound)
@@ -367,7 +378,10 @@ func (h *FileHandler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	// #24: delete the backing S3 object BEFORE removing the DB row.
 	// If S3 Delete fails, bail with 500 so the user can retry — leaving
 	// an orphan row is better than an orphan object reachable by URL.
-	if s3Key, ok := strings.CutPrefix(att.FilePath, "/files/"); ok {
+	// Skip the Delete call for rows whose FilePath isn't a /files/*
+	// key (legacy/external data) or whose key component is empty
+	// (degenerate "/files/" path) so we don't pass garbage to S3.
+	if s3Key, ok := strings.CutPrefix(att.FilePath, "/files/"); ok && s3Key != "" {
 		if s3Err := h.s3.Delete(r.Context(), s3Key); s3Err != nil {
 			log.Printf("deleting S3 object: %v", s3Err)
 			jsonError(w, "Failed to delete file storage", http.StatusInternalServerError)
