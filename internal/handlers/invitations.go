@@ -220,6 +220,16 @@ func (h *InviteHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// #31: AddOrgMember is an upsert that overwrites role on conflict. If the
+	// user is already a member of this org (added via another path — direct
+	// admin add, prior invitation, etc.), accepting this invitation would
+	// silently upgrade/downgrade their existing role. Reject with 409 and
+	// leave the invitation pending so the admin can see it and decide.
+	if _, err := h.db.GetOrgMembership(r.Context(), user.ID, inv.OrgID); err == nil {
+		http.Error(w, "You are already a member of this organization", http.StatusConflict)
+		return
+	}
+
 	if err := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
 		log.Printf("adding org member on accept: %v", err)
 		http.Error(w, "Failed to join organization", http.StatusInternalServerError)
