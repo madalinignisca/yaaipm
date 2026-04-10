@@ -1590,6 +1590,25 @@ func (db *DB) ListReactionGroupsBatch(ctx context.Context, targetType string, ta
 
 // ── Org-Scoped Queries (Data Isolation) ──────────────────────
 
+// ResolveTicketOrgID returns the org ID that owns a ticket by walking
+// the ticket → project → org chain in a single join. Used by cross-tenant
+// authorization helpers that only need the access check, not the ticket
+// body itself. Returns pgx.ErrNoRows (wrapped) when the ticket does not exist.
+func (db *DB) ResolveTicketOrgID(ctx context.Context, ticketID string) (string, error) {
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT p.org_id
+		   FROM tickets t
+		   JOIN projects p ON p.id = t.project_id
+		  WHERE t.id = $1`,
+		ticketID,
+	).Scan(&orgID)
+	if err != nil {
+		return "", fmt.Errorf("resolving ticket org: %w", err)
+	}
+	return orgID, nil
+}
+
 // ResolveCommentOrgID returns the org ID that owns a comment by walking
 // the comment → ticket → project → org chain. Used by cross-tenant
 // authorization checks on comment-targeted reactions.

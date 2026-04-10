@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	gorillacsrf "filippo.io/csrf/gorilla"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/styles"
-	gorillacsrf "filippo.io/csrf/gorilla"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/static"
 	"github.com/microcosm-cc/bluemonday"
@@ -343,7 +343,12 @@ func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, dat
 		return fmt.Errorf("template %q not found", name)
 	}
 	data.AssistantEnabled = e.AssistantEnabled
-	data.CSRFToken = gorillacsrf.Token(r)
+	// filippo.io/csrf/gorilla uses header-based CSRF (Origin /
+	// Sec-Fetch-Site); Token/TemplateField are shim no-ops kept for
+	// source compatibility. Removing these call sites would also
+	// require removing references from every template that emits a
+	// hidden field, which is a separate cleanup.
+	data.CSRFToken = gorillacsrf.Token(r) //nolint:staticcheck // filippo.io/csrf/gorilla shim — no-op
 
 	// Clone template with request-specific CSRF funcs
 	t, err := t.Clone()
@@ -352,10 +357,10 @@ func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, dat
 	}
 	t.Funcs(template.FuncMap{
 		"csrfField": func() template.HTML {
-			return gorillacsrf.TemplateField(r)
+			return gorillacsrf.TemplateField(r) //nolint:staticcheck // filippo.io/csrf/gorilla shim — no-op
 		},
 		"csrfToken": func() string {
-			return gorillacsrf.Token(r)
+			return gorillacsrf.Token(r) //nolint:staticcheck // filippo.io/csrf/gorilla shim — no-op
 		},
 	})
 

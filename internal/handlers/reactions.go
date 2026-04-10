@@ -46,16 +46,19 @@ func (h *ReactionHandler) ToggleReaction(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Cross-tenant guard: clients may only react to tickets/comments in
-	// their own orgs. Walk the target → ticket/project → org chain. (#25)
+	// their own orgs. Walks the target → ticket/project → org chain via
+	// the lite (single-join) helpers — we don't need the ticket body
+	// here. Real DB errors surface as 500 so incidents are not masked
+	// as 404. (#25)
 	var authErr error
 	switch targetType {
 	case "ticket":
-		_, authErr = authorizeTicketAccess(r.Context(), h.db, user, targetID)
+		authErr = authorizeTicketOrgAccess(r.Context(), h.db, user, targetID)
 	case "comment":
 		authErr = authorizeCommentAccess(r.Context(), h.db, user, targetID)
 	}
 	if authErr != nil {
-		http.Error(w, "Not found", http.StatusNotFound)
+		respondAuthzError(w, authErr, "Not found")
 		return
 	}
 
