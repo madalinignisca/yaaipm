@@ -129,6 +129,13 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cross-tenant guard: client users may only create tickets in projects
+	// under an org they belong to. Staff have global access. (#25)
+	if _, err := authorizeProjectAccess(r.Context(), h.db, user, projectID); err != nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+
 	title := strings.TrimSpace(r.FormValue("title"))
 	description := r.FormValue("description")
 
@@ -222,9 +229,12 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
 	ticketID := r.PathValue("ticketID")
 
-	ticket, err := h.db.GetTicket(r.Context(), ticketID)
+	// Cross-tenant guard: clients may only mutate tickets in orgs they
+	// belong to. 404 (not 403) to avoid leaking existence. (#25)
+	ticket, err := authorizeTicketAccess(r.Context(), h.db, user, ticketID)
 	if err != nil {
 		http.Error(w, "Ticket not found", http.StatusNotFound)
 		return
@@ -278,6 +288,14 @@ func (h *TicketHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validTicketStatuses[newStatus] {
 		http.Error(w, "Invalid status", http.StatusBadRequest)
+		return
+	}
+
+	// Cross-tenant guard: clients may only transition tickets in their
+	// own orgs. (#25 — not explicitly listed in the issue but shares
+	// the same root cause as UpdateTicket.)
+	if _, err := authorizeTicketAccess(r.Context(), h.db, user, ticketID); err != nil {
+		http.Error(w, "Ticket not found", http.StatusNotFound)
 		return
 	}
 

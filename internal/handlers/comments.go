@@ -29,6 +29,13 @@ func (h *CommentHandler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cross-tenant guard: clients may only comment on tickets in orgs
+	// they belong to. 404 mirrors the ticket-read path. (#25)
+	if _, err := authorizeTicketAccess(r.Context(), h.db, user, ticketID); err != nil {
+		http.Error(w, "Ticket not found", http.StatusNotFound)
+		return
+	}
+
 	comment, err := h.db.CreateComment(r.Context(), ticketID, &user.ID, nil, body)
 	if err != nil {
 		log.Printf("creating comment: %v", err)

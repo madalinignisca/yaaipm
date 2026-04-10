@@ -1590,6 +1590,25 @@ func (db *DB) ListReactionGroupsBatch(ctx context.Context, targetType string, ta
 
 // ── Org-Scoped Queries (Data Isolation) ──────────────────────
 
+// ResolveCommentOrgID returns the org ID that owns a comment by walking
+// the comment → ticket → project → org chain. Used by cross-tenant
+// authorization checks on comment-targeted reactions.
+func (db *DB) ResolveCommentOrgID(ctx context.Context, commentID string) (string, error) {
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT p.org_id
+		   FROM comments c
+		   JOIN tickets t ON t.id = c.ticket_id
+		   JOIN projects p ON p.id = t.project_id
+		  WHERE c.id = $1`,
+		commentID,
+	).Scan(&orgID)
+	if err != nil {
+		return "", fmt.Errorf("resolving comment org: %w", err)
+	}
+	return orgID, nil
+}
+
 // GetTicketScoped fetches a ticket only if it belongs to a project within the given org.
 func (db *DB) GetTicketScoped(ctx context.Context, ticketID, orgID string) (*Ticket, error) {
 	t := &Ticket{}
