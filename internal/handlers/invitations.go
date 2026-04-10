@@ -220,19 +220,24 @@ func (h *InviteHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// #31: AddOrgMember is an upsert that overwrites role on conflict. If the
-	// user is already a member of this org (added via another path — direct
-	// admin add, prior invitation, etc.), accepting this invitation would
-	// silently upgrade/downgrade their existing role. Reject with 409 and
-	// leave the invitation pending so the admin can see it and decide.
-	if _, err := h.db.GetOrgMembership(r.Context(), user.ID, inv.OrgID); err == nil {
-		http.Error(w, "You are already a member of this organization", http.StatusConflict)
+	// #31: AddOrgMember is an upsert that would overwrite role on conflict,
+	// so it is not safe to use when we want to refuse role changes. Use an
+	// atomic INSERT ... ON CONFLICT DO NOTHING instead. If the row was not
+	// inserted, the user was already a member (via another path — direct
+	// admin add, prior invitation, etc.). Reject with 409 and leave the
+	// invitation pending so the admin can see it and decide. This also
+	// eliminates the check-then-insert race between two concurrent accepts.
+	//
+	// Any real datastore error is propagated as 500 so operational incidents
+	// are not masked as "already a member" responses. (#31 — review feedback)
+	inserted, err := h.db.InsertOrgMembershipIfAbsent(r.Context(), user.ID, inv.OrgID, inv.OrgRole)
+	if err != nil {
+		log.Printf("inserting org member on accept: %v", err)
+		http.Error(w, "Failed to join organization", http.StatusInternalServerError)
 		return
 	}
-
-	if err := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
-		log.Printf("adding org member on accept: %v", err)
-		http.Error(w, "Failed to join organization", http.StatusInternalServerError)
+	if !inserted {
+		http.Error(w, "You are already a member of this organization", http.StatusConflict)
 		return
 	}
 

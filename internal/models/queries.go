@@ -443,6 +443,26 @@ func (db *DB) AddOrgMember(ctx context.Context, userID, orgID, role string) erro
 	return nil
 }
 
+// InsertOrgMembershipIfAbsent inserts a new membership row atomically,
+// doing nothing if the user is already a member of the given org. Returns
+// (true, nil) if a new row was inserted, (false, nil) if the user was
+// already a member, or an error if the datastore operation failed.
+//
+// Unlike AddOrgMember, this is safe for invitation acceptance where the
+// caller wants to refuse any role change when a membership already
+// exists. It also eliminates the check-then-insert race between two
+// concurrent accept requests. (#31)
+func (db *DB) InsertOrgMembershipIfAbsent(ctx context.Context, userID, orgID, role string) (bool, error) {
+	tag, err := db.Pool.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, org_id) DO NOTHING`,
+		userID, orgID, role)
+	if err != nil {
+		return false, fmt.Errorf("inserting org membership if absent: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func (db *DB) GetOrgMembership(ctx context.Context, userID, orgID string) (*OrgMembership, error) {
 	m := &OrgMembership{}
 	err := db.Pool.QueryRow(ctx,
