@@ -224,25 +224,31 @@ func (h *InviteHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request)
 	// so it is not safe to use when we want to refuse role changes. Use an
 	// atomic INSERT ... ON CONFLICT DO NOTHING instead. If the row was not
 	// inserted, the user was already a member (via another path — direct
-	// admin add, prior invitation, etc.). Reject with 409 and leave the
-	// invitation pending so the admin can see it and decide. This also
-	// eliminates the check-then-insert race between two concurrent accepts.
-	//
-	// Any real datastore error is propagated as 500 so operational incidents
-	// are not masked as "already a member" responses. (#31 — review feedback)
+	// admin add, prior accept, etc.). Any real datastore error is
+	// propagated as 500 so operational incidents are not masked as
+	// "already a member" responses. (#31 — review feedback)
 	inserted, err := h.db.InsertOrgMembershipIfAbsent(r.Context(), user.ID, inv.OrgID, inv.OrgRole)
 	if err != nil {
 		log.Printf("inserting org member on accept: %v", err)
 		http.Error(w, "Failed to join organization", http.StatusInternalServerError)
 		return
 	}
+
+	// Mark the invitation accepted regardless of whether the insert was a
+	// no-op. This is deliberately self-healing: if a previous accept
+	// inserted the membership but UpdateInvitationStatus failed (DB blip),
+	// the retry still reconciles the pending invitation. If the user was
+	// already a member via a separate path (admin add), the invitation is
+	// also cleaned up — its purpose ("make this user a member") is
+	// already satisfied so leaving it pending serves no purpose.
+	// (#31 — review feedback from Codex on 4ef2e0b)
+	if statusErr := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); statusErr != nil {
+		log.Printf("reconciling invitation status: %v", statusErr)
+	}
+
 	if !inserted {
 		http.Error(w, "You are already a member of this organization", http.StatusConflict)
 		return
-	}
-
-	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); err != nil {
-		log.Printf("updating invitation status: %v", err)
 	}
 
 	// Return empty string to remove the card via hx-swap="outerHTML"
