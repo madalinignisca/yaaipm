@@ -14,9 +14,12 @@ import (
 // invitation with a different role must NOT silently overwrite their
 // existing role via AddOrgMember's upsert behavior.
 //
-// Expected: the handler rejects the request (409 Conflict), the invitation
-// is left pending so the admin can see it and decide, and the user's
-// original membership role is preserved exactly.
+// Expected: the handler returns 200 (so the dashboard's hx-swap="outerHTML"
+// removes the invite card), the invitation is reconciled to "accepted"
+// (self-healing retry), and **the user's existing role is preserved
+// exactly** — which is the original #31 contract. The role preservation
+// is the load-bearing assertion here; the 200 response just keeps the UI
+// consistent with the side effect.
 func TestAcceptInvitationDoesNotOverwriteExistingRole(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	ctx := context.Background()
@@ -52,11 +55,14 @@ func TestAcceptInvitationDoesNotOverwriteExistingRole(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Errorf("expected 409 Conflict, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 OK (so the dashboard card swap works), got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	// The user's original role must still be "owner" — not downgraded to "member".
+	// This is the LOAD-BEARING assertion for #31: the role must not change even
+	// though we return success, because AddOrgMember is never called on the
+	// inserted==false path.
 	m, err := db.GetOrgMembership(ctx, user.ID, org.ID)
 	if err != nil {
 		t.Fatalf("reload membership: %v", err)
