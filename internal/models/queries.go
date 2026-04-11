@@ -443,6 +443,26 @@ func (db *DB) AddOrgMember(ctx context.Context, userID, orgID, role string) erro
 	return nil
 }
 
+// InsertOrgMembershipIfAbsent inserts a new membership row atomically,
+// doing nothing if the user is already a member of the given org. Returns
+// (true, nil) if a new row was inserted, (false, nil) if the user was
+// already a member, or an error if the datastore operation failed.
+//
+// Unlike AddOrgMember, this is safe for invitation acceptance where the
+// caller wants to refuse any role change when a membership already
+// exists. It also eliminates the check-then-insert race between two
+// concurrent accept requests. (#31)
+func (db *DB) InsertOrgMembershipIfAbsent(ctx context.Context, userID, orgID, role string) (bool, error) {
+	tag, err := db.Pool.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, org_id) DO NOTHING`,
+		userID, orgID, role)
+	if err != nil {
+		return false, fmt.Errorf("inserting org membership if absent: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func (db *DB) GetOrgMembership(ctx context.Context, userID, orgID string) (*OrgMembership, error) {
 	m := &OrgMembership{}
 	err := db.Pool.QueryRow(ctx,
@@ -1589,6 +1609,44 @@ func (db *DB) ListReactionGroupsBatch(ctx context.Context, targetType string, ta
 }
 
 // ── Org-Scoped Queries (Data Isolation) ──────────────────────
+
+// ResolveTicketOrgID returns the org ID that owns a ticket by walking
+// the ticket → project → org chain in a single join. Used by cross-tenant
+// authorization helpers that only need the access check, not the ticket
+// body itself. Returns pgx.ErrNoRows (wrapped) when the ticket does not exist.
+func (db *DB) ResolveTicketOrgID(ctx context.Context, ticketID string) (string, error) {
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT p.org_id
+		   FROM tickets t
+		   JOIN projects p ON p.id = t.project_id
+		  WHERE t.id = $1`,
+		ticketID,
+	).Scan(&orgID)
+	if err != nil {
+		return "", fmt.Errorf("resolving ticket org: %w", err)
+	}
+	return orgID, nil
+}
+
+// ResolveCommentOrgID returns the org ID that owns a comment by walking
+// the comment → ticket → project → org chain. Used by cross-tenant
+// authorization checks on comment-targeted reactions.
+func (db *DB) ResolveCommentOrgID(ctx context.Context, commentID string) (string, error) {
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT p.org_id
+		   FROM comments c
+		   JOIN tickets t ON t.id = c.ticket_id
+		   JOIN projects p ON p.id = t.project_id
+		  WHERE c.id = $1`,
+		commentID,
+	).Scan(&orgID)
+	if err != nil {
+		return "", fmt.Errorf("resolving comment org: %w", err)
+	}
+	return orgID, nil
+}
 
 // GetTicketScoped fetches a ticket only if it belongs to a project within the given org.
 func (db *DB) GetTicketScoped(ctx context.Context, ticketID, orgID string) (*Ticket, error) {

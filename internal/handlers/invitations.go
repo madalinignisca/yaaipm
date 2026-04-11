@@ -220,17 +220,44 @@ func (h *InviteHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
-		log.Printf("adding org member on accept: %v", err)
+	// #31: AddOrgMember is an upsert that would overwrite role on conflict,
+	// so it is not safe to use when we want to refuse role changes. Use an
+	// atomic INSERT ... ON CONFLICT DO NOTHING instead. If the row was not
+	// inserted, the user was already a member (via another path — direct
+	// admin add, prior accept, etc.) and we deliberately leave the
+	// existing role untouched. Any real datastore error is propagated as
+	// 500 so operational incidents are not masked as success. The
+	// returned `inserted` flag is informational only — it doesn't affect
+	// the response (see the status-reconciliation note below).
+	// (#31 — review feedback)
+	if _, err := h.db.InsertOrgMembershipIfAbsent(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
+		log.Printf("inserting org member on accept: %v", err)
 		http.Error(w, "Failed to join organization", http.StatusInternalServerError)
 		return
 	}
 
-	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); err != nil {
-		log.Printf("updating invitation status: %v", err)
+	// Mark the invitation accepted regardless of whether the insert was a
+	// no-op. Two reasons: (1) self-healing retry — if a previous accept
+	// inserted the membership but UpdateInvitationStatus failed (DB
+	// blip), the retry still reconciles the pending record; (2) the
+	// invitation's purpose ("make this user a member") is already
+	// satisfied when the user is in the org via any path, so a
+	// remaining "pending" state serves no purpose and clutters the
+	// dashboard. Log but do not fail on a status-update error — the
+	// membership is what matters for access.
+	// (#31 — review feedback on 4ef2e0b)
+	if statusErr := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); statusErr != nil {
+		log.Printf("reconciling invitation status: %v", statusErr)
 	}
 
-	// Return empty string to remove the card via hx-swap="outerHTML"
+	// Return 200 with an empty body. hx-swap="outerHTML" on the dashboard
+	// relies on a 2xx response to remove the invite card from the DOM; a
+	// 409 here would leave a stale card that the user can re-click,
+	// triggering a 410 Gone the second time and a confusing "broken app"
+	// experience until a full page refresh. Both the "just inserted" and
+	// "already a member, status reconciled" cases are logically success
+	// from the user's perspective — the invitation is consumed and the
+	// user is in the org. (#31 — review feedback from Codex on 487541c)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(""))
 }

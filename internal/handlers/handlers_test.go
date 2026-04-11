@@ -95,6 +95,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/gantt", projH.ProjectGantt)
 		r.Post("/tickets", ticketH.CreateTicket)
 		r.Get("/tickets/{ticketID}", ticketH.TicketDetail)
+		r.Put("/tickets/{ticketID}", ticketH.UpdateTicket)
 		r.Patch("/tickets/{ticketID}/status", ticketH.UpdateStatus)
 		r.Patch("/tickets/{ticketID}/agent", ticketH.UpdateAgentMode)
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
@@ -146,7 +147,9 @@ func createAuthenticatedUser(t *testing.T, db *models.DB, sessions *auth.Session
 	sess, _ := sessions.GetSession(ctx, token)
 	sessions.MarkTwoFactorVerified(ctx, sess.ID)
 
-	return &http.Cookie{Name: auth.SessionCookieName, Value: token}
+	// HttpOnly/Secure are ignored by http.Request.AddCookie (which only reads Name/Value)
+	// but setting them silences a static-analysis rule that flags cookie struct literals.
+	return &http.Cookie{Name: auth.SessionCookieName, Value: token, HttpOnly: true, Secure: true}
 }
 
 func TestLoginPageRenders(t *testing.T) {
