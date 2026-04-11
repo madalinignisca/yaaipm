@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,25 +17,62 @@ import (
 	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/middleware"
 	"github.com/madalin/forgedesk/internal/models"
-	"github.com/madalin/forgedesk/internal/storage"
 )
 
 const roleStaff = "staff"
 
+// safeDownloadCT is the single source of truth for the "force download"
+// Content-Type. Centralizing it prevents a future edit from accidentally
+// typing a renderable type. (#24)
+const safeDownloadCT = "application/octet-stream"
+
+// safeInlineImageTypes is the allowlist of image content types that are
+// safe to serve inline. SVG is deliberately excluded because it can
+// contain executable script (<script>, javascript: URLs, etc.). (#24)
+var safeInlineImageTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// isImageKey returns true when the S3 key points into an /images/
+// namespace where inline rendering is permitted. Keys are constructed
+// entirely server-side (orgs/.../projects/.../images/... vs .../attachments/...)
+// so no user input can inject "/images/" into an attachment key.
+func isImageKey(key string) bool {
+	return strings.Contains(key, "/images/")
+}
+
+// objectStore is the subset of storage.S3Client that FileHandler depends on.
+// Defined here (not in the storage package) so tests can substitute an
+// in-memory fake without linking the real S3 client. (#24)
+type objectStore interface {
+	Upload(ctx context.Context, key string, data io.Reader, contentType string) error
+	Get(ctx context.Context, key string) (io.ReadCloser, string, error)
+	Delete(ctx context.Context, key string) error
+}
+
 // FileHandler handles file upload, generation, and serving.
 type FileHandler struct {
-	s3     *storage.S3Client
+	s3     objectStore
 	db     *models.DB
 	gemini *ai.GeminiClient
 	cfg    *config.Config
 }
 
-// NewFileHandler creates a new file handler.
-func NewFileHandler(s3 *storage.S3Client, db *models.DB, gemini *ai.GeminiClient, cfg *config.Config) *FileHandler {
+// NewFileHandler creates a new file handler. The store parameter is typed
+// as an interface so tests can inject a fake, but production callers pass
+// *storage.S3Client which satisfies it.
+func NewFileHandler(s3 objectStore, db *models.DB, gemini *ai.GeminiClient, cfg *config.Config) *FileHandler {
 	return &FileHandler{s3: s3, db: db, gemini: gemini, cfg: cfg}
 }
 
-// ServeFile proxies a file from S3, setting immutable cache headers.
+// ServeFile proxies a file from S3. Files in the /images/ namespace whose
+// stored content type is on the safe allowlist are served inline so the
+// rich-text editor can render them; everything else (attachments, SVG,
+// HTML, unknown) is forced to download via Content-Disposition. Stored
+// content type is never trusted for non-image paths. (#24)
 func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/files/")
 	if key == "" {
@@ -42,15 +80,39 @@ func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, contentType, err := h.s3.Get(r.Context(), key)
+	// #24 defense in depth: refuse any key containing ".." segments
+	// or a leading slash. S3 treats the key as an opaque string so
+	// such values are not attacker-reachable through the current
+	// Upload paths, but an explicit reject documents the invariant
+	// and protects against a future refactor that turns the key into
+	// a filesystem operation.
+	if strings.Contains(key, "..") || strings.HasPrefix(key, "/") {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	body, storedCT, err := h.s3.Get(r.Context(), key)
 	if err != nil {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 	defer body.Close()
 
-	w.Header().Set("Content-Type", contentType)
+	// Always set nosniff so the browser cannot promote an
+	// application/octet-stream response to a renderable type.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+
+	if isImageKey(key) && safeInlineImageTypes[storedCT] {
+		// Safe inline image. Pin the CT to the allowlisted value.
+		w.Header().Set("Content-Type", storedCT)
+	} else {
+		// Anything else is untrusted. Force download under a generic
+		// content type so the browser never executes it as script.
+		w.Header().Set("Content-Type", safeDownloadCT)
+		w.Header().Set("Content-Disposition", "attachment")
+	}
+
 	_, _ = io.Copy(w, body)
 }
 
@@ -89,8 +151,10 @@ func (h *FileHandler) UploadImage(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	ct := header.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "image/") {
-		jsonError(w, "Only image files are allowed", http.StatusBadRequest)
+	// #24: narrow the image allowlist — SVG is rejected because it can
+	// contain executable script, even though it matches "image/*".
+	if !safeInlineImageTypes[ct] {
+		jsonError(w, "Only PNG, JPEG, GIF, and WebP images are allowed", http.StatusBadRequest)
 		return
 	}
 
@@ -152,6 +216,15 @@ func (h *FileHandler) GenerateImage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("image generation error: %v", err)
 		jsonError(w, "Image generation failed", http.StatusInternalServerError)
+		return
+	}
+
+	// #24: defense in depth — even though Gemini should return a safe
+	// image type, refuse anything outside the allowlist so a future
+	// SDK change cannot introduce an SVG-shaped hole.
+	if !safeInlineImageTypes[mimeType] {
+		log.Printf("unexpected generated image mime type: %s", mimeType)
+		jsonError(w, "Image generation produced an unsupported format", http.StatusInternalServerError)
 		return
 	}
 
@@ -220,23 +293,31 @@ func (h *FileHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	ct := header.Header.Get("Content-Type")
-	if ct == "" {
-		ct = "application/octet-stream"
+	// Display-only content type: we keep the client-supplied value in the
+	// DB so the UI can show a filetype label, but it is HTML-escaped by
+	// html/template on render and is NEVER used as a response header.
+	displayCT := header.Header.Get("Content-Type")
+	if displayCT == "" {
+		displayCT = safeDownloadCT
 	}
 
 	ext := filepath.Ext(header.Filename)
 	fileID := uuid.New().String()
 	key := fmt.Sprintf("orgs/%s/projects/%s/attachments/%s%s", orgID, ticket.ProjectID, fileID, ext)
 
-	if uploadErr := h.s3.Upload(r.Context(), key, file, ct); uploadErr != nil {
+	// #24: store attachments in S3 tagged as application/octet-stream
+	// regardless of the client's claim. This is belt-and-braces —
+	// ServeFile already forces download for attachment keys, but
+	// tagging S3 correctly means even a future ServeFile regression
+	// cannot turn the object into a rendered resource.
+	if uploadErr := h.s3.Upload(r.Context(), key, file, safeDownloadCT); uploadErr != nil {
 		log.Printf("s3 upload error: %v", uploadErr)
 		jsonError(w, "Upload failed", http.StatusInternalServerError)
 		return
 	}
 
 	filePath := "/files/" + key
-	att, err := h.db.CreateAttachment(r.Context(), ticketID, header.Filename, filePath, ct, header.Size, user.ID)
+	att, err := h.db.CreateAttachment(r.Context(), ticketID, header.Filename, filePath, displayCT, header.Size, user.ID)
 	if err != nil {
 		log.Printf("saving attachment record: %v", err)
 		jsonError(w, "Failed to record attachment", http.StatusInternalServerError)
@@ -292,6 +373,20 @@ func (h *FileHandler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	if att.UploadedBy != user.ID && user.Role != roleSuperadmin && user.Role != roleStaff {
 		jsonError(w, "Only the uploader or staff can delete attachments", http.StatusForbidden)
 		return
+	}
+
+	// #24: delete the backing S3 object BEFORE removing the DB row.
+	// If S3 Delete fails, bail with 500 so the user can retry — leaving
+	// an orphan row is better than an orphan object reachable by URL.
+	// Skip the Delete call for rows whose FilePath isn't a /files/*
+	// key (legacy/external data) or whose key component is empty
+	// (degenerate "/files/" path) so we don't pass garbage to S3.
+	if s3Key, ok := strings.CutPrefix(att.FilePath, "/files/"); ok && s3Key != "" {
+		if s3Err := h.s3.Delete(r.Context(), s3Key); s3Err != nil {
+			log.Printf("deleting S3 object: %v", s3Err)
+			jsonError(w, "Failed to delete file storage", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if err := h.db.DeleteAttachment(r.Context(), attachmentID); err != nil {

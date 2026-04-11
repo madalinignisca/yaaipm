@@ -71,3 +71,16 @@ func (s *S3Client) Get(ctx context.Context, key string) (io.ReadCloser, string, 
 	}
 	return out.Body, ct, nil
 }
+
+// Delete removes the object at the given key. Used when an attachment row
+// is removed so the backing object does not remain reachable by URL.
+func (s *S3Client) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("deleting from S3: %w", err)
+	}
+	return nil
+}
