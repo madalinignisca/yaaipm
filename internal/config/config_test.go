@@ -7,7 +7,8 @@ import (
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://localhost/testdb")
-	t.Setenv("SESSION_SECRET", "test-secret-key")
+	t.Setenv("SESSION_SECRET", "test-secret-key-that-is-32-bytes!")
+	t.Setenv("AES_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 }
 
 func TestEnvOrDefault(t *testing.T) {
@@ -32,7 +33,7 @@ func TestEnvOrDefault(t *testing.T) {
 func TestLoad_MissingRequired(t *testing.T) {
 	t.Run("fails without DATABASE_URL", func(t *testing.T) {
 		t.Setenv("DATABASE_URL", "")
-		t.Setenv("SESSION_SECRET", "some-secret")
+		t.Setenv("SESSION_SECRET", "some-secret-that-is-at-least-32b!")
 
 		cfg, err := Load()
 		if err == nil {
@@ -42,6 +43,22 @@ func TestLoad_MissingRequired(t *testing.T) {
 			t.Fatal("expected nil config on error")
 		}
 		if err.Error() != "DATABASE_URL is required" {
+			t.Errorf("unexpected error message: %s", err)
+		}
+	})
+
+	t.Run("fails with short SESSION_SECRET", func(t *testing.T) {
+		t.Setenv("DATABASE_URL", "postgres://localhost/db")
+		t.Setenv("SESSION_SECRET", "too-short")
+
+		cfg, err := Load()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if cfg != nil {
+			t.Fatal("expected nil config on error")
+		}
+		if err.Error() != "SESSION_SECRET must be at least 32 bytes, got 9" {
 			t.Errorf("unexpected error message: %s", err)
 		}
 	})
@@ -295,8 +312,8 @@ func TestLoad_DirectEnvPassthrough(t *testing.T) {
 	if cfg.DatabaseURL != "postgres://localhost/testdb" {
 		t.Errorf("DatabaseURL = %q, want %q", cfg.DatabaseURL, "postgres://localhost/testdb")
 	}
-	if cfg.SessionSecret != "test-secret-key" {
-		t.Errorf("SessionSecret = %q, want %q", cfg.SessionSecret, "test-secret-key")
+	if cfg.SessionSecret != "test-secret-key-that-is-32-bytes!" {
+		t.Errorf("SessionSecret = %q, want %q", cfg.SessionSecret, "test-secret-key-that-is-32-bytes!")
 	}
 	if cfg.SMTPHost != "smtp.example.com" {
 		t.Errorf("SMTPHost = %q, want %q", cfg.SMTPHost, "smtp.example.com")

@@ -83,6 +83,9 @@ func Load() (*Config, error) {
 	if sessionSecret == "" {
 		return nil, fmt.Errorf("SESSION_SECRET is required")
 	}
+	if len(sessionSecret) < 32 {
+		return nil, fmt.Errorf("SESSION_SECRET must be at least 32 bytes, got %d", len(sessionSecret))
+	}
 
 	listenAddr := os.Getenv("LISTEN_ADDR")
 	if listenAddr == "" {
