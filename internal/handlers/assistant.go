@@ -696,11 +696,14 @@ func (e *toolExecutor) createTicket(ctx context.Context, args map[string]any) (m
 
 	if parentID != "" {
 		parent, parentErr := e.db.GetTicket(ctx, parentID)
-		if parentErr != nil {
-			return map[string]any{"error": "parent ticket not found"}, nil //nolint:nilerr // tool result returns error in response map
-		}
-		if parent.ProjectID != projectID {
-			return map[string]any{"error": "parent ticket must belong to the same project"}, nil
+		switch {
+		case isRowMiss(parentErr):
+			return map[string]any{"error": "parent ticket not found"}, nil
+		case parentErr != nil:
+			return nil, fmt.Errorf("looking up parent ticket: %w", parentErr)
+		case parent.ProjectID != projectID:
+			// Same opaque message as not-found to avoid cross-tenant existence leaks.
+			return map[string]any{"error": "parent ticket not found"}, nil
 		}
 	}
 
