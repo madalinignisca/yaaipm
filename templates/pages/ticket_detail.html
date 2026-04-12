@@ -343,8 +343,7 @@ function fileUploader() {
                 fd.append('file', files[i]);
                 fd.append('ticket_id', _ticketID);
                 promises.push(
-                    fetch('/api/upload-file', { method: 'POST', body: fd })
-                        .then(function(r) { return r.json(); })
+                    window.apiFetch('/api/upload-file', { method: 'POST', body: fd })
                 );
             }
             Promise.all(promises)

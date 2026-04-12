@@ -174,10 +174,11 @@ function imageInsertModal() {
             fd.append('file', this.file);
             fd.append('project_id', this.projectID);
             var self = this;
-            fetch('/api/upload-image', { method: 'POST', body: fd })
-                .then(function(r) { return r.json(); })
+            window.apiFetch('/api/upload-image', { method: 'POST', body: fd })
                 .then(function(j) {
                     self.uploading = false;
+                    // apiFetch rejects non-2xx responses, so we only get here
+                    // on success — j.error is for application-level errors.
                     if (j.error) { self.error = j.error; return; }
                     self.uploadedUrl = j.data.filePath;
                 })
@@ -188,12 +189,11 @@ function imageInsertModal() {
             this.generating = true;
             this.error = '';
             var self = this;
-            fetch('/api/generate-image', {
+            window.apiFetch('/api/generate-image', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ prompt: this.prompt, project_id: this.projectID })
             })
-            .then(function(r) { return r.json(); })
             .then(function(j) {
                 self.generating = false;
                 if (j.error) { self.error = j.error; return; }
