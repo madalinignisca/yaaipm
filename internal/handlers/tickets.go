@@ -37,7 +37,12 @@ func NewTicketHandler(db *models.DB, engine *render.Engine, tg titleGenerator, c
 
 // Valid ticket field values for input validation
 var (
-	validTicketTypes      = map[string]bool{"epic": true, "feature": true, "task": true, "subtask": true, "bug": true}
+	// The "epic" type was renamed to "feature" in migration 000017
+	// along with a DB CHECK constraint that rejects "epic". Keeping
+	// it in this allowlist caused request validation to accept epic,
+	// only to have the INSERT fail with a constraint violation that
+	// surfaced as 500. Reject it up front with a clean 400. (#36)
+	validTicketTypes      = map[string]bool{"feature": true, "task": true, "subtask": true, "bug": true}
 	validTicketPriorities = map[string]bool{"low": true, "medium": true, "high": true, "critical": true}
 	validTicketStatuses   = map[string]bool{
 		"backlog": true, "ready": true, "planning": true, "plan_review": true,

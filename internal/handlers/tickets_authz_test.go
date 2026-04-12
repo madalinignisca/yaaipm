@@ -322,6 +322,48 @@ func TestCreateTicketCrossProjectParent(t *testing.T) {
 	}
 }
 
+// TestCreateTicketRejectsLegacyEpicType locks in #36: after
+// migration 000017 renamed "epic" → "feature" and added a DB
+// CHECK constraint that excludes "epic", the handler must
+// reject "epic" up front with a clean 400 rather than letting
+// it reach INSERT and surface as 500.
+func TestCreateTicketRejectsLegacyEpicType(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	org, err := db.CreateOrg(ctx, "Epic Org", "epic-org")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := db.CreateProject(ctx, org.ID, "Epic Proj", "epic-proj")
+	if err != nil {
+		t.Fatalf("create proj: %v", err)
+	}
+	cookie := createAuthenticatedUser(t, db, sessions, "epictester@test.com", "client")
+	user, err := db.GetUserByEmail(ctx, "epictester@test.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if err = db.AddOrgMember(ctx, user.ID, org.ID, "member"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	form := url.Values{
+		"project_id": {proj.ID},
+		"title":      {"Legacy"},
+		"type":       {"epic"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/tickets", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for legacy 'epic' type, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestUpdateStatusAcceptsCancelledSpelling locks in #35: the handler,
 // AI schema, template dropdown, and DB CHECK constraint must all
 // agree on the "cancelled" (two l's) spelling, matching the
