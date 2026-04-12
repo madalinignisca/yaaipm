@@ -298,13 +298,22 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		}
 	}
 
-	// Parse standalone partials (HTMX fragments, no layout)
+	// Parse standalone partials (HTMX fragments, no layout). Each
+	// partial is parsed alongside the full component set so it can
+	// reference sibling components via {{template "other.html" ...}}.
+	// Previously each partial was parsed in isolation; the comment
+	// partial's {{template "reactions.html" ...}} include then
+	// failed at Execute time with "no such template", and since
+	// html/template buffers output until success, the partial
+	// silently emitted nothing — newly posted comments disappeared
+	// until a full page reload re-rendered them. (#37)
 	err = filepath.WalkDir(filepath.Join(templatesDir, "components"), func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".html") {
 			return err
 		}
 		name := "partial:" + filepath.Base(path)
-		t, err := template.New(filepath.Base(path)).Funcs(funcMap).ParseFiles(path)
+		files := append([]string{path}, componentFiles...)
+		t, err := template.New(filepath.Base(path)).Funcs(funcMap).ParseFiles(files...)
 		if err != nil {
 			return fmt.Errorf("parsing partial %s: %w", path, err)
 		}

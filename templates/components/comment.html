@@ -3,6 +3,11 @@
         <span class="comment-author">{{.UserName}}</span>
         <span class="comment-time">{{formatDateTime .Comment.CreatedAt}}</span>
     </div>
-    <div class="comment-body">{{.Comment.BodyMarkdown}}</div>
+    <!-- Render markdown + prose to match the full-page rendering in
+         pages/ticket_detail.html. Previously this partial emitted
+         raw BodyMarkdown, so a newly-posted comment showed escaped
+         markdown until reload when the full page re-rendered it
+         properly. (#37) -->
+    <div class="comment-body prose">{{markdown .Comment.BodyMarkdown}}</div>
     {{template "reactions.html" dict "TargetType" "comment" "TargetID" .Comment.ID "Groups" .CommentReactions}}
 </div>
