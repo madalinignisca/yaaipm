@@ -114,16 +114,15 @@ func (h *OrgHandler) CreateOrg(w http.ResponseWriter, r *http.Request) {
 
 	slug := slugify(name)
 
-	org, err := h.db.CreateOrg(r.Context(), name, slug)
+	// Create org and owner membership in a single transaction so a
+	// transient failure on the membership INSERT cannot leave behind
+	// an orphan org with no owner and no path for the creator to
+	// manage it. (#29)
+	org, err := h.db.CreateOrgWithOwnerTx(r.Context(), user.ID, name, slug, auth.OrgRoleOwner)
 	if err != nil {
-		log.Printf("creating org: %v", err)
+		log.Printf("creating org with owner: %v", err)
 		http.Error(w, "Failed to create organization", http.StatusInternalServerError)
 		return
-	}
-
-	// Make creator the owner
-	if err := h.db.AddOrgMember(r.Context(), user.ID, org.ID, auth.OrgRoleOwner); err != nil {
-		log.Printf("adding org member: %v", err)
 	}
 
 	http.Redirect(w, r, "/orgs/"+org.Slug, http.StatusSeeOther)

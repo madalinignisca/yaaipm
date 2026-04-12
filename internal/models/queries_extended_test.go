@@ -1206,3 +1206,55 @@ func TestDeleteTicketCascadesToGrandchildren(t *testing.T) {
 		}
 	}
 }
+
+// ── CreateOrgWithOwnerTx (Issue #29) ────────────────────────────
+
+// TestCreateOrgWithOwnerTxHappyPath verifies the atomic variant
+// creates both the org and the owner membership on success.
+func TestCreateOrgWithOwnerTxHappyPath(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	user := createTestUser(t, db, "atomic-happy")
+
+	org, err := db.CreateOrgWithOwnerTx(ctx, user.ID, "Atomic Org", "atomic-org", "owner")
+	if err != nil {
+		t.Fatalf("CreateOrgWithOwnerTx: %v", err)
+	}
+	if org.ID == "" {
+		t.Fatal("expected non-empty org ID")
+	}
+
+	// Owner membership must exist with role "owner".
+	m, err := db.GetOrgMembership(ctx, user.ID, org.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMembership: %v", err)
+	}
+	if m.Role != "owner" {
+		t.Errorf("membership role = %q, want owner", m.Role)
+	}
+}
+
+// TestCreateOrgWithOwnerTxRollsBackOnMembershipFailure verifies that
+// if the membership INSERT fails (here: via an invalid role that
+// violates the CHECK constraint), the org row is also rolled back.
+// This prevents orphan orgs from being created when downstream
+// writes fail transiently.
+func TestCreateOrgWithOwnerTxRollsBackOnMembershipFailure(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	user := createTestUser(t, db, "atomic-rollback")
+
+	// "not-a-real-role" violates the org_memberships.role CHECK constraint.
+	// The membership INSERT fails, which must roll back the org INSERT too.
+	_, err := db.CreateOrgWithOwnerTx(ctx, user.ID, "Rollback Org", "rollback-org", "not-a-real-role")
+	if err == nil {
+		t.Fatal("expected error from invalid role, got nil")
+	}
+
+	// The org row must NOT exist — the whole transaction should have rolled back.
+	if _, err := db.GetOrgBySlug(ctx, "rollback-org"); err == nil {
+		t.Fatal("org row was persisted despite membership failure (rollback broken)")
+	}
+}
