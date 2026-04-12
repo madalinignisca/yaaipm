@@ -308,6 +308,38 @@ func (db *DB) CreateOrg(ctx context.Context, name, slug string) (*Organization, 
 	return o, nil
 }
 
+// CreateOrgWithOwnerTx atomically creates an organization and assigns
+// the given user as its owner. If either the INSERT into organizations
+// or the INSERT into org_memberships fails, the entire operation is
+// rolled back. Prevents orgs from existing without an owner. (#29)
+func (db *DB) CreateOrgWithOwnerTx(ctx context.Context, ownerUserID, name, slug, ownerRole string) (*Organization, error) {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	o := &Organization{}
+	if err := scanOrg(tx.QueryRow(ctx,
+		`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING `+orgColumns,
+		name, slug,
+	), o); err != nil {
+		return nil, fmt.Errorf("creating org: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, org_id) DO UPDATE SET role = $3`,
+		ownerUserID, o.ID, ownerRole); err != nil {
+		return nil, fmt.Errorf("adding owner membership: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing create org transaction: %w", err)
+	}
+	return o, nil
+}
+
 func (db *DB) GetOrgBySlug(ctx context.Context, slug string) (*Organization, error) {
 	o := &Organization{}
 	err := scanOrg(db.Pool.QueryRow(ctx,
