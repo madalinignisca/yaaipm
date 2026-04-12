@@ -575,16 +575,25 @@ func (db *DB) UpdateOrgMemberRole(ctx context.Context, userID, orgID, role strin
 // Handlers should translate this to a 400 response.
 var ErrLastOwner = errors.New("cannot remove or demote the last owner")
 
+// ErrMemberNotFound is returned when a guarded mutation targets a
+// membership row that does not exist. Distinct from infrastructure
+// errors so handlers can translate it to a 404.
+var ErrMemberNotFound = errors.New("org membership not found")
+
 // lockOrgOwners holds an exclusive row-level lock on every owner row
 // for the given org_id within the current transaction. It is the
 // serialization point for the last-owner invariant (#30): two
 // concurrent owner-mutation transactions serialize because the
 // second one blocks on the SELECT FOR UPDATE until the first commits.
 // Returns the user_ids of the currently-locked owners.
+//
+// ORDER BY user_id ensures concurrent transactions acquire the row
+// locks in the same sequence, avoiding lock-ordering deadlocks.
 func lockOrgOwners(ctx context.Context, tx pgx.Tx, orgID string) ([]string, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT user_id FROM org_memberships
 		 WHERE org_id = $1 AND role = 'owner'
+		 ORDER BY user_id
 		 FOR UPDATE`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("locking org owners: %w", err)
@@ -622,10 +631,17 @@ func (db *DB) RemoveOrgMemberGuarded(ctx context.Context, userID, orgID string) 
 		return ErrLastOwner
 	}
 
-	if _, err := tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM org_memberships WHERE user_id = $1 AND org_id = $2`,
-		userID, orgID); err != nil {
+		userID, orgID)
+	if err != nil {
 		return fmt.Errorf("removing org member: %w", err)
+	}
+	// A 0-row DELETE means the target was never a member of this org;
+	// surface ErrMemberNotFound so the handler can return 404 instead
+	// of silently reporting success.
+	if tag.RowsAffected() == 0 {
+		return ErrMemberNotFound
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing remove org member transaction: %w", err)
@@ -654,10 +670,17 @@ func (db *DB) UpdateOrgMemberRoleGuarded(ctx context.Context, userID, orgID, new
 		return ErrLastOwner
 	}
 
-	if _, err := tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`UPDATE org_memberships SET role = $1 WHERE user_id = $2 AND org_id = $3`,
-		newRole, userID, orgID); err != nil {
+		newRole, userID, orgID)
+	if err != nil {
 		return fmt.Errorf("updating org member role: %w", err)
+	}
+	// A 0-row UPDATE means no matching membership row; surface
+	// ErrMemberNotFound so the handler returns 404 instead of
+	// silently reporting success.
+	if tag.RowsAffected() == 0 {
+		return ErrMemberNotFound
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing update org member role transaction: %w", err)

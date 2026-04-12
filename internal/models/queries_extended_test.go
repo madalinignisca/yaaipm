@@ -1397,6 +1397,46 @@ func TestUpdateOrgMemberRoleGuardedBlocksLastOwnerDemotion(t *testing.T) {
 	}
 }
 
+// TestRemoveOrgMemberGuardedReturnsNotFoundForNonMember locks in
+// the Codex P1 fix: removing a user who is not a member of the org
+// must return ErrMemberNotFound, not silently succeed.
+func TestRemoveOrgMemberGuardedReturnsNotFoundForNonMember(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "nf-owner")
+	stranger := createTestUser(t, db, "nf-stranger")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "NF Org", "nf-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// Stranger is a real user but never joined the org.
+	err = db.RemoveOrgMemberGuarded(ctx, stranger.ID, org.ID)
+	if !errors.Is(err, ErrMemberNotFound) {
+		t.Fatalf("expected ErrMemberNotFound, got %v", err)
+	}
+}
+
+// TestUpdateOrgMemberRoleGuardedReturnsNotFoundForNonMember mirrors
+// the above for the role-update path.
+func TestUpdateOrgMemberRoleGuardedReturnsNotFoundForNonMember(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "nfu-owner")
+	stranger := createTestUser(t, db, "nfu-stranger")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "NFU Org", "nfu-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	err = db.UpdateOrgMemberRoleGuarded(ctx, stranger.ID, org.ID, "admin")
+	if !errors.Is(err, ErrMemberNotFound) {
+		t.Fatalf("expected ErrMemberNotFound, got %v", err)
+	}
+}
+
 // TestUpdateOrgMemberRoleGuardedAllowsPromotion confirms a
 // non-demotion update (role stays owner) is not blocked by the
 // invariant check.
