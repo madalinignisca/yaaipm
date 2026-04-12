@@ -32,7 +32,7 @@ func TestRegisterAddsClientToRoom(t *testing.T) {
 	}
 }
 
-func TestUnregisterRemovesClientAndClosesSend(t *testing.T) {
+func TestUnregisterRemovesClientAndSignalsDone(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
 
@@ -43,10 +43,12 @@ func TestUnregisterRemovesClientAndClosesSend(t *testing.T) {
 	hub.Unregister(c)
 	time.Sleep(settle)
 
-	// send channel should be closed
-	_, open := <-c.send
-	if open {
-		t.Fatal("send channel was not closed")
+	// done channel should be closed
+	select {
+	case <-c.Done():
+		// expected
+	default:
+		t.Fatal("done channel was not closed after unregister")
 	}
 }
 
@@ -260,6 +262,50 @@ func TestMultipleRoomsAreIndependent(t *testing.T) {
 		t.Fatalf("client in proj-b received proj-a message: %q", msg)
 	case <-time.After(50 * time.Millisecond):
 		// expected
+	}
+}
+
+func TestConcurrentBroadcastAndUnregister(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+
+	const numClients = 50
+	clients := make([]*Client, numClients)
+	for i := range clients {
+		clients[i] = NewClient(hub, nil, "proj-race", "user-"+string(rune('A'+i)), "U", nil, nil)
+		hub.Register(clients[i])
+	}
+	time.Sleep(settle)
+
+	var wg sync.WaitGroup
+
+	// Broadcast concurrently while unregistering clients
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			hub.Broadcast("proj-race", []byte("msg"), nil)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for _, c := range clients {
+			hub.Unregister(c)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+	// If we get here without a panic, the race is fixed
+}
+
+func TestSendAfterCloseReturnsFalse(t *testing.T) {
+	hub := NewHub()
+	c := newTestClient(hub, "proj-1")
+	c.Close()
+
+	if c.Send([]byte("late")) {
+		t.Fatal("Send should return false after Close")
 	}
 }
 

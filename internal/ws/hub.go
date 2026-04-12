@@ -42,7 +42,7 @@ func (h *Hub) Run() {
 			if room, ok := h.rooms[client.ProjectID]; ok {
 				if _, exists := room[client]; exists {
 					delete(room, client)
-					close(client.send)
+					client.Close()
 					if len(room) == 0 {
 						delete(h.rooms, client.ProjectID)
 					}
@@ -67,17 +67,16 @@ func (h *Hub) Unregister(client *Client) {
 func (h *Hub) Broadcast(projectID string, data []byte, exclude *Client) {
 	h.mu.RLock()
 	room := h.rooms[projectID]
+	targets := make([]*Client, 0, len(room))
+	for client := range room {
+		if client != exclude {
+			targets = append(targets, client)
+		}
+	}
 	h.mu.RUnlock()
 
-	for client := range room {
-		if client == exclude {
-			continue
-		}
-		select {
-		case client.send <- data:
-		default:
-			// Client buffer full — drop message to avoid blocking
-		}
+	for _, client := range targets {
+		client.Send(data)
 	}
 }
 
