@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -447,7 +446,7 @@ func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.U
 	sb.WriteString("- Title is optional when creating tickets — if omitted, it's auto-generated from the description\n")
 	sb.WriteString("- Use the current project ID when creating tickets or searching\n")
 	sb.WriteString("- Use update_project_brief to write or update the project brief. Write well-structured markdown with headings, lists, and sections\n")
-	sb.WriteString("- Use update_ticket to modify any ticket field: title, description, priority, status, dates\n")
+	sb.WriteString("- Use update_ticket to modify a ticket's title, description, priority, or dates. For status changes, use update_ticket_status (which also records activity).\n")
 	sb.WriteString("- Set date_start and date_end (YYYY-MM-DD) on tickets for timeline/Gantt planning\n")
 	sb.WriteString("- Child ticket dates auto-expand the parent's date range, so set dates on children and parents will adjust automatically\n")
 	sb.WriteString("- Confirm destructive actions (archive, delete) with the user before executing\n")
@@ -819,10 +818,10 @@ func (e *toolExecutor) updateTicket(ctx context.Context, args map[string]any) (m
 		ticket.Priority = pri
 		changes = append(changes, "priority")
 	}
-	if status, ok := args["status"].(string); ok && status != "" {
-		ticket.Status = status
-		changes = append(changes, "status")
-	}
+	// Status is intentionally not handled here: the corresponding
+	// "status" field was removed from the update_ticket tool schema
+	// because db.UpdateTicket never writes the status column.
+	// Callers should use the update_ticket_status tool. (#35 review)
 	if ds, ok := args["date_start"].(string); ok && ds != "" {
 		if t, err := time.Parse("2006-01-02", ds); err == nil {
 			ticket.DateStart = &t
@@ -842,12 +841,6 @@ func (e *toolExecutor) updateTicket(ctx context.Context, args map[string]any) (m
 
 	if err := e.db.UpdateTicket(ctx, ticket); err != nil {
 		return nil, fmt.Errorf("updating ticket: %w", err)
-	}
-
-	// Log activity for status changes
-	if slices.Contains(changes, "status") {
-		details, _ := json.Marshal(map[string]string{"new_status": ticket.Status}) //nolint:errchkjson // simple map marshal cannot fail
-		_ = e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "status_change", string(details))
 	}
 
 	// Auto-expand parent dates if dates changed

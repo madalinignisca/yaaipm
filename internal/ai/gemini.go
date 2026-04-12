@@ -65,6 +65,16 @@ func NewGeminiClient(ctx context.Context, apiKey string, models GeminiModels) (*
 	}, nil
 }
 
+// ticketStatusEnum lists the status values declared in the DB CHECK
+// constraint on tickets.status (migrations/000006_create_tickets.up.sql).
+// Centralized here so drift between the three tool declarations
+// below cannot reintroduce the cancelled/canceled bug (#35). The
+// British "cancelled" spelling is intentional — see .golangci.yml.
+var ticketStatusEnum = []string{
+	"backlog", "ready", "planning", "plan_review",
+	"implementing", "testing", "review", "done", "cancelled",
+}
+
 // toolDeclarations returns the function declarations available to the assistant.
 func toolDeclarations() []*genai.FunctionDeclaration {
 	return []*genai.FunctionDeclaration{
@@ -76,7 +86,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 				Properties: map[string]*genai.Schema{
 					"query":  {Type: genai.TypeString, Description: "Search query to match against ticket titles and descriptions"},
 					"type":   {Type: genai.TypeString, Description: "Filter by ticket type", Enum: []string{"feature", "task", "subtask", "bug"}},
-					"status": {Type: genai.TypeString, Description: "Filter by ticket status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
+					"status": {Type: genai.TypeString, Description: "Filter by ticket status", Enum: ticketStatusEnum},
 				},
 				Required: []string{"query"},
 			},
@@ -117,7 +127,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"ticket_id":  {Type: genai.TypeString, Description: "UUID of the ticket"},
-					"new_status": {Type: genai.TypeString, Description: "New status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
+					"new_status": {Type: genai.TypeString, Description: "New status", Enum: ticketStatusEnum},
 				},
 				Required: []string{"ticket_id", "new_status"},
 			},
@@ -136,7 +146,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 		},
 		{
 			Name:        "update_ticket",
-			Description: "Update fields on an existing ticket (title, description, priority, dates, status). Use when the user asks to edit or modify a ticket's details. Only provided fields will be updated.",
+			Description: "Update fields on an existing ticket (title, description, priority, dates). Use when the user asks to edit or modify a ticket's details. Only provided fields will be updated. To change a ticket's status, use update_ticket_status instead.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
@@ -144,7 +154,6 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 					"title":       {Type: genai.TypeString, Description: "New title (optional)"},
 					"description": {Type: genai.TypeString, Description: "New description in markdown (optional)"},
 					"priority":    {Type: genai.TypeString, Description: "New priority (optional)", Enum: []string{"low", "medium", "high", "critical"}},
-					"status":      {Type: genai.TypeString, Description: "New status (optional)", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
 					"date_start":  {Type: genai.TypeString, Description: "Start date in YYYY-MM-DD format (optional)"},
 					"date_end":    {Type: genai.TypeString, Description: "End date in YYYY-MM-DD format (optional)"},
 				},

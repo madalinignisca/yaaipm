@@ -341,7 +341,10 @@ func TestUpdateStatusAcceptsCancelledSpelling(t *testing.T) {
 		t.Fatalf("create proj: %v", err)
 	}
 	cookie := createAuthenticatedUser(t, db, sessions, "canceler@test.com", "client")
-	user, _ := db.GetUserByEmail(ctx, "canceler@test.com")
+	user, err := db.GetUserByEmail(ctx, "canceler@test.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
 	if err = db.AddOrgMember(ctx, user.ID, org.ID, "member"); err != nil {
 		t.Fatalf("add member: %v", err)
 	}
