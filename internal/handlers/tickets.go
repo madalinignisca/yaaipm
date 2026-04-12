@@ -160,6 +160,28 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	parentID := r.FormValue("parent_id")
 	var parentPtr *string
 	if parentID != "" {
+		// Enforce same-project parentage at the handler level. We keep
+		// three error cases distinct (per Codex/Gemini review feedback):
+		//   * pgx.ErrNoRows           → 404 "Parent ticket not found"
+		//   * parent in another proj → 404 with the SAME message so a
+		//                              client with access to one project
+		//                              cannot probe ticket IDs across
+		//                              tenants (existence leak). (#26)
+		//   * any other DB error      → 500, so infra incidents are not
+		//                              masked as input errors.
+		parent, parentErr := h.db.GetTicket(r.Context(), parentID)
+		switch {
+		case isRowMiss(parentErr):
+			http.Error(w, "Parent ticket not found", http.StatusNotFound)
+			return
+		case parentErr != nil:
+			log.Printf("looking up parent ticket: %v", parentErr)
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+			return
+		case parent.ProjectID != projectID:
+			http.Error(w, "Parent ticket not found", http.StatusNotFound)
+			return
+		}
 		parentPtr = &parentID
 	}
 

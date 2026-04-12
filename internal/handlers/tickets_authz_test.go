@@ -264,3 +264,60 @@ func TestClientMemberCanWriteInOwnOrg(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateTicketCrossProjectParent verifies that supplying a parent_id
+// from another project (even one the user also has access to) does not
+// leak existence of the other project's tickets. Per Codex review on #26,
+// the handler must return the same 404 "Parent ticket not found" for
+// both "nonexistent parent" and "parent in different project".
+func TestCreateTicketCrossProjectParent(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	// One org with two projects, one member with access to both.
+	org, err := db.CreateOrg(ctx, "DualProj", "dualproj")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	projA, err := db.CreateProject(ctx, org.ID, "A", "dualproj-a")
+	if err != nil {
+		t.Fatalf("create projA: %v", err)
+	}
+	projB, err := db.CreateProject(ctx, org.ID, "B", "dualproj-b")
+	if err != nil {
+		t.Fatalf("create projB: %v", err)
+	}
+	cookie := createAuthenticatedUser(t, db, sessions, "xp@test.com", "client")
+	user, _ := db.GetUserByEmail(ctx, "xp@test.com")
+	if err = db.AddOrgMember(ctx, user.ID, org.ID, "member"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	parentInA := &models.Ticket{
+		ProjectID: projA.ID, Type: "feature", Title: "Parent", Status: "backlog", Priority: "medium", CreatedBy: user.ID,
+	}
+	if err = db.CreateTicket(ctx, parentInA); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	// Attempt to create a child in project B pointing at the parent in project A.
+	form := url.Values{
+		"project_id": {projB.ID},
+		"parent_id":  {parentInA.ID},
+		"title":      {"Child"},
+		"type":       {"task"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/tickets", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 (same as missing parent, no enumeration leak), got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The body must not reveal that the parent exists in another project.
+	if body := rec.Body.String(); strings.Contains(body, "same project") || strings.Contains(body, "different") {
+		t.Errorf("body leaked cross-project existence: %q", body)
+	}
+}

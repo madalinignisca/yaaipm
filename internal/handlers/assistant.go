@@ -694,6 +694,19 @@ func (e *toolExecutor) createTicket(ctx context.Context, args map[string]any) (m
 		return map[string]any{"error": ticketType + "s require a parent_id (use search_tickets to find the parent epic/task first)"}, nil
 	}
 
+	if parentID != "" {
+		parent, parentErr := e.db.GetTicket(ctx, parentID)
+		switch {
+		case isRowMiss(parentErr):
+			return map[string]any{"error": "parent ticket not found"}, nil
+		case parentErr != nil:
+			return nil, fmt.Errorf("looking up parent ticket: %w", parentErr)
+		case parent.ProjectID != projectID:
+			// Same opaque message as not-found to avoid cross-tenant existence leaks.
+			return map[string]any{"error": "parent ticket not found"}, nil
+		}
+	}
+
 	ticket := &models.Ticket{
 		ProjectID:           projectID,
 		Type:                ticketType,
