@@ -1552,3 +1552,43 @@ func TestAcceptInviteTxRollsBackOnInvalidOrg(t *testing.T) {
 		t.Error("invitation was marked accepted despite rollback")
 	}
 }
+
+// TestAcceptInviteTxRejectsAlreadyAcceptedInvitation locks in
+// Gemini's review feedback: the UPDATE guard "AND status = 'pending'"
+// plus the RowsAffected check must surface ErrInvitationNotAcceptable
+// when the invitation has already been consumed. Without the guard
+// the second register attempt would silently no-op and create a
+// duplicate user account racing against the unique-email constraint.
+func TestAcceptInviteTxRejectsAlreadyAcceptedInvitation(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "already-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Already Org", "already-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	inv, err := db.CreateInvitation(ctx,
+		"already-invitee@test.com", org.ID, "member", "token-hash-already", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	// Mark the invitation accepted manually to simulate prior consumption.
+	if err = db.UpdateInvitationStatus(ctx, inv.ID, "accepted"); err != nil {
+		t.Fatalf("pre-accept invitation: %v", err)
+	}
+
+	_, err = db.AcceptInviteTx(ctx,
+		"different@test.com", "hash", "Second", "client",
+		inv.ID, org.ID, inv.OrgRole)
+	if !errors.Is(err, ErrInvitationNotAcceptable) {
+		t.Fatalf("expected ErrInvitationNotAcceptable, got %v", err)
+	}
+
+	// The second user must NOT have been created (Tx rolled back).
+	if _, gerr := db.GetUserByEmail(ctx, "different@test.com"); gerr == nil {
+		t.Fatal("user row was persisted despite invitation not being acceptable")
+	}
+}
