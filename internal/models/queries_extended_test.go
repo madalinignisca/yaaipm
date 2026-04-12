@@ -2,6 +2,8 @@ package models
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -1256,5 +1258,160 @@ func TestCreateOrgWithOwnerTxRollsBackOnMembershipFailure(t *testing.T) {
 	// The org row must NOT exist — the whole transaction should have rolled back.
 	if _, err := db.GetOrgBySlug(ctx, "rollback-org"); err == nil {
 		t.Fatal("org row was persisted despite membership failure (rollback broken)")
+	}
+}
+
+// ── Last-Owner Guards (Issue #30) ───────────────────────────────
+
+// TestRemoveOrgMemberGuardedBlocksLastOwner verifies the guarded
+// delete refuses to remove the sole owner of an organization.
+func TestRemoveOrgMemberGuardedBlocksLastOwner(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "sole-owner")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "Sole Org", "sole-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	err = db.RemoveOrgMemberGuarded(ctx, owner.ID, org.ID)
+	if !errors.Is(err, ErrLastOwner) {
+		t.Fatalf("expected ErrLastOwner, got %v", err)
+	}
+
+	// Owner must still exist — transaction should have rolled back.
+	if _, err := db.GetOrgMembership(ctx, owner.ID, org.ID); err != nil {
+		t.Fatalf("owner membership was removed despite guard: %v", err)
+	}
+}
+
+// TestRemoveOrgMemberGuardedAllowsWhenAnotherOwnerExists confirms
+// the happy path still works with two owners.
+func TestRemoveOrgMemberGuardedAllowsWhenAnotherOwnerExists(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	alice := createTestUser(t, db, "alice-rem")
+	bob := createTestUser(t, db, "bob-rem")
+	org, err := db.CreateOrgWithOwnerTx(ctx, alice.ID, "Two Org", "two-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err = db.AddOrgMember(ctx, bob.ID, org.ID, "owner"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	if err = db.RemoveOrgMemberGuarded(ctx, alice.ID, org.ID); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	// Bob must still be an owner.
+	m, err := db.GetOrgMembership(ctx, bob.ID, org.ID)
+	if err != nil || m.Role != "owner" {
+		t.Fatalf("expected bob to remain owner, got m=%v err=%v", m, err)
+	}
+}
+
+// TestConcurrentRemoveOwnersPreservesInvariant is the regression
+// test for #30: two goroutines concurrently removing each of the
+// two owners of the same org. The SELECT FOR UPDATE serialization
+// in RemoveOrgMemberGuarded must ensure exactly one of the two
+// removals succeeds.
+func TestConcurrentRemoveOwnersPreservesInvariant(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	alice := createTestUser(t, db, "alice-conc")
+	bob := createTestUser(t, db, "bob-conc")
+	org, err := db.CreateOrgWithOwnerTx(ctx, alice.ID, "Race Org", "race-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err = db.AddOrgMember(ctx, bob.ID, org.ID, "owner"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs[0] = db.RemoveOrgMemberGuarded(ctx, alice.ID, org.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = db.RemoveOrgMemberGuarded(ctx, bob.ID, org.ID)
+	}()
+	wg.Wait()
+
+	// Exactly one request should succeed, the other should get ErrLastOwner.
+	successes := 0
+	lastOwnerErrs := 0
+	for _, e := range errs {
+		switch {
+		case e == nil:
+			successes++
+		case errors.Is(e, ErrLastOwner):
+			lastOwnerErrs++
+		default:
+			t.Fatalf("unexpected error: %v", e)
+		}
+	}
+	if successes != 1 || lastOwnerErrs != 1 {
+		t.Fatalf("expected 1 success + 1 ErrLastOwner, got %d + %d (%v)", successes, lastOwnerErrs, errs)
+	}
+
+	// Exactly one owner must remain.
+	count, err := db.CountOrgOwners(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("CountOrgOwners: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 owner remaining, got %d", count)
+	}
+}
+
+// TestUpdateOrgMemberRoleGuardedBlocksLastOwnerDemotion verifies
+// the guarded update refuses to demote the sole owner.
+func TestUpdateOrgMemberRoleGuardedBlocksLastOwnerDemotion(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "demote-last")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "Demote Org", "demote-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	err = db.UpdateOrgMemberRoleGuarded(ctx, owner.ID, org.ID, "admin")
+	if !errors.Is(err, ErrLastOwner) {
+		t.Fatalf("expected ErrLastOwner, got %v", err)
+	}
+
+	// Role must still be owner.
+	m, err := db.GetOrgMembership(ctx, owner.ID, org.ID)
+	if err != nil || m.Role != "owner" {
+		t.Fatalf("expected role='owner' (rollback), got m=%v err=%v", m, err)
+	}
+}
+
+// TestUpdateOrgMemberRoleGuardedAllowsPromotion confirms a
+// non-demotion update (role stays owner) is not blocked by the
+// invariant check.
+func TestUpdateOrgMemberRoleGuardedAllowsPromotion(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "promote-sole")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "Promote Org", "promote-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// Setting role to the same value "owner" should succeed (no invariant violation).
+	if err := db.UpdateOrgMemberRoleGuarded(ctx, owner.ID, org.ID, "owner"); err != nil {
+		t.Fatalf("expected success for owner→owner no-op, got %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"regexp"
@@ -316,21 +317,14 @@ func (h *OrgHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if target is the last owner
-	targetMembership, err := h.db.GetOrgMembership(r.Context(), targetID, org.ID)
-	if err != nil {
-		http.Error(w, "Member not found", http.StatusNotFound)
-		return
-	}
-	if targetMembership.Role == auth.OrgRoleOwner {
-		count, err := h.db.CountOrgOwners(r.Context(), org.ID)
-		if err != nil || count <= 1 {
+	// Guarded delete serializes against concurrent owner mutations so
+	// two requests on a two-owner org cannot both pass the last-owner
+	// check and leave the org with zero owners. (#30)
+	if err := h.db.RemoveOrgMemberGuarded(r.Context(), targetID, org.ID); err != nil {
+		if errors.Is(err, models.ErrLastOwner) {
 			http.Error(w, "Cannot remove the last owner", http.StatusBadRequest)
 			return
 		}
-	}
-
-	if err := h.db.RemoveOrgMember(r.Context(), targetID, org.ID); err != nil {
 		log.Printf("removing org member: %v", err)
 		http.Error(w, "Failed to remove member", http.StatusInternalServerError)
 		return
@@ -376,21 +370,14 @@ func (h *OrgHandler) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent demoting the last owner
-	currentMembership, err := h.db.GetOrgMembership(r.Context(), targetID, org.ID)
-	if err != nil {
-		http.Error(w, "Member not found", http.StatusNotFound)
-		return
-	}
-	if currentMembership.Role == auth.OrgRoleOwner && newRole != auth.OrgRoleOwner {
-		count, err := h.db.CountOrgOwners(r.Context(), org.ID)
-		if err != nil || count <= 1 {
+	// Guarded update serializes against concurrent owner mutations to
+	// prevent the last-owner invariant from being bypassed by two
+	// concurrent demotion requests. (#30)
+	if err := h.db.UpdateOrgMemberRoleGuarded(r.Context(), targetID, org.ID, newRole); err != nil {
+		if errors.Is(err, models.ErrLastOwner) {
 			http.Error(w, "Cannot demote the last owner", http.StatusBadRequest)
 			return
 		}
-	}
-
-	if err := h.db.UpdateOrgMemberRole(r.Context(), targetID, org.ID, newRole); err != nil {
 		log.Printf("updating org member role: %v", err)
 		http.Error(w, "Failed to update role", http.StatusInternalServerError)
 		return
