@@ -160,6 +160,17 @@ func (h *TicketHandler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	parentID := r.FormValue("parent_id")
 	var parentPtr *string
 	if parentID != "" {
+		// Enforce same-project parentage at the handler level for a
+		// friendlier error than the FK violation we'd otherwise surface.
+		parent, parentErr := h.db.GetTicket(r.Context(), parentID)
+		if parentErr != nil {
+			http.Error(w, "Parent ticket not found", http.StatusBadRequest)
+			return
+		}
+		if parent.ProjectID != projectID {
+			http.Error(w, "Parent ticket must belong to the same project", http.StatusBadRequest)
+			return
+		}
 		parentPtr = &parentID
 	}
 

@@ -919,8 +919,17 @@ func scanTickets(rows pgx.Rows) ([]Ticket, error) {
 // ── Ticket Archive / Delete ───────────────────────────────────────
 
 func (db *DB) ArchiveTicket(ctx context.Context, id string) error {
+	// Recursively archive the whole subtree (ticket + children + grandchildren...).
+	// The old query only reached one level with `parent_id = $1`, leaving
+	// grandchildren visible and orphaned-looking.
 	_, err := db.Pool.Exec(ctx,
-		`UPDATE tickets SET archived_at = now(), updated_at = now() WHERE id = $1 OR parent_id = $1`, id)
+		`WITH RECURSIVE subtree(id) AS (
+			SELECT id FROM tickets WHERE id = $1
+			UNION ALL
+			SELECT t.id FROM tickets t JOIN subtree s ON t.parent_id = s.id
+		)
+		UPDATE tickets SET archived_at = now(), updated_at = now()
+		WHERE id IN (SELECT id FROM subtree)`, id)
 	if err != nil {
 		return fmt.Errorf("archiving ticket: %w", err)
 	}
@@ -928,8 +937,15 @@ func (db *DB) ArchiveTicket(ctx context.Context, id string) error {
 }
 
 func (db *DB) RestoreTicket(ctx context.Context, id string) error {
+	// Recursively restore the whole subtree, mirroring ArchiveTicket.
 	_, err := db.Pool.Exec(ctx,
-		`UPDATE tickets SET archived_at = NULL, updated_at = now() WHERE id = $1 OR parent_id = $1`, id)
+		`WITH RECURSIVE subtree(id) AS (
+			SELECT id FROM tickets WHERE id = $1
+			UNION ALL
+			SELECT t.id FROM tickets t JOIN subtree s ON t.parent_id = s.id
+		)
+		UPDATE tickets SET archived_at = NULL, updated_at = now()
+		WHERE id IN (SELECT id FROM subtree)`, id)
 	if err != nil {
 		return fmt.Errorf("restoring ticket: %w", err)
 	}
@@ -937,12 +953,9 @@ func (db *DB) RestoreTicket(ctx context.Context, id string) error {
 }
 
 func (db *DB) DeleteTicket(ctx context.Context, id string) error {
-	// Delete children first (comments/activities cascade via FK)
-	_, err := db.Pool.Exec(ctx, `DELETE FROM tickets WHERE parent_id = $1`, id)
-	if err != nil {
-		return fmt.Errorf("deleting child tickets: %w", err)
-	}
-	_, err = db.Pool.Exec(ctx, `DELETE FROM tickets WHERE id = $1`, id)
+	// Migration 000031 sets ON DELETE CASCADE on the (project_id, parent_id)
+	// composite FK, so Postgres walks the whole subtree for us.
+	_, err := db.Pool.Exec(ctx, `DELETE FROM tickets WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("deleting ticket: %w", err)
 	}
@@ -1681,7 +1694,8 @@ func (db *DB) GetAttachmentByID(ctx context.Context, id string) (*TicketAttachme
 	return a, nil
 }
 
-// DeleteTicketTx wraps ticket deletion (children + parent) in a transaction.
+// DeleteTicketTx wraps ticket deletion in a transaction.
+// Descendants cascade automatically via the composite FK (#26).
 func (db *DB) DeleteTicketTx(ctx context.Context, ticketID string) error {
 	tx, err := db.Pool.Begin(ctx)
 	if err != nil {
@@ -1689,9 +1703,6 @@ func (db *DB) DeleteTicketTx(ctx context.Context, ticketID string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, `DELETE FROM tickets WHERE parent_id = $1`, ticketID); err != nil {
-		return fmt.Errorf("deleting child tickets: %w", err)
-	}
 	if _, err := tx.Exec(ctx, `DELETE FROM tickets WHERE id = $1`, ticketID); err != nil {
 		return fmt.Errorf("deleting ticket: %w", err)
 	}
