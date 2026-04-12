@@ -76,7 +76,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 				Properties: map[string]*genai.Schema{
 					"query":  {Type: genai.TypeString, Description: "Search query to match against ticket titles and descriptions"},
 					"type":   {Type: genai.TypeString, Description: "Filter by ticket type", Enum: []string{"feature", "task", "subtask", "bug"}},
-					"status": {Type: genai.TypeString, Description: "Filter by ticket status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "canceled"}},
+					"status": {Type: genai.TypeString, Description: "Filter by ticket status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
 				},
 				Required: []string{"query"},
 			},
@@ -117,7 +117,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"ticket_id":  {Type: genai.TypeString, Description: "UUID of the ticket"},
-					"new_status": {Type: genai.TypeString, Description: "New status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "canceled"}},
+					"new_status": {Type: genai.TypeString, Description: "New status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
 				},
 				Required: []string{"ticket_id", "new_status"},
 			},
@@ -144,7 +144,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 					"title":       {Type: genai.TypeString, Description: "New title (optional)"},
 					"description": {Type: genai.TypeString, Description: "New description in markdown (optional)"},
 					"priority":    {Type: genai.TypeString, Description: "New priority (optional)", Enum: []string{"low", "medium", "high", "critical"}},
-					"status":      {Type: genai.TypeString, Description: "New status (optional)", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "canceled"}},
+					"status":      {Type: genai.TypeString, Description: "New status (optional)", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
 					"date_start":  {Type: genai.TypeString, Description: "Start date in YYYY-MM-DD format (optional)"},
 					"date_end":    {Type: genai.TypeString, Description: "End date in YYYY-MM-DD format (optional)"},
 				},

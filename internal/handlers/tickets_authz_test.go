@@ -321,3 +321,55 @@ func TestCreateTicketCrossProjectParent(t *testing.T) {
 		t.Errorf("body leaked cross-project existence: %q", body)
 	}
 }
+
+// TestUpdateStatusAcceptsCancelledSpelling locks in #35: the handler,
+// AI schema, template dropdown, and DB CHECK constraint must all
+// agree on the "cancelled" (two l's) spelling, matching the
+// migration 000006 constraint. The old code had "canceled" in the
+// handler validation, which rejected the template's "cancelled"
+// POST as "Invalid status".
+func TestUpdateStatusAcceptsCancelledSpelling(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	org, err := db.CreateOrg(ctx, "Cancel Org", "cancel-org")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := db.CreateProject(ctx, org.ID, "Cancel Proj", "cancel-proj")
+	if err != nil {
+		t.Fatalf("create proj: %v", err)
+	}
+	cookie := createAuthenticatedUser(t, db, sessions, "canceler@test.com", "client")
+	user, _ := db.GetUserByEmail(ctx, "canceler@test.com")
+	if err = db.AddOrgMember(ctx, user.ID, org.ID, "member"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	ticket := &models.Ticket{
+		ProjectID: proj.ID, Type: "task", Title: "Will Cancel",
+		Status: "backlog", Priority: "medium", CreatedBy: user.ID,
+	}
+	if err = db.CreateTicket(ctx, ticket); err != nil {
+		t.Fatalf("create ticket: %v", err)
+	}
+
+	form := url.Values{"status": {"cancelled"}}
+	req := httptest.NewRequest(http.MethodPatch, "/tickets/"+ticket.ID+"/status", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	got, err := db.GetTicket(ctx, ticket.ID)
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	if got.Status != "cancelled" {
+		t.Errorf("status = %q, want cancelled", got.Status)
+	}
+}

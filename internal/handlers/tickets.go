@@ -41,7 +41,7 @@ var (
 	validTicketPriorities = map[string]bool{"low": true, "medium": true, "high": true, "critical": true}
 	validTicketStatuses   = map[string]bool{
 		"backlog": true, "ready": true, "planning": true, "plan_review": true,
-		"implementing": true, "testing": true, "review": true, "done": true, "canceled": true,
+		"implementing": true, "testing": true, "review": true, "done": true, "cancelled": true,
 	}
 )
 
