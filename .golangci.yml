@@ -124,6 +124,13 @@ linters:
 
     misspell:
       locale: US
+      # "cancelled" is the canonical spelling throughout this codebase.
+      # The DB CHECK constraint on tickets.status uses two l's (see
+      # migrations/000006_create_tickets.up.sql), as does the template
+      # dropdown. Standardizing on US "canceled" would require a
+      # data migration over existing production rows. See #35.
+      ignore-rules:
+        - cancelled
 
   exclusions:
     # Don't lint test files as strictly

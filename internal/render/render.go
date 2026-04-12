@@ -163,7 +163,7 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				return "indigo"
 			case "done":
 				return "green"
-			case "canceled":
+			case "cancelled":
 				return "red"
 			default:
 				return colorGray
