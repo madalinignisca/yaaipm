@@ -922,10 +922,14 @@ func (db *DB) ArchiveTicket(ctx context.Context, id string) error {
 	// Recursively archive the whole subtree (ticket + children + grandchildren...).
 	// The old query only reached one level with `parent_id = $1`, leaving
 	// grandchildren visible and orphaned-looking.
+	//
+	// UNION (not UNION ALL) deduplicates against already-visited rows, which
+	// makes the recursion terminate even if a cycle were ever introduced via
+	// direct DB manipulation or a future bug in the parent_id update path.
 	_, err := db.Pool.Exec(ctx,
 		`WITH RECURSIVE subtree(id) AS (
 			SELECT id FROM tickets WHERE id = $1
-			UNION ALL
+			UNION
 			SELECT t.id FROM tickets t JOIN subtree s ON t.parent_id = s.id
 		)
 		UPDATE tickets SET archived_at = now(), updated_at = now()
@@ -938,10 +942,11 @@ func (db *DB) ArchiveTicket(ctx context.Context, id string) error {
 
 func (db *DB) RestoreTicket(ctx context.Context, id string) error {
 	// Recursively restore the whole subtree, mirroring ArchiveTicket.
+	// UNION deduplicates to guarantee termination even on cyclic data.
 	_, err := db.Pool.Exec(ctx,
 		`WITH RECURSIVE subtree(id) AS (
 			SELECT id FROM tickets WHERE id = $1
-			UNION ALL
+			UNION
 			SELECT t.id FROM tickets t JOIN subtree s ON t.parent_id = s.id
 		)
 		UPDATE tickets SET archived_at = NULL, updated_at = now()

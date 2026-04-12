@@ -1,5 +1,7 @@
 -- Revert same-project parent enforcement.
 
+DROP INDEX IF EXISTS idx_tickets_project_parent;
+
 ALTER TABLE tickets
     DROP CONSTRAINT tickets_parent_fkey;
 

@@ -29,3 +29,11 @@ ALTER TABLE tickets
     FOREIGN KEY (project_id, parent_id)
     REFERENCES tickets (project_id, id)
     ON DELETE CASCADE;
+
+-- Postgres auto-indexes the FK parent side (via the UNIQUE constraint)
+-- but NOT the child side. Without this composite index, cascading
+-- deletes and tree traversals (ArchiveTicket/RestoreTicket CTEs) would
+-- need a full table scan per level. The existing idx_tickets_parent_id
+-- (on parent_id alone) is not ideal for the composite FK lookup path.
+CREATE INDEX IF NOT EXISTS idx_tickets_project_parent
+    ON tickets (project_id, parent_id);
