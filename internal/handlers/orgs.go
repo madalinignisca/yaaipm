@@ -258,6 +258,14 @@ func (h *OrgHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7 days
 	_, err = h.db.CreateInvitation(r.Context(), email, org.ID, role, tokenHash, user.ID, expiresAt)
 	if err != nil {
+		// Handle the race where the pre-check saw no pending invite
+		// but a concurrent request created one before we INSERTed.
+		// The partial-unique-index violation is idempotent behavior,
+		// not an infrastructure failure — 409, not 500. (#32)
+		if errors.Is(err, models.ErrDuplicatePendingInvitation) {
+			http.Error(w, "An invitation is already pending for this email", http.StatusConflict)
+			return
+		}
 		log.Printf("creating invitation: %v", err)
 		http.Error(w, "Failed to create invitation", http.StatusInternalServerError)
 		return

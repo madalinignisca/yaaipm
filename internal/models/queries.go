@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -186,6 +187,13 @@ func (db *DB) CountUsers(ctx context.Context) (int, error) {
 
 // ── Invitations ──────────────────────────────────────────────────
 
+// ErrDuplicatePendingInvitation is returned when CreateInvitation
+// hits the partial unique index idx_invitations_email_org_pending
+// on (email, org_id) WHERE status = 'pending'. Distinct from a
+// generic datastore error so handlers can respond with 409 Conflict
+// instead of masking the race as 500. (#32)
+var ErrDuplicatePendingInvitation = errors.New("a pending invitation already exists for this email and org")
+
 func (db *DB) CreateInvitation(ctx context.Context, email, orgID, orgRole, tokenHash, invitedBy string, expiresAt time.Time) (*Invitation, error) {
 	inv := &Invitation{}
 	err := db.Pool.QueryRow(ctx,
@@ -195,6 +203,13 @@ func (db *DB) CreateInvitation(ctx context.Context, email, orgID, orgRole, token
 		email, orgID, orgRole, tokenHash, invitedBy, expiresAt,
 	).Scan(&inv.ID, &inv.Email, &inv.OrgID, &inv.OrgRole, &inv.TokenHash, &inv.Status, &inv.InvitedBy, &inv.ExpiresAt, &inv.CreatedAt, &inv.UpdatedAt)
 	if err != nil {
+		// Translate the partial-unique-index violation into a typed
+		// sentinel so racing duplicate invites surface as 409 not 500.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "idx_invitations_email_org_pending" {
+			return nil, ErrDuplicatePendingInvitation
+		}
 		return nil, fmt.Errorf("creating invitation: %w", err)
 	}
 	return inv, nil
