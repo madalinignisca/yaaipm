@@ -159,23 +159,19 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.db.CreateUser(r.Context(), inv.Email, hash, name, auth.RoleClient)
+	// Create user, mark invitation accepted, and add org membership
+	// atomically so a transient failure on any downstream write cannot
+	// leave a user account with no org membership and a half-consumed
+	// invitation. The session is created only after Commit succeeds. (#28)
+	user, err := h.db.AcceptInviteTx(r.Context(), inv.Email, hash, name, auth.RoleClient, inv.ID, inv.OrgID, inv.OrgRole)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			renderErr("An account with this email already exists. Please log in.")
 			return
 		}
-		log.Printf("creating user from invite: %v", err)
+		log.Printf("accepting invite: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
-	}
-
-	// Accept invitation and add org membership
-	if statusErr := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); statusErr != nil {
-		log.Printf("accepting invitation: %v", statusErr)
-	}
-	if memberErr := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); memberErr != nil {
-		log.Printf("adding org member from invite: %v", memberErr)
 	}
 
 	// Create session

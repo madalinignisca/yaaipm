@@ -34,6 +34,46 @@ func (db *DB) CreateUser(ctx context.Context, email, passwordHash, name, role st
 	return u, nil
 }
 
+// AcceptInviteTx atomically creates a user from an invitation, marks
+// the invitation accepted, and adds the user to the target org with
+// the invitation's role. If any step fails the entire operation is
+// rolled back, so we never end up with a user account that has no
+// membership and a half-consumed invitation. (#28)
+func (db *DB) AcceptInviteTx(ctx context.Context, email, passwordHash, name, role, invitationID, orgID, orgRole string) (*User, error) {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	u := &User{}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, $4)
+		 RETURNING id, email, password_hash, name, role, totp_secret, totp_verified, recovery_codes, must_setup_2fa, preferred_2fa_method, created_at, updated_at`,
+		email, passwordHash, name, role,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.TOTPSecret, &u.TOTPVerified, &u.RecoveryCodes, &u.MustSetup2FA, &u.Preferred2FAMethod, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("creating user: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE invitations SET status = 'accepted', updated_at = now() WHERE id = $1`,
+		invitationID); err != nil {
+		return nil, fmt.Errorf("marking invitation accepted: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, org_id) DO UPDATE SET role = $3`,
+		u.ID, orgID, orgRole); err != nil {
+		return nil, fmt.Errorf("adding org membership: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing accept invite transaction: %w", err)
+	}
+	return u, nil
+}
+
 func (db *DB) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	u := &User{}
 	err := db.Pool.QueryRow(ctx,
