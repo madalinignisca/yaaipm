@@ -1553,6 +1553,69 @@ func TestAcceptInviteTxRollsBackOnInvalidOrg(t *testing.T) {
 	}
 }
 
+// TestCreateInvitationDuplicatePending locks in #32: the partial
+// unique index on (email, org_id) WHERE status = 'pending' must
+// surface as ErrDuplicatePendingInvitation, not a raw pg error
+// wrapped in fmt.Errorf.
+func TestCreateInvitationDuplicatePending(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "dup-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Dup Org", "dup-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// First invite succeeds.
+	_, err = db.CreateInvitation(ctx,
+		"dup@test.com", org.ID, "member", "token-hash-dup-1", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("first invite: %v", err)
+	}
+
+	// Second invite for the same (email, org) with another token
+	// must hit the partial unique index and return the typed sentinel.
+	_, err = db.CreateInvitation(ctx,
+		"dup@test.com", org.ID, "member", "token-hash-dup-2", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if !errors.Is(err, ErrDuplicatePendingInvitation) {
+		t.Fatalf("expected ErrDuplicatePendingInvitation, got %v", err)
+	}
+}
+
+// TestCreateInvitationAfterAcceptedAllowsNew confirms the partial
+// index does not block creating a fresh invitation once the prior
+// one has been accepted (partial predicate: status = 'pending').
+func TestCreateInvitationAfterAcceptedAllowsNew(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "aa-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "AA Org", "aa-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	first, err := db.CreateInvitation(ctx,
+		"aa@test.com", org.ID, "member", "token-hash-aa-1", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("first invite: %v", err)
+	}
+	if err = db.UpdateInvitationStatus(ctx, first.ID, "accepted"); err != nil {
+		t.Fatalf("accept first: %v", err)
+	}
+
+	_, err = db.CreateInvitation(ctx,
+		"aa@test.com", org.ID, "member", "token-hash-aa-2", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("second invite after accept should succeed, got %v", err)
+	}
+}
+
 // TestAcceptInviteTxRejectsAlreadyAcceptedInvitation locks in
 // Gemini's review feedback: the UPDATE guard "AND status = 'pending'"
 // plus the RowsAffected check must surface ErrInvitationNotAcceptable
