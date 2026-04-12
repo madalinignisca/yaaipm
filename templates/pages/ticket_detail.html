@@ -343,14 +343,25 @@ function fileUploader() {
                 fd.append('file', files[i]);
                 fd.append('ticket_id', _ticketID);
                 promises.push(
-                    fetch('/api/upload-file', { method: 'POST', body: fd })
-                        .then(function(r) { return r.json(); })
+                    window.apiFetch('/api/upload-file', { method: 'POST', body: fd })
                 );
             }
-            Promise.all(promises)
-                .then(function() { window.location.reload(); })
-                .catch(function(e) { alert('Upload failed: ' + e.message); })
-                .finally(function() { this.uploading = false; }.bind(this));
+            // Promise.allSettled — wait for every upload to finish
+            // (succeed or fail) before flipping UI state, so a single
+            // failed file can't abort in-flight siblings or leave the
+            // user with "Uploading…" cleared while some are still
+            // running. (#33 review)
+            var self = this;
+            Promise.allSettled(promises).then(function(results) {
+                self.uploading = false;
+                var failures = results.filter(function(r) { return r.status === 'rejected'; });
+                if (failures.length === 0) {
+                    window.location.reload();
+                    return;
+                }
+                alert('Upload failed for ' + failures.length + ' of ' + results.length
+                    + ' file(s): ' + failures[0].reason.message);
+            });
             event.target.value = '';
         }
     };
