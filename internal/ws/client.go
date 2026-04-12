@@ -2,6 +2,7 @@ package ws
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -23,6 +24,8 @@ type Client struct {
 	Hub       *Hub
 	Conn      *websocket.Conn
 	send      chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
 	User      *models.User
 	OnMessage MessageHandler
 	ProjectID string
@@ -36,6 +39,7 @@ func NewClient(hub *Hub, conn *websocket.Conn, projectID, userID, userName strin
 		Hub:       hub,
 		Conn:      conn,
 		send:      make(chan []byte, 256),
+		done:      make(chan struct{}),
 		ProjectID: projectID,
 		UserID:    userID,
 		UserName:  userName,
@@ -44,12 +48,34 @@ func NewClient(hub *Hub, conn *websocket.Conn, projectID, userID, userName strin
 	}
 }
 
+// Close signals the client to shut down. Safe to call multiple times.
+func (c *Client) Close() {
+	c.closeOnce.Do(func() {
+		close(c.done)
+	})
+}
+
+// Done returns a channel that is closed when the client shuts down.
+func (c *Client) Done() <-chan struct{} {
+	return c.done
+}
+
 // Send queues a message for sending to this client.
-func (c *Client) Send(data []byte) {
+// Returns false if the client is closed or the buffer is full.
+func (c *Client) Send(data []byte) bool {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
 	select {
 	case c.send <- data:
+		return true
+	case <-c.done:
+		return false
 	default:
 		log.Printf("ws: client send buffer full, dropping message for user %s", c.UserID)
+		return false
 	}
 }
 
@@ -93,16 +119,15 @@ func (c *Client) WritePump() {
 
 	for {
 		select {
-		case message, ok := <-c.send:
+		case message := <-c.send:
 			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				// Hub closed the channel
-				_ = c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
 			if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
 				return
 			}
+
+		case <-c.done:
+			_ = c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+			return
 
 		case <-ticker.C:
 			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
