@@ -1455,3 +1455,140 @@ func TestUpdateOrgMemberRoleGuardedAllowsPromotion(t *testing.T) {
 		t.Fatalf("expected success for owner→owner no-op, got %v", err)
 	}
 }
+
+// ── AcceptInviteTx (Issue #28) ──────────────────────────────────
+
+// TestAcceptInviteTxHappyPath verifies the atomic variant creates
+// the user, marks the invitation accepted, and adds org membership
+// in one transaction.
+func TestAcceptInviteTxHappyPath(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "accept-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Accept Org", "accept-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	inv, err := db.CreateInvitation(ctx,
+		"invitee@test.com", org.ID, "member", "token-hash-happy", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	user, err := db.AcceptInviteTx(ctx,
+		inv.Email, "hash", "Invitee", "client",
+		inv.ID, org.ID, inv.OrgRole)
+	if err != nil {
+		t.Fatalf("AcceptInviteTx: %v", err)
+	}
+
+	if user.Email != inv.Email {
+		t.Errorf("user email = %q, want %q", user.Email, inv.Email)
+	}
+	if user.Role != "client" {
+		t.Errorf("user role = %q, want client", user.Role)
+	}
+
+	// Invitation must be accepted.
+	got, err := db.GetInvitationByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvitationByID: %v", err)
+	}
+	if got.Status != "accepted" {
+		t.Errorf("invitation status = %q, want accepted", got.Status)
+	}
+
+	// Org membership must exist with the invited role.
+	m, err := db.GetOrgMembership(ctx, user.ID, org.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMembership: %v", err)
+	}
+	if m.Role != "member" {
+		t.Errorf("membership role = %q, want member", m.Role)
+	}
+}
+
+// TestAcceptInviteTxRollsBackOnInvalidOrg verifies that a failure
+// in the membership INSERT (here: FK violation on a non-existent
+// org) rolls back the user INSERT and leaves no orphaned account.
+func TestAcceptInviteTxRollsBackOnInvalidOrg(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "rollback-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Rollback Org", "rb-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	inv, err := db.CreateInvitation(ctx,
+		"rollback-invitee@test.com", org.ID, "member", "token-hash-rb", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	// Pass a bogus org ID (valid UUID format, not a real row) so the
+	// membership INSERT violates the org_id FK.
+	bogusOrgID := "00000000-0000-0000-0000-000000000099"
+	_, err = db.AcceptInviteTx(ctx,
+		inv.Email, "hash", "Invitee", "client",
+		inv.ID, bogusOrgID, inv.OrgRole)
+	if err == nil {
+		t.Fatal("expected error from invalid org FK, got nil")
+	}
+
+	// User row must NOT exist — the whole Tx should have rolled back.
+	if _, gerr := db.GetUserByEmail(ctx, inv.Email); gerr == nil {
+		t.Fatal("user row was persisted despite membership failure (rollback broken)")
+	}
+	// Invitation must remain pending.
+	got, err := db.GetInvitationByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvitationByID: %v", err)
+	}
+	if got.Status == "accepted" {
+		t.Error("invitation was marked accepted despite rollback")
+	}
+}
+
+// TestAcceptInviteTxRejectsAlreadyAcceptedInvitation locks in
+// Gemini's review feedback: the UPDATE guard "AND status = 'pending'"
+// plus the RowsAffected check must surface ErrInvitationNotAcceptable
+// when the invitation has already been consumed. Without the guard
+// the second register attempt would silently no-op and create a
+// duplicate user account racing against the unique-email constraint.
+func TestAcceptInviteTxRejectsAlreadyAcceptedInvitation(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "already-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Already Org", "already-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	inv, err := db.CreateInvitation(ctx,
+		"already-invitee@test.com", org.ID, "member", "token-hash-already", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	// Mark the invitation accepted manually to simulate prior consumption.
+	if err = db.UpdateInvitationStatus(ctx, inv.ID, "accepted"); err != nil {
+		t.Fatalf("pre-accept invitation: %v", err)
+	}
+
+	_, err = db.AcceptInviteTx(ctx,
+		"different@test.com", "hash", "Second", "client",
+		inv.ID, org.ID, inv.OrgRole)
+	if !errors.Is(err, ErrInvitationNotAcceptable) {
+		t.Fatalf("expected ErrInvitationNotAcceptable, got %v", err)
+	}
+
+	// The second user must NOT have been created (Tx rolled back).
+	if _, gerr := db.GetUserByEmail(ctx, "different@test.com"); gerr == nil {
+		t.Fatal("user row was persisted despite invitation not being acceptable")
+	}
+}

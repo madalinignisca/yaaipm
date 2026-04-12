@@ -15,6 +15,11 @@ type DB struct {
 	Pool *pgxpool.Pool
 }
 
+// OrgRoleOwner is the "owner" org-membership role value used in
+// org_memberships.role. Centralized here so goconst stops flagging
+// the string literal.
+const OrgRoleOwner = "owner"
+
 func NewDB(pool *pgxpool.Pool) *DB {
 	return &DB{Pool: pool}
 }
@@ -30,6 +35,63 @@ func (db *DB) CreateUser(ctx context.Context, email, passwordHash, name, role st
 	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.TOTPSecret, &u.TOTPVerified, &u.RecoveryCodes, &u.MustSetup2FA, &u.Preferred2FAMethod, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("creating user: %w", err)
+	}
+	return u, nil
+}
+
+// ErrInvitationNotAcceptable is returned by AcceptInviteTx when the
+// target invitation cannot be consumed — either it never existed,
+// was already accepted, or is no longer pending. Keeps this case
+// distinct from infrastructure failures so handlers can surface a
+// dedicated error without masking 5xxs. (#28 — review feedback)
+var ErrInvitationNotAcceptable = errors.New("invitation not acceptable")
+
+// AcceptInviteTx atomically creates a user from an invitation, marks
+// the invitation accepted, and adds the user to the target org with
+// the invitation's role. If any step fails the entire operation is
+// rolled back, so we never end up with a user account that has no
+// membership and a half-consumed invitation. (#28)
+//
+// The invitation UPDATE is guarded with AND status = 'pending' so
+// double-acceptance and stale-invitation acceptance both surface as
+// ErrInvitationNotAcceptable via the RowsAffected == 0 branch,
+// rather than silently committing a no-op.
+func (db *DB) AcceptInviteTx(ctx context.Context, email, passwordHash, name, role, invitationID, orgID, orgRole string) (*User, error) {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	u := &User{}
+	if scanErr := tx.QueryRow(ctx,
+		`INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, $4)
+		 RETURNING id, email, password_hash, name, role, totp_secret, totp_verified, recovery_codes, must_setup_2fa, preferred_2fa_method, created_at, updated_at`,
+		email, passwordHash, name, role,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Role, &u.TOTPSecret, &u.TOTPVerified, &u.RecoveryCodes, &u.MustSetup2FA, &u.Preferred2FAMethod, &u.CreatedAt, &u.UpdatedAt); scanErr != nil {
+		return nil, fmt.Errorf("creating user: %w", scanErr)
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE invitations SET status = 'accepted', updated_at = now()
+		 WHERE id = $1 AND status = 'pending'`,
+		invitationID)
+	if err != nil {
+		return nil, fmt.Errorf("marking invitation accepted: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrInvitationNotAcceptable
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, org_id) DO UPDATE SET role = $3`,
+		u.ID, orgID, orgRole); err != nil {
+		return nil, fmt.Errorf("adding org membership: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing accept invite transaction: %w", err)
 	}
 	return u, nil
 }
@@ -666,7 +728,7 @@ func (db *DB) UpdateOrgMemberRoleGuarded(ctx context.Context, userID, orgID, new
 
 	// Demoting to non-owner is the only mutation that can violate
 	// the invariant. Promoting or keeping role='owner' is safe.
-	if newRole != "owner" && len(owners) == 1 && owners[0] == userID {
+	if newRole != OrgRoleOwner && len(owners) == 1 && owners[0] == userID {
 		return ErrLastOwner
 	}
 
