@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html"
 	"html/template"
-	"io/fs"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -298,21 +297,24 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		}
 	}
 
-	// Parse standalone partials (HTMX fragments, no layout)
-	err = filepath.WalkDir(filepath.Join(templatesDir, "components"), func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".html") {
-			return err
+	// Standalone partials (HTMX fragments, no layout) are parsed
+	// once into a shared template set so each partial can reference
+	// sibling components via {{template "other.html" ...}} without
+	// O(N^2) re-parsing at startup. Previously each partial was
+	// parsed in isolation; the comment partial's {{template
+	// "reactions.html" ...}} include then failed at Execute time
+	// with "no such template", and since html/template buffers
+	// output until success, the partial silently emitted nothing —
+	// newly posted comments disappeared until a full page reload
+	// re-rendered them. (#37)
+	if len(componentFiles) > 0 {
+		partialSet, parseErr := template.New("partials").Funcs(funcMap).ParseFiles(componentFiles...)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing component partials: %w", parseErr)
 		}
-		name := "partial:" + filepath.Base(path)
-		t, err := template.New(filepath.Base(path)).Funcs(funcMap).ParseFiles(path)
-		if err != nil {
-			return fmt.Errorf("parsing partial %s: %w", path, err)
+		for _, path := range componentFiles {
+			e.templates["partial:"+filepath.Base(path)] = partialSet
 		}
-		e.templates[name] = t
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	return e, nil
@@ -369,18 +371,24 @@ func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, dat
 }
 
 // RenderPartial renders an HTMX partial (no layout).
+// All partial keys share one template set parsed from the components/
+// directory (see Engine construction), so we execute by base-name
+// rather than relying on the set's default template.
 func (e *Engine) RenderPartial(w http.ResponseWriter, name string, data any) error {
 	key := "partial:" + name
 	t, ok := e.templates[key]
 	if !ok {
-		// Fall back to direct template name
+		// Fall back to direct template name (for tests that register
+		// custom templates outside the components/ walk).
 		t, ok = e.templates[name]
 		if !ok {
 			return fmt.Errorf("partial template %q not found", name)
 		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		return t.Execute(w, data)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return t.Execute(w, data)
+	return t.ExecuteTemplate(w, name, data)
 }
 
 // RenderError renders an error page.

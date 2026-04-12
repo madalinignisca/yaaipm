@@ -570,6 +570,55 @@ func TestCreateComment(t *testing.T) {
 	}
 }
 
+// TestCreateCommentRendersMarkdownInPartial locks in #37: the HTMX
+// partial returned by CreateComment must render markdown through
+// the template's markdown helper (and apply the `prose` class) so
+// a freshly-posted comment looks the same as after a full-page
+// reload. Previously the partial emitted raw BodyMarkdown.
+func TestCreateCommentRendersMarkdownInPartial(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	cookie := createAuthenticatedUser(t, db, sessions, "mdcomment@test.com", "superadmin")
+	ctx := context.Background()
+
+	org, _ := db.CreateOrg(ctx, "MD Org", "md-org")
+	proj, _ := db.CreateProject(ctx, org.ID, "MD Proj", "md-proj")
+	user, _ := db.GetUserByEmail(ctx, "mdcomment@test.com")
+	ticket := &models.Ticket{
+		ProjectID: proj.ID, Type: "task", Title: "MD Task",
+		Status: "backlog", Priority: "medium", CreatedBy: user.ID,
+	}
+	db.CreateTicket(ctx, ticket)
+
+	// Post a comment containing markdown syntax — bold + inline code.
+	form := url.Values{"body": {"This is **bold** and `code`."}}
+	req := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/comments", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	// Markdown renderer should convert ** to <strong> and ` to <code>.
+	if !strings.Contains(body, "<strong>bold</strong>") {
+		t.Errorf("partial did not render bold markdown: %q", body)
+	}
+	if !strings.Contains(body, "<code>code</code>") {
+		t.Errorf("partial did not render inline code markdown: %q", body)
+	}
+	// The prose class should be applied (parity with full page).
+	if !strings.Contains(body, `comment-body prose`) {
+		t.Errorf("partial missing 'prose' class: %q", body)
+	}
+	// The raw, un-rendered markdown should NOT appear in the output.
+	if strings.Contains(body, "**bold**") {
+		t.Errorf("partial emitted raw markdown instead of rendered HTML: %q", body)
+	}
+}
+
 func TestAdminPageSuperadminOnly(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 
