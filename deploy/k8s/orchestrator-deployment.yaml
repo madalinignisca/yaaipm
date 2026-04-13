@@ -22,7 +22,8 @@ spec:
         - name: registry-credentials
       containers:
         - name: orchestrator
-          image: registry.k3s.vlah.sh/smartpm:latest
+          image: registry.k3s.vlah.sh/smartpm:v0.1.0
+          imagePullPolicy: IfNotPresent
           command: ["orchestrator"]
           envFrom:
             - secretRef:
