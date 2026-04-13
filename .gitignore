@@ -6,6 +6,7 @@
 # Go
 /forgedesk
 /orchestrator
+/server
 /vendor/
 
 # Tailwind
@@ -30,3 +31,14 @@ static/js/bundle.js
 # E2E test artifacts
 e2e/test-results/
 e2e/tests/.auth-state.json
+
+# Local agent / tool caches (Claude Code, Playwright MCP, Serena, custom remember)
+.claude/
+.playwright-mcp/
+.remember/
+.serena/
+
+# Working-tree scratch (root-only patterns so nested assets stay tracked)
+/*.png
+/REVIEW-*.md
+/assets/
