@@ -352,7 +352,12 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		SystemPrompt: "", // adapter falls back to embedded prompt
 	})
 	if err != nil {
-		_ = h.db.ClearInFlight(r.Context(), deb.ID)
+		// context.WithoutCancel so a client disconnect between
+		// ReserveInFlight success and this cleanup doesn't leak a
+		// set in_flight_request_id. The stale-recovery window in
+		// ReserveInFlight (StaleReservationAge, 90s) is the
+		// fallback, but eager cleanup avoids that delay entirely.
+		_ = h.db.ClearInFlight(context.WithoutCancel(r.Context()), deb.ID)
 		// Log the detailed error server-side for operator triage;
 		// surface a generic message to the client so we don't leak
 		// API keys, internal paths, or provider response fragments
@@ -366,7 +371,12 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	// Step 4: output validation.
 	text := strings.TrimSpace(out.Text)
 	if text == "" || len(text) < h.cfg.MinOutputLen || out.FinishReason == ai.FinishReasonLength {
-		_ = h.db.ClearInFlight(r.Context(), deb.ID)
+		// context.WithoutCancel so a client disconnect between
+		// ReserveInFlight success and this cleanup doesn't leak a
+		// set in_flight_request_id. The stale-recovery window in
+		// ReserveInFlight (StaleReservationAge, 90s) is the
+		// fallback, but eager cleanup avoids that delay entirely.
+		_ = h.db.ClearInFlight(context.WithoutCancel(r.Context()), deb.ID)
 		http.Error(w, "AI returned invalid or truncated output", http.StatusBadGateway)
 		return
 	}
@@ -387,7 +397,12 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		CostMicros:   out.Usage.CostMicros,
 	}, snapshot)
 	if err != nil {
-		_ = h.db.ClearInFlight(r.Context(), deb.ID)
+		// context.WithoutCancel so a client disconnect between
+		// ReserveInFlight success and this cleanup doesn't leak a
+		// set in_flight_request_id. The stale-recovery window in
+		// ReserveInFlight (StaleReservationAge, 90s) is the
+		// fallback, but eager cleanup avoids that delay entirely.
+		_ = h.db.ClearInFlight(context.WithoutCancel(r.Context()), deb.ID)
 		h.writeInsertError(w, err)
 		return
 	}
