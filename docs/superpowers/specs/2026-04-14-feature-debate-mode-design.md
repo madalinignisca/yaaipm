@@ -46,10 +46,10 @@ New migration `000032_feature_debates.{up,down}.sql`. Two tables:
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | `gen_random_uuid()` |
-| `ticket_id` | UUID FK → tickets | `ON DELETE CASCADE` |
-| `project_id` | UUID FK → projects | Denormalized for query scoping |
-| `org_id` | UUID FK → organizations | Denormalized for tenant scoping |
-| `started_by` | UUID FK → users | Audit: who started the debate |
+| `ticket_id` | UUID FK → tickets(id) | **`ON DELETE CASCADE`** — debates die with their ticket |
+| `project_id` | UUID FK → projects(id) | **`ON DELETE CASCADE`** — denormalized for query scoping; kept in sync only via the initial insert (tickets don't migrate projects) |
+| `org_id` | UUID FK → organizations(id) | **`ON DELETE CASCADE`** — denormalized for tenant scoping |
+| `started_by` | UUID FK → users(id) | **`ON DELETE RESTRICT`** — user records aren't deleted while they own audit history; deletion is blocked until the debate is removed or reassigned by superadmin |
 | `status` | TEXT | `'active' \| 'approved' \| 'abandoned'` |
 | `seed_description` | TEXT | Snapshot at start; frozen after round 1 |
 | `current_text` | TEXT | Latest accepted text; mutated on accept |
@@ -82,7 +82,10 @@ Partial unique index: `idx_feature_debates_one_active_per_ticket ON feature_deba
 | `created_at` | TIMESTAMPTZ | |
 | `decided_at` | TIMESTAMPTZ | Nullable; set on accept/reject |
 
-Unique: `(debate_id, round_number)`. Index: `(debate_id, round_number DESC)`.
+Unique: `(debate_id, round_number)`. Indexes:
+
+- `(debate_id, round_number DESC)` — chronological listing.
+- `(debate_id, status, round_number DESC)` — accelerates the undo recompute path (`WHERE status='accepted' ORDER BY round_number DESC LIMIT 1`) and status-filtered lookups without scanning the full partition.
 
 **Queries added to `internal/models/queries.go`:**
 
@@ -103,13 +106,14 @@ Unique: `(debate_id, round_number)`. Index: `(debate_id, round_number DESC)`.
 
 | Invariant | Where enforced |
 |---|---|
-| At most one active debate per ticket | Partial unique index |
-| Round numbers monotonic per debate | `UNIQUE (debate_id, round_number)` + handler assigns `max+1` in tx |
+| At most one active debate per ticket | Partial unique index + `INSERT ... ON CONFLICT (ticket_id) WHERE status='active' DO NOTHING RETURNING *` in `StartDebate`; on empty result, re-`SELECT` the existing active row and return it idempotently. Handler-level 409 is reserved for the "ticket not feature" case only. |
+| Round numbers monotonic per debate | `UNIQUE (debate_id, round_number)` + handler assigns `max+1` inside the same tx that holds `SELECT ... FOR UPDATE` on the debate row |
 | Seed immutable after round 1 | Handler rejects 400 on edit-seed if `len(rounds) > 0` |
-| Cascading undo | `DELETE FROM feature_debate_rounds WHERE debate_id = $1 AND round_number >= $2` inside tx |
-| Ticket description frozen during active debate | `UpdateTicket` handler calls `IsDebateActive`, returns 409 if true |
-| Per-feature round cap (clients only) | Handler counts rounds, rejects with 429 if over cap |
+| Cascading undo | Tx: `SELECT * FROM feature_debates WHERE id=$1 FOR UPDATE` → `DELETE FROM feature_debate_rounds WHERE debate_id=$1 AND round_number >= $2` → recompute + UPDATE debate |
+| Ticket description frozen during active debate | `UpdateTicket` handler calls `IsDebateActive`, returns 409 if true. Handler is the **single write path** to `description_markdown` — any bypass (direct SQL, future import handler, etc.) is a bug and must route through this guard. |
+| Per-feature round cap (clients only) | Handler counts rounds inside the tx that holds the debate lock, rejects with 429 if over cap — count is re-read under lock to prevent TOCTOU |
 | Feature-only (v1) | Handler-side check on `ticket.type`; DB stub `CHECK(true)` placeholder for future relaxation |
+| Debate has exactly one terminal state | Every state-changing tx starts with `SELECT status FROM feature_debates WHERE id=$1 FOR UPDATE` and rejects with 409 if `status != 'active'`. Approve and Abandon cannot both succeed on the same debate. |
 
 ### 3.2 Provider abstraction (`internal/ai/`)
 
@@ -197,9 +201,26 @@ type DebateConfig struct {
 
 Every endpoint starts with `requireDebateContext` which validates tenant, fetches the ticket via a new tenant-scoped query `GetTicketForOrg(ctx, ticketID, orgID)`, rejects non-feature tickets with 400.
 
-**Error discipline:** distinct branches for `ErrNotFound (404)`, `ErrNotFeature (400)`, `ErrRoundCap (429)`, `ErrConflict (409)`, provider errors (502), generic (500). Never collapsed.
+**Error discipline:** distinct branches — never collapsed. Table:
 
-**Concurrency:** accept/reject/undo run inside a transaction with `SELECT ... FOR UPDATE` on the target round row to serialize parallel clicks.
+| Condition | Status | Notes |
+|---|---|---|
+| Ticket not found / wrong tenant | `404` | Generic body; no enumeration hints |
+| Ticket exists but `type != 'feature'` | `400` | "debate is for features only" |
+| Unknown provider name in form | `400` | |
+| Provider key missing at startup | `503` | Provider button still renders; POST fails loudly |
+| Feedback or text over length cap | `413` | |
+| Round cap reached (clients) | `429` | Staff/superadmin bypass |
+| Debate not in `active` status (approve/abandon/accept/reject/undo/create-round) | `409` | Terminal-state guard |
+| In-review round already exists (create-round) | `409` | "accept or reject the current round first" |
+| Feature has no active debate (rounds endpoint) | `400` | "no active debate — call /start first" |
+| `UpdateTicket` while active debate exists | `409` | "debate in progress — finish or abandon to edit directly" |
+| AI call failed (timeout, 5xx, parse error) | `502` | Truncated upstream error surfaced for staff; generic for clients |
+| Any other DB error | `500` | Logged at ERROR |
+
+**Concurrency model — debate-level locking.** Every state-changing transaction on a debate (`CreateRound`, `AcceptRound`, `RejectRound`, `UndoRoundsFrom`, `ApproveDebate`, `AbandonDebate`) starts with `SELECT * FROM feature_debates WHERE id=$1 FOR UPDATE` as its first statement. This serializes **all** debate mutations on the parent row, not just on individual rounds — which is what the "one in-review round at a time", "undo cascades cleanly", and "approve ⊕ abandon are mutually exclusive" invariants require. A round-level `FOR UPDATE` alone is insufficient because undo spans multiple rounds and approve/abandon are exclusive debate-level outcomes.
+
+Read-only endpoints (GET debate page, GET round partials) use plain `SELECT` and tolerate momentarily-stale reads.
 
 **UI templates:**
 
@@ -229,7 +250,19 @@ Every endpoint starts with `requireDebateContext` which validates tenant, fetche
 
 ### 4.1 Start debate
 
-User on feature ticket → clicks "Debate this feature" → `GET /debate` → handler checks for active debate; if none, creates one seeded from `tickets.description_markdown` → page renders with empty rounds list and seed-editable card.
+User on feature ticket → clicks "Debate this feature" → `GET /debate` → handler's `StartDebate` runs:
+
+```sql
+INSERT INTO feature_debates (ticket_id, project_id, org_id, started_by, status,
+                             seed_description, current_text)
+VALUES ($1, $2, $3, $4, 'active', $5, $5)
+ON CONFLICT (ticket_id) WHERE status = 'active' DO NOTHING
+RETURNING *;
+```
+
+If `RETURNING` yields a row, this is a fresh debate. If it yields nothing, a concurrent request won the insert — re-`SELECT * FROM feature_debates WHERE ticket_id=$1 AND status='active' LIMIT 1` and return that row idempotently. Handler never raises a 409 for this case; the partial unique index is for integrity, not user-facing error signaling.
+
+Page renders with empty rounds list and seed-editable card.
 
 ### 4.2 Round lifecycle
 
@@ -243,29 +276,50 @@ User on feature ticket → clicks "Debate this feature" → `GET /debate` → ha
 ### 4.3 Accept
 
 1. `POST /rounds/:rid/accept`.
-2. Tx: `UPDATE round SET status='accepted', decided_at=now()`; `UPDATE debate SET current_text=round.output_text`.
-3. Call `Scorer.Score(ctx, newCurrentText)` with 60s timeout.
-4. If scorer succeeds: `UPDATE debate SET effort_score, effort_hours, effort_reasoning, effort_scored_at`.
-5. If scorer fails: log, leave previous effort_* values, don't block the accept.
-6. Return `debate_round.html` (accepted state) + OOB `debate_sidebar.html`.
+2. Open tx. **First statement: `SELECT status FROM feature_debates WHERE id=$1 FOR UPDATE`.** If `status != 'active'` → commit & return 409.
+3. `SELECT status FROM feature_debate_rounds WHERE id=:rid FOR UPDATE` — if round not found (raced with undo) → 404; if status already `accepted`/`rejected` → 409.
+4. `UPDATE feature_debate_rounds SET status='accepted', decided_at=now() WHERE id=:rid`.
+5. `UPDATE feature_debates SET current_text=round.output_text, updated_at=now() WHERE id=:debate_id`.
+6. Commit tx. Release debate lock.
+7. Call `Scorer.Score(ctx, newCurrentText)` with 60s timeout (outside the tx — scoring should not hold locks).
+8. If scorer succeeds: open a short tx, re-`SELECT ... FOR UPDATE` debate, update `effort_score/hours/reasoning/effort_scored_at`. If debate's status is no longer `active` (e.g. approved/abandoned meanwhile), silently skip the update — the score would be stale anyway.
+9. If scorer fails: log at WARN with `{debate_id, round_id, provider, error}`; leave previous effort_* values untouched; accept still succeeded.
+10. Return `debate_round.html` (accepted state) + OOB `debate_sidebar.html`.
+
+**Rationale for step 6 commit before scoring:** scoring takes 2–10 seconds. Holding `FOR UPDATE` on the debate row across an AI call would serialize all parallel clicks on the page and could deadlock with reject/undo requests. Releasing the lock before the scorer call is the right tradeoff — the score is informational, not transactional.
 
 ### 4.4 Undo
 
 1. User clicks "Undo this round" on accepted round N.
 2. `POST /undo?from=N`.
-3. Tx: delete rounds where `round_number >= N`; recompute `current_text` by selecting the `output_text` of the remaining round with the largest `round_number` **whose `status = 'accepted'`** — if no accepted rounds remain, fall back to `seed_description`. Rejected rounds are ignored in this selection because they never modified `current_text` in the first place. Reset `effort_*` fields to NULL (they will be rescored on the next accept).
+3. Open tx. **First statement: `SELECT status FROM feature_debates WHERE id=:debate_id FOR UPDATE`.** If `status != 'active'` → commit & return 409.
+4. `DELETE FROM feature_debate_rounds WHERE debate_id=:debate_id AND round_number >= :N`.
+5. Recompute `current_text` by selecting `output_text` from the remaining round with the largest `round_number` **whose `status='accepted'`** — if no accepted rounds remain, fall back to `seed_description`. Rejected rounds are ignored in this selection because they never modified `current_text`.
+6. **In the same UPDATE:** reset `effort_score`, `effort_hours`, `effort_reasoning`, `effort_scored_at` to NULL alongside `current_text`. Rescoring happens on the next accept.
+7. Commit tx.
+
+The debate-level `FOR UPDATE` in step 3 prevents any concurrent `AcceptRound` from writing to a row this delete is about to remove. A concurrent accept would block waiting for the lock, see the round deleted when it finally acquires the lock, and fail cleanly with "round not found" (404) — the user sees a stale-state error and reloads.
 4. Return full `#rounds` re-render + OOB sidebar.
 
 ### 4.5 Approve
 
 1. `POST /approve`.
-2. Tx: `UPDATE tickets SET description_markdown = debate.current_text`; `UPDATE debate SET status='approved', approved_text=current_text`.
-3. Response: `HX-Redirect: /projects/:pid/tickets/:tid`.
+2. Open tx. **First: `SELECT status, current_text FROM feature_debates WHERE id=:debate_id FOR UPDATE`.** If `status != 'active'` → commit & return 409 (another request already approved or abandoned).
+3. `UPDATE tickets SET description_markdown = :current_text, updated_at=now() WHERE id=:ticket_id`.
+4. `UPDATE feature_debates SET status='approved', approved_text=:current_text, updated_at=now() WHERE id=:debate_id`.
+5. Commit tx.
+6. Response: `HX-Redirect: /projects/:pid/tickets/:tid`.
+
+Once approved, the debate row is immutable for everything except `updated_at`. `approved_text` is frozen. The `UpdateTicket` handler's `IsDebateActive` guard now returns false, so the ticket's description can be edited directly again.
 
 ### 4.6 Abandon
 
 1. `POST /abandon` (guarded by `hx-confirm`).
-2. `UPDATE debate SET status='abandoned'`. Description untouched. Ticket becomes editable again (no active debate → `UpdateTicket` guard lifts).
+2. Open tx. **First: `SELECT status FROM feature_debates WHERE id=:debate_id FOR UPDATE`.** If `status != 'active'` → commit & return 409.
+3. `UPDATE feature_debates SET status='abandoned', updated_at=now() WHERE id=:debate_id`.
+4. Commit tx.
+
+Description untouched. Ticket becomes editable again. Approve and Abandon are mutually exclusive — the second caller always gets 409 because the first caller flipped the status under the shared debate lock.
 
 ## 5. Security considerations
 
@@ -300,13 +354,30 @@ User on feature ticket → clicks "Debate this feature" → `GET /debate` → ha
 
 ### 7.3 Regression tests (explicit cases)
 
+**Tenant & validation:**
 - `TestCreateRound_RejectsCrossOrgTicket` — user in org A cannot POST against a feature in org B; body contains no enumeration-revealing text.
 - `TestCreateRound_RejectsNonFeatureTicket` — debate on `type='bug'` → 400.
-- `TestAcceptRound_ScorerFailureStillAccepts` — scorer errors; round still accepts; effort_* unchanged.
-- `TestUndoRound_CascadesLaterRounds` — accept 3 rounds, undo from 2, assert rounds 2/3 gone and `current_text == round_1.output_text`.
+
+**Round cap & roles:**
 - `TestClientRoundCap_EnforcedAt10` — 11th round from client → 429.
 - `TestStaffBypassesCap` — same scenario, staff → 11th succeeds.
-- `TestConcurrentAcceptsOnSameRound` — two goroutines accept; exactly one wins, other 409.
+- `TestUndoFreesCapSlot` — client hits cap at 10, undoes round 10, count drops to 9, next round accepted.
+
+**Scorer resilience:**
+- `TestAcceptRound_ScorerFailureStillAccepts` — scorer errors; round still accepts; `effort_*` unchanged.
+- `TestAcceptRound_ScorerSucceedsAfterDebateTerminal` — scorer call completes after the debate was abandoned mid-flight; subsequent score-update skips silently (no update applied).
+
+**Undo correctness:**
+- `TestUndoRound_CascadesLaterRounds` — accept 3 rounds, undo from 2, assert rounds 2/3 gone and `current_text == round_1.output_text`.
+- `TestUndoAllRounds_FallsBackToSeed` — accept 2 rounds, undo from 1, `current_text == seed_description` and all `effort_*` NULL.
+- `TestUndoWithMixedAcceptedAndRejected` — round 1 accepted, round 2 rejected, round 3 accepted; undo from 3 — `current_text == round_1.output_text` (rejected round 2 ignored).
+- `TestUndo_ClearsEffortFields` — accept a round (effort_* populated), undo it, assert all four `effort_*` columns are NULL.
+
+**Concurrency (all require real Postgres):**
+- `TestConcurrentStartDebate_Idempotent` — fire two `StartDebate` goroutines on same ticket; both return the same debate row with `status='active'`; exactly one row exists in DB.
+- `TestConcurrentAcceptsOnSameRound` — two goroutines accept same in-review round; exactly one 200, other 409.
+- `TestConcurrentAcceptAndUndo_Serialized` — one goroutine accepts round 3 while another undoes from round 2; exactly one completes successfully — if undo wins, accept returns 404 (round deleted); if accept wins, undo sees the newly-accepted round and still cascades it away.
+- `TestConcurrentApproveAndAbandon_MutuallyExclusive` — fire both at the same debate; one returns 200 with its terminal status, other returns 409; DB shows a single terminal status (approved XOR abandoned).
 - `TestDescriptionEditLockedDuringActiveDebate` — `UpdateTicket` on feature with active debate → 409.
 
 ### 7.4 E2E (Playwright)
@@ -338,7 +409,8 @@ User on feature ticket → clicks "Debate this feature" → `GET /debate` → ha
 - B. Per-org monthly $ budget with enforcement
 - C. Feedback textarea auto-save to localStorage
 - D. Inline edit of accepted AI output before accept
-- E. Live-API integration test suite behind build tag
+- E1. Live-API integration test suite behind `//go:build integration_ai`
+- E2. Background retry of failed scorer calls for debates where `effort_*` has been NULL for >5 minutes since last accept
 
 ## 9. New external dependencies
 
