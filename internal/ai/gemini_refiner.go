@@ -84,9 +84,13 @@ func (r *GeminiRefiner) Refine(ctx context.Context, in RefineInput) (RefineOutpu
 	}, nil
 }
 
-// extractGeminiText walks the first candidate's Content.Parts and joins
-// text segments. Gemini can return multi-part responses (text +
-// function_call + text); only the text parts are relevant for debate.
+// extractGeminiText walks the first candidate's Content.Parts and
+// concatenates text segments. Parts from Gemini are contiguous chunks
+// of the same response (especially during long outputs), not separate
+// logical lines — joining with "" instead of "\n" preserves the
+// original text integrity. Critical for the scorer: a JSON response
+// split across parts would break json.Unmarshal if we inserted
+// newlines inside a string value.
 func extractGeminiText(resp *genai.GenerateContentResponse) string {
 	if resp == nil || len(resp.Candidates) == 0 {
 		return ""
@@ -104,7 +108,7 @@ func extractGeminiText(resp *genai.GenerateContentResponse) string {
 			parts = append(parts, p.Text)
 		}
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "")
 }
 
 // mapGeminiFinishReason normalizes Gemini's FinishReason enum to the

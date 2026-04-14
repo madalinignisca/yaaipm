@@ -86,7 +86,10 @@ func TestExtractGeminiText_NilAndEmptyShapes(t *testing.T) {
 	}
 
 	// Multi-part with a nil part + function call + text (function_call has no
-	// Text field so it contributes nothing; nil parts are skipped).
+	// Text field so it contributes nothing; nil parts are skipped). Parts
+	// are concatenated with "" (empty separator) — Gemini returns them as
+	// contiguous chunks of one response, not as separate lines; inserting
+	// newlines would break JSON parsing for the scorer use case.
 	multi := &genai.GenerateContentResponse{
 		Candidates: []*genai.Candidate{
 			{Content: &genai.Content{Parts: []*genai.Part{
@@ -96,7 +99,24 @@ func TestExtractGeminiText_NilAndEmptyShapes(t *testing.T) {
 			}}},
 		},
 	}
-	if got := extractGeminiText(multi); got != "one\ntwo" {
-		t.Errorf("multi-part → %q, want 'one\\ntwo'", got)
+	if got := extractGeminiText(multi); got != "onetwo" {
+		t.Errorf("multi-part → %q, want 'onetwo'", got)
+	}
+
+	// Specific regression for the scorer JSON-split case: if Gemini splits
+	// a JSON payload across parts inside a string value, concatenating with
+	// "" preserves it as valid JSON; concatenating with "\n" would insert
+	// an unescaped newline mid-string and break json.Unmarshal.
+	jsonSplit := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{
+			{Content: &genai.Content{Parts: []*genai.Part{
+				{Text: `{"score": 7, "hours": 20, "reasoning": "needs sub`},
+				{Text: `tasks from start"}`},
+			}}},
+		},
+	}
+	got := extractGeminiText(jsonSplit)
+	if got != `{"score": 7, "hours": 20, "reasoning": "needs subtasks from start"}` {
+		t.Errorf("json-split → %q (would break json.Unmarshal)", got)
 	}
 }
