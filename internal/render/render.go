@@ -257,12 +257,8 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 			return *p
 		},
-		"derefString": func(p *string) string {
-			if p == nil {
-				return ""
-			}
-			return *p
-		},
+		// derefString omitted — the existing derefStr helper (line 187)
+		// already covers this case; debate_sidebar.html uses derefStr.
 		// relTime renders a nullable *time.Time as "just now" / "5m ago"
 		// / "2h ago" / "3d ago" for the sidebar's "last scored"
 		// indicator. Returns an em-dash for nil so the template can

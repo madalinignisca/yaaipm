@@ -12,7 +12,7 @@
       {{if eq $bucket "high"}}Consider splitting into multiple features{{end}}
     </div>
 
-    <div class="effort-bar-vertical" title="{{derefString .EffortReasoning}}">
+    <div class="effort-bar-vertical" title="{{derefStr .EffortReasoning}}">
       <div class="effort-pointer"
            style="bottom: calc({{mul $score 10}}% - 2px)"></div>
     </div>

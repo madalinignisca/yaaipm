@@ -417,7 +417,14 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		log.Printf("debate CreateRound: project_costs rollup failed for debate %s: %v", deb.ID, err)
 	}
 
-	_ = h.engine.RenderPartial(w, "debate_round.html", round)
+	// Template expects {Round, TicketID} so the partial can build form
+	// action URLs scoped to the current ticket. Passing a bare round
+	// would leave .Round and $.TicketID undefined and silently break
+	// the Accept/Reject buttons.
+	_ = h.engine.RenderPartial(w, "debate_round.html", map[string]any{
+		"Round":    round,
+		"TicketID": dctx.ticket.ID,
+	})
 }
 
 // reserveInFlight wraps the reservation-tx boilerplate. Returns
@@ -549,7 +556,12 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 			deb.ID, round.ID, dctx.ticket.ProjectID, round.OutputText)
 	}
 
-	_ = h.engine.RenderPartial(w, "debate_round.html", round)
+	// Wrap the round in {Round, TicketID} so the partial can build
+	// scoped action URLs (Undo button on the now-accepted card).
+	_ = h.engine.RenderPartial(w, "debate_round.html", map[string]any{
+		"Round":    round,
+		"TicketID": dctx.ticket.ID,
+	})
 }
 
 // acceptRoundUnderLock runs the accept transaction: lock debate row,
@@ -702,9 +714,14 @@ func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// debate_next_round.html builds form action URLs from .TicketID,
+	// so we must include it in the data map. Without TicketID the
+	// partial would post to /tickets//debate/... (empty path
+	// segment), breaking the next-round and Approve-Final actions.
 	_ = h.engine.RenderPartial(w, "debate_next_round.html", map[string]any{
 		"Debate":    deb,
 		"Providers": h.providerNames(),
+		"TicketID":  dctx.ticket.ID,
 	})
 }
 

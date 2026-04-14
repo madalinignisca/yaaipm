@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -360,29 +361,35 @@ func main() {
 	log.Println("Server stopped")
 }
 
-// isLocalDebateEnv returns true iff the BaseURL looks like a local
-// development or test origin — the only contexts where
-// DEBATE_REFINER_MODE=fake is acceptable. Prod-like URLs (anything
-// with a real TLD, remote IP, or TLS) fall through to false.
+// isLocalDebateEnv returns true iff the BaseURL parses to a hostname
+// that's either an IPv4/IPv6 loopback address OR ends with one of the
+// reserved local TLDs (.local, .test). Uses url.Parse + strings.HasSuffix
+// rather than substring matching so a URL like
+// https://localhost.example.com or https://speed-test.net doesn't
+// accidentally bypass the production safety guard.
 //
-// Conservative allowlist: accepts scheme+host combinations whose
-// hostname resolves to localhost, 127.0.0.1, ::1, or ends with
-// .local/.test. Anything else — including plain hostnames, LAN IPs,
-// and public domains — is rejected so a misconfigured prod env var
-// can't accidentally serve fake AI output to real users.
+// Anything else — including plain hostnames, LAN IPs, public domains,
+// and unparseable URLs — is rejected so a misconfigured prod env can't
+// silently serve fake AI output to real users.
 func isLocalDebateEnv(baseURL string) bool {
-	lower := strings.ToLower(baseURL)
-	allowedHosts := []string{
-		"://localhost",
-		"://127.0.0.1",
-		"://[::1]",
-		".local",
-		".test",
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
 	}
-	for _, h := range allowedHosts {
-		if strings.Contains(lower, h) {
-			return true
-		}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	// Loopback exact matches.
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	// Reserved local TLDs (RFC 6761 / mDNS) — must be a SUFFIX
+	// preceded by a dot, not a substring. Prevents
+	// "localhost.example.com" or "speed-test.net" from matching.
+	if strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".test") {
+		return true
 	}
 	return false
 }
