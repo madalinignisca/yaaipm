@@ -1965,3 +1965,154 @@ func (db *DB) GetTOTPLastUsed(ctx context.Context, userID string) (*time.Time, e
 	}
 	return lastUsed, nil
 }
+
+// ── Feature Debates ───────────────────────────────────────────────
+
+// featureDebateColumns lists the column order used by every SELECT / RETURNING
+// clause in the debate queries. Keeping it in one place prevents drift across
+// the many scan targets below.
+const featureDebateColumns = `id, ticket_id, project_id, org_id, started_by, status,
+	seed_description, current_text, original_ticket_description,
+	in_flight_request_id, in_flight_started_at, total_cost_micros,
+	effort_score, effort_hours, effort_reasoning, effort_scored_at,
+	last_scored_round_id, approved_text, created_at, updated_at`
+
+// scanFeatureDebate reads one row from a pgx.Row or pgx.Rows into a *FeatureDebate.
+type featureDebateScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanFeatureDebate(row featureDebateScanner, deb *FeatureDebate) error {
+	return row.Scan(
+		&deb.ID, &deb.TicketID, &deb.ProjectID, &deb.OrgID, &deb.StartedBy, &deb.Status,
+		&deb.SeedDescription, &deb.CurrentText, &deb.OriginalTicketDescription,
+		&deb.InFlightRequestID, &deb.InFlightStartedAt, &deb.TotalCostMicros,
+		&deb.EffortScore, &deb.EffortHours, &deb.EffortReasoning, &deb.EffortScoredAt,
+		&deb.LastScoredRoundID, &deb.ApprovedText, &deb.CreatedAt, &deb.UpdatedAt,
+	)
+}
+
+// StartDebate creates an active debate for the given ticket, or returns the
+// existing one if another request already created it. Idempotent under
+// concurrent calls (ON CONFLICT DO NOTHING + fallback SELECT). Spec §4.1.
+func (db *DB) StartDebate(ctx context.Context, ticketID, projectID, orgID, userID string) (*FeatureDebate, error) {
+	var desc string
+	if err := db.Pool.QueryRow(ctx,
+		`SELECT description_markdown FROM tickets WHERE id = $1`, ticketID,
+	).Scan(&desc); err != nil {
+		return nil, fmt.Errorf("loading ticket description: %w", err)
+	}
+
+	deb := &FeatureDebate{}
+	err := scanFeatureDebate(db.Pool.QueryRow(ctx,
+		`INSERT INTO feature_debates (
+			ticket_id, project_id, org_id, started_by, status,
+			seed_description, current_text, original_ticket_description,
+			total_cost_micros
+		) VALUES ($1, $2, $3, $4, 'active', $5, $5, $5, 0)
+		ON CONFLICT (ticket_id) WHERE status = 'active' DO NOTHING
+		RETURNING `+featureDebateColumns,
+		ticketID, projectID, orgID, userID, desc,
+	), deb)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Concurrent INSERT lost the race; return the existing active row.
+		return db.GetActiveDebate(ctx, ticketID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inserting feature_debate: %w", err)
+	}
+	return deb, nil
+}
+
+// GetActiveDebate returns the single active debate for a ticket, or pgx.ErrNoRows.
+func (db *DB) GetActiveDebate(ctx context.Context, ticketID string) (*FeatureDebate, error) {
+	deb := &FeatureDebate{}
+	err := scanFeatureDebate(db.Pool.QueryRow(ctx,
+		`SELECT `+featureDebateColumns+` FROM feature_debates
+		  WHERE ticket_id = $1 AND status = 'active' LIMIT 1`,
+		ticketID,
+	), deb)
+	if err != nil {
+		return nil, err
+	}
+	return deb, nil
+}
+
+// GetDebateByID returns a debate by id regardless of status.
+func (db *DB) GetDebateByID(ctx context.Context, debateID string) (*FeatureDebate, error) {
+	deb := &FeatureDebate{}
+	err := scanFeatureDebate(db.Pool.QueryRow(ctx,
+		`SELECT `+featureDebateColumns+` FROM feature_debates WHERE id = $1`,
+		debateID,
+	), deb)
+	if err != nil {
+		return nil, err
+	}
+	return deb, nil
+}
+
+// IsDebateActive returns true if any debate is active for the given ticket.
+// Used by UpdateTicketDescription guard (Task 9).
+func (db *DB) IsDebateActive(ctx context.Context, ticketID string) (bool, error) {
+	var exists bool
+	err := db.Pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM feature_debates
+		  WHERE ticket_id = $1 AND status = 'active')`,
+		ticketID,
+	).Scan(&exists)
+	return exists, err
+}
+
+// GetDebateRounds returns rounds for a debate in round_number ASC order.
+func (db *DB) GetDebateRounds(ctx context.Context, debateID string) ([]DebateRound, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, debate_id, round_number, provider, model, triggered_by,
+		       feedback, input_text, output_text, diff_unified, status,
+		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
+		       created_at, decided_at
+		  FROM feature_debate_rounds
+		 WHERE debate_id = $1
+		 ORDER BY round_number ASC`, debateID)
+	if err != nil {
+		return nil, fmt.Errorf("listing debate rounds: %w", err)
+	}
+	defer rows.Close()
+	var out []DebateRound
+	for rows.Next() {
+		var r DebateRound
+		if err := rows.Scan(
+			&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
+			&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+			&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
+			&r.CreatedAt, &r.DecidedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning debate round: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CountUserRoundsLast24h returns the count of rounds triggered by the given
+// user within the last 24 hours. Backs the per-user daily safety fuse (spec §6).
+func (db *DB) CountUserRoundsLast24h(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM feature_debate_rounds
+		  WHERE triggered_by = $1 AND created_at >= now() - INTERVAL '24 hours'`,
+		userID,
+	).Scan(&n)
+	return n, err
+}
+
+// CountActiveRoundsForDebate returns the count of in_review + accepted rounds
+// for a debate. Rejected rounds don't count toward the per-feature cap.
+func (db *DB) CountActiveRoundsForDebate(ctx context.Context, debateID string) (int, error) {
+	var n int
+	err := db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM feature_debate_rounds
+		  WHERE debate_id = $1 AND status IN ('in_review','accepted')`,
+		debateID,
+	).Scan(&n)
+	return n, err
+}
