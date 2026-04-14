@@ -1128,14 +1128,206 @@ func (db *DB) UpdateTicketAgentMode(ctx context.Context, id string, mode, agent 
 	return nil
 }
 
+// UpdateTicket updates a ticket's title, description, priority,
+// dates, and assignee in a single statement. If a debate is active
+// for this ticket AND the new description differs from the stored
+// description, returns ErrDescriptionLocked — preventing debate-
+// guarded overwrites regardless of which caller (HTTP handler or
+// AI assistant tool) tries to bypass the lockout.
+//
+// The guard lives in the model layer so every caller gets it for
+// free; spec §3.3 "single write path" invariant. For callers that
+// explicitly need to update metadata-only (title/priority/dates)
+// during an active debate, use UpdateTicketMetadata which skips
+// description and skips the guard.
 func (db *DB) UpdateTicket(ctx context.Context, t *Ticket) error {
-	_, err := db.Pool.Exec(ctx,
-		`UPDATE tickets SET title = $1, description_markdown = $2, priority = $3, date_start = $4, date_end = $5, assigned_to = $6, updated_at = now() WHERE id = $7`,
+	// Atomic guard via conditional WHERE: the update applies only when
+	// the new description matches the stored one (metadata-only case),
+	// or when no active debate exists for this ticket. A debate
+	// starting between check and write cannot slip an overwrite
+	// through — the subquery is evaluated inside the same statement.
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE tickets
+		   SET title = $1, description_markdown = $2, priority = $3,
+		       date_start = $4, date_end = $5, assigned_to = $6,
+		       updated_at = now()
+		 WHERE id = $7
+		   AND (
+		         description_markdown = $2
+		         OR NOT EXISTS (
+		            SELECT 1 FROM feature_debates
+		             WHERE ticket_id = $7 AND status = 'active'
+		         )
+		       )`,
 		t.Title, t.DescriptionMarkdown, t.Priority, t.DateStart, t.DateEnd, t.AssignedTo, t.ID)
 	if err != nil {
 		return fmt.Errorf("updating ticket: %w", err)
 	}
+	if tag.RowsAffected() == 0 {
+		// Either the ticket doesn't exist or the guard blocked the
+		// update. Distinguish by existence check so callers get the
+		// right sentinel.
+		var exists bool
+		if qErr := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tickets WHERE id = $1)`, t.ID,
+		).Scan(&exists); qErr != nil {
+			return fmt.Errorf("post-guard existence check: %w", qErr)
+		}
+		if !exists {
+			return pgx.ErrNoRows
+		}
+		return ErrDescriptionLocked
+	}
 	return nil
+}
+
+// UpdateTicketMetadata updates everything EXCEPT description_markdown.
+// No debate guard — title, priority, dates, and assignee remain
+// editable while a debate is active.
+func (db *DB) UpdateTicketMetadata(ctx context.Context, id, title, priority string, dateStart, dateEnd *time.Time, assignedTo *string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE tickets
+		    SET title = $1, priority = $2, date_start = $3, date_end = $4,
+		        assigned_to = $5, updated_at = now()
+		  WHERE id = $6`,
+		title, priority, dateStart, dateEnd, assignedTo, id)
+	if err != nil {
+		return fmt.Errorf("updating ticket metadata: %w", err)
+	}
+	return nil
+}
+
+// UpdateTicketDescription updates description_markdown ONLY, with the
+// model-layer debate-active guard. Returns ErrDescriptionLocked if a
+// debate is currently active for the ticket. Callers (HTTP handler,
+// AI assistant tool, future paths) MUST use this method for
+// description changes so the guard is never bypassed.
+func (db *DB) UpdateTicketDescription(ctx context.Context, id, newMarkdown string) error {
+	// Atomic guard via NOT EXISTS subquery in the UPDATE. No TOCTOU
+	// window — a debate starting between a check and this call can't
+	// slip an overwrite through because the subquery is part of the
+	// same statement.
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE tickets
+		   SET description_markdown = $1, updated_at = now()
+		 WHERE id = $2
+		   AND NOT EXISTS (
+		     SELECT 1 FROM feature_debates
+		      WHERE ticket_id = $2 AND status = 'active'
+		   )`, newMarkdown, id)
+	if err != nil {
+		return fmt.Errorf("updating ticket description: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if qErr := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tickets WHERE id = $1)`, id,
+		).Scan(&exists); qErr != nil {
+			return fmt.Errorf("post-guard existence check: %w", qErr)
+		}
+		if !exists {
+			return pgx.ErrNoRows
+		}
+		return ErrDescriptionLocked
+	}
+	return nil
+}
+
+// ApproveDebateTx writes the debate's current_text to the ticket's
+// description_markdown and transitions the debate to 'approved'.
+// Enforces two invariants under the caller's debate-row lock:
+//   - Debate must be status='active' (ErrDebateNotActive otherwise —
+//     terminal states can't be re-approved or flipped from abandoned).
+//   - tickets.description_markdown must equal the snapshot taken at
+//     StartDebate (original_ticket_description). If another code path
+//     edited the description out-of-band (e.g., a v0.1.0 pod during
+//     a rolling upgrade, before the IsDebateActive guard was in
+//     place), we refuse rather than silently overwrite. CAS failure
+//     maps to 409 at the handler so the user is told to Abandon
+//     the debate and manually reconcile.
+//
+// Caller MUST have opened the tx and already locked the debate row.
+var ErrExternalDescriptionEdit = errors.New("ticket description edited externally since debate started")
+
+func (db *DB) ApproveDebateTx(ctx context.Context, tx pgx.Tx, debateID, ticketID string) error {
+	// Single combined query locks BOTH the debate row and the ticket
+	// row atomically, not sequentially, and removes one round-trip
+	// from the success path. If no debate row matches (wrong id or
+	// wrong ticket_id pairing), pgx.ErrNoRows surfaces to the caller
+	// which maps it to 404/409 as appropriate.
+	var (
+		status       string
+		currentText  string
+		originalDesc string
+		ticketDesc   string
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT fd.status, fd.current_text, fd.original_ticket_description,
+		       t.description_markdown
+		  FROM feature_debates fd
+		  JOIN tickets t ON t.id = fd.ticket_id
+		 WHERE fd.id = $1 AND fd.ticket_id = $2
+		 FOR UPDATE`, debateID, ticketID,
+	).Scan(&status, &currentText, &originalDesc, &ticketDesc)
+	if err != nil {
+		return err
+	}
+	if status != DebateStatusActive {
+		return ErrDebateNotActive
+	}
+	if ticketDesc != originalDesc {
+		return ErrExternalDescriptionEdit
+	}
+
+	if _, uErr := tx.Exec(ctx,
+		`UPDATE tickets SET description_markdown = $1, updated_at = now() WHERE id = $2`,
+		currentText, ticketID,
+	); uErr != nil {
+		return uErr
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET status = 'approved', approved_text = $1, updated_at = now()
+		 WHERE id = $2`, currentText, debateID,
+	)
+	return err
+}
+
+// AbandonDebateTx marks the debate as abandoned and force-clears any
+// lingering in_flight_request_id so the user can always unlock the
+// description even if a previous CreateRound crashed mid-AI-call.
+// The ticket's description is left untouched.
+//
+// Caller MUST have opened the tx and already locked the debate row.
+func (db *DB) AbandonDebateTx(ctx context.Context, tx pgx.Tx, debateID string) error {
+	// Atomic UPDATE with the status filter directly in WHERE. Common
+	// success path is a single statement instead of SELECT-then-UPDATE.
+	// RowsAffected==0 means either the debate is missing or terminal —
+	// one disambiguating SELECT yields the right sentinel.
+	tag, err := tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET status = 'abandoned',
+		       in_flight_request_id = NULL,
+		       in_flight_started_at = NULL,
+		       updated_at = now()
+		 WHERE id = $1 AND status = 'active'`, debateID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var exists bool
+	if qErr := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM feature_debates WHERE id = $1)`, debateID,
+	).Scan(&exists); qErr != nil {
+		return qErr
+	}
+	if !exists {
+		return pgx.ErrNoRows
+	}
+	return ErrDebateNotActive
 }
 
 // ListAgentReady returns tickets that are ready for agent processing.

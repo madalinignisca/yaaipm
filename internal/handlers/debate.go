@@ -779,6 +779,140 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusSeeOther)
 }
 
+// ── POST /tickets/{ticketID}/debate/approve ──────────────────────
+
+// ApproveDebate writes the debate's current_text to the ticket's
+// description_markdown and marks the debate 'approved'. Guarded by
+// the spec §4.5 compare-and-swap: if the ticket's description no
+// longer equals original_ticket_description (caught for example when
+// a v0.1.0 pod edits it during a rolling upgrade before this PR
+// landed), the approve refuses with 409 so the user is told to
+// Abandon and manually reconcile.
+//
+// On success returns Hx-Redirect to the ticket detail page — the
+// debate is now terminal, the debate page's GET handler would show
+// an empty-state anyway.
+func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+
+	// No pre-check GetActiveDebate: approveUnderLock runs a JOIN that
+	// both finds the active debate AND takes FOR UPDATE in one
+	// statement. pgx.ErrNoRows from that path means no active debate;
+	// ErrDebateNotActive means a row exists but isn't active. Both
+	// surface as 409 at the user level with distinct messages.
+	if approveErr := h.approveUnderLock(r.Context(), dctx.ticket.ID); approveErr != nil {
+		switch {
+		case errors.Is(approveErr, pgx.ErrNoRows):
+			http.Error(w, "no active debate", http.StatusConflict)
+		case errors.Is(approveErr, models.ErrDebateNotActive):
+			http.Error(w, "debate not active", http.StatusConflict)
+		case errors.Is(approveErr, models.ErrExternalDescriptionEdit):
+			// Tell the user exactly how to resolve: Abandon unlocks
+			// the ticket description for manual edit, then they can
+			// start a new debate from the current state.
+			http.Error(w,
+				"description was edited externally since the debate started. To resolve: click Abandon to release the debate lock, then manually merge the external edit with the draft, then start a new debate.",
+				http.StatusConflict)
+		default:
+			log.Printf("debate ApproveDebate: %v", approveErr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Hx-Redirect", "/tickets/"+dctx.ticket.ID)
+	w.WriteHeader(http.StatusSeeOther)
+}
+
+// approveUnderLock looks up the active debate for the ticket and runs
+// ApproveDebateTx under the combined debate+ticket row lock. No
+// separate GetActiveDebate round-trip: the JOIN inside ApproveDebateTx
+// (which already locks both rows) handles the lookup atomically.
+func (h *DebateHandler) approveUnderLock(ctx context.Context, ticketID string) error {
+	// Resolve active debate id inside a short query; ApproveDebateTx
+	// expects the debate id alongside the ticket id so its JOIN filter
+	// matches both. Using a regular SELECT here (not FOR UPDATE) is
+	// safe because ApproveDebateTx re-locks the debate row in its own
+	// tx with FOR UPDATE — this first read is just to resolve the id.
+	var debateID string
+	if err := h.db.Pool.QueryRow(ctx,
+		`SELECT id FROM feature_debates WHERE ticket_id = $1 AND status = 'active' LIMIT 1`,
+		ticketID,
+	).Scan(&debateID); err != nil {
+		return err
+	}
+
+	tx, err := h.db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if aErr := h.db.ApproveDebateTx(ctx, tx, debateID, ticketID); aErr != nil {
+		return aErr
+	}
+	return tx.Commit(ctx)
+}
+
+// ── POST /tickets/{ticketID}/debate/abandon ──────────────────────
+
+// AbandonDebate marks the debate as abandoned without touching the
+// ticket description. Also force-clears any lingering
+// in_flight_request_id as the escape hatch for orphaned reservations
+// whose stale-recovery timer hasn't fired yet.
+func (h *DebateHandler) AbandonDebate(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+
+	if abandonErr := h.abandonUnderLock(r.Context(), dctx.ticket.ID); abandonErr != nil {
+		switch {
+		case errors.Is(abandonErr, pgx.ErrNoRows):
+			http.Error(w, "no active debate", http.StatusConflict)
+		case errors.Is(abandonErr, models.ErrDebateNotActive):
+			http.Error(w, "debate not active", http.StatusConflict)
+		default:
+			log.Printf("debate AbandonDebate: %v", abandonErr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Hx-Redirect", "/tickets/"+dctx.ticket.ID)
+	w.WriteHeader(http.StatusSeeOther)
+}
+
+// abandonUnderLock resolves the active debate and runs the atomic
+// AbandonDebateTx. No pre-check round-trip: AbandonDebateTx uses an
+// UPDATE ... WHERE status='active' that completes in one statement
+// on the common path.
+func (h *DebateHandler) abandonUnderLock(ctx context.Context, ticketID string) error {
+	var debateID string
+	if err := h.db.Pool.QueryRow(ctx,
+		`SELECT id FROM feature_debates WHERE ticket_id = $1 AND status = 'active' LIMIT 1`,
+		ticketID,
+	).Scan(&debateID); err != nil {
+		return err
+	}
+
+	tx, err := h.db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if aErr := h.db.AbandonDebateTx(ctx, tx, debateID); aErr != nil {
+		return aErr
+	}
+	return tx.Commit(ctx)
+}
+
 func (h *DebateHandler) undoUnderLock(ctx context.Context, debateID string, fromN int) error {
 	tx, err := h.db.Pool.Begin(ctx)
 	if err != nil {

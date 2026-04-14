@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
@@ -290,6 +291,14 @@ func (h *TicketHandler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.UpdateTicket(r.Context(), ticket); err != nil {
+		if errors.Is(err, models.ErrDescriptionLocked) {
+			// Surface the debate-mode lockout explicitly so the client
+			// knows why the description change was rejected (and that
+			// metadata changes could still be submitted separately via
+			// a future endpoint if the plan warrants one).
+			http.Error(w, "ticket description is locked while a debate is active; finish or abandon the debate first", http.StatusConflict)
+			return
+		}
 		log.Printf("updating ticket: %v", err)
 		http.Error(w, "Failed to update ticket", http.StatusInternalServerError)
 		return
