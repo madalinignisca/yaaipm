@@ -536,8 +536,17 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 	// disconnect doesn't cancel the in-flight scorer tx; we still
 	// honor the adapter's own AICallTimeout so the goroutine can't
 	// leak indefinitely.
+	//
+	// Pass round.OutputText directly rather than re-reading
+	// feature_debates.current_text inside the goroutine. Re-reading
+	// would race with subsequent accept/undo operations: a concurrent
+	// undo could shift current_text to an older value before the
+	// goroutine runs, causing the scorer to evaluate stale content
+	// while the result is still associated with this round's ID. The
+	// direct-pass path guarantees scorer input == round output.
 	if h.scorer != nil {
-		go h.scoreAfterAccept(context.WithoutCancel(r.Context()), deb.ID, round.ID, dctx.ticket.ProjectID)
+		go h.scoreAfterAccept(context.WithoutCancel(r.Context()),
+			deb.ID, round.ID, dctx.ticket.ProjectID, round.OutputText)
 	}
 
 	_ = h.engine.RenderPartial(w, "debate_round.html", round)
@@ -577,20 +586,17 @@ func (h *DebateHandler) acceptRoundUnderLock(ctx context.Context, debateID, roun
 }
 
 // writeAcceptError maps accept-path sentinels to the right status.
+// ErrRoundNotInReview surfaces as 409 (stale client view), distinct
+// from pgx.ErrNoRows (404, round doesn't exist) and infra failures.
 func (h *DebateHandler) writeAcceptError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		http.Error(w, "round not found", http.StatusNotFound)
 	case errors.Is(err, models.ErrDebateNotActive):
 		http.Error(w, "debate not active", http.StatusConflict)
+	case errors.Is(err, models.ErrRoundNotInReview):
+		http.Error(w, "round is not in review (stale state)", http.StatusConflict)
 	default:
-		// Includes "round status is X, not in_review" — surface as 409
-		// since the client's view of the round is stale rather than
-		// infra failure.
-		if strings.Contains(err.Error(), "not in_review") {
-			http.Error(w, "round is not in review (stale state)", http.StatusConflict)
-			return
-		}
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }
@@ -607,19 +613,13 @@ func (h *DebateHandler) writeAcceptError(w http.ResponseWriter, err error) {
 // surfaced to the user (the accept already succeeded). The context
 // comes from context.WithoutCancel so client disconnect doesn't
 // abort the billing update.
-func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID, projectID string) {
+func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID, projectID, textToScore string) {
 	// Respect the adapter's own timeout envelope so this goroutine
 	// can't wedge indefinitely on a stuck network call.
 	callCtx, cancel := context.WithTimeout(ctx, h.cfg.AICallTimeout)
 	defer cancel()
 
-	deb, err := h.db.GetDebateByID(callCtx, debateID)
-	if err != nil {
-		log.Printf("debate scoreAfterAccept: GetDebateByID %s: %v", debateID, err)
-		return
-	}
-
-	res, err := h.scorer.Score(callCtx, deb.CurrentText)
+	res, err := h.scorer.Score(callCtx, textToScore)
 	if err != nil {
 		log.Printf("debate scoreAfterAccept: scorer failed for debate %s round %s: %v", debateID, roundID, err)
 		return
@@ -761,12 +761,17 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if undoErr := h.undoUnderLock(r.Context(), deb.ID, fromN); undoErr != nil {
-		if errors.Is(undoErr, models.ErrDebateNotActive) {
+		switch {
+		case errors.Is(undoErr, models.ErrDebateNotActive):
 			http.Error(w, "debate not active", http.StatusConflict)
-			return
+		case errors.Is(undoErr, models.ErrNoRoundsToUndo):
+			// ?from=999 on a 3-round debate, etc. Prevents accidental
+			// effort-field wipes on range targets that delete no rows.
+			http.Error(w, "no rounds matched — check the from index", http.StatusNotFound)
+		default:
+			log.Printf("debate UndoRound: %v", undoErr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
-		log.Printf("debate UndoRound: %v", undoErr)
-		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 

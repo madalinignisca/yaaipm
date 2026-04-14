@@ -27,6 +27,8 @@ var (
 	ErrStaleAIInput        = errors.New("current_text changed during AI call")
 	ErrInReviewRoundExists = errors.New("an in-review round already exists")
 	ErrDescriptionLocked   = errors.New("ticket description locked: active debate exists")
+	ErrRoundNotInReview    = errors.New("round is not in review state")
+	ErrNoRoundsToUndo      = errors.New("undo matched no rounds")
 )
 
 type DB struct {
@@ -2377,10 +2379,14 @@ func (db *DB) getRoundWithTx(ctx context.Context, tx pgx.Tx, roundID string) (*D
 // baseline. Returns the refreshed round.
 //
 // Caller MUST have opened the tx and already locked the debate row
-// with FOR UPDATE. This method re-locks both the debate and the round
-// being accepted to defend against future code paths that forget.
+// with FOR UPDATE. This method locks the specific round being
+// accepted (FOR UPDATE on feature_debate_rounds) to defend against
+// concurrent mutations of the same round, but relies on the caller's
+// debate-row lock for the broader state invariants.
+//
 // Returns pgx.ErrNoRows if the round doesn't exist under this debate,
-// or a wrapped fmt.Errorf if the round is not in_review.
+// ErrRoundNotInReview if the round is not in_review (already accepted
+// or rejected — stale client view).
 func (db *DB) AcceptRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID string) (*DebateRound, error) {
 	var status, outputText string
 	err := tx.QueryRow(ctx, `
@@ -2395,7 +2401,7 @@ func (db *DB) AcceptRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID st
 		return nil, err
 	}
 	if status != "in_review" {
-		return nil, fmt.Errorf("round status is %q, not in_review", status)
+		return nil, ErrRoundNotInReview
 	}
 
 	if _, err = tx.Exec(ctx, `
@@ -2434,7 +2440,7 @@ func (db *DB) RejectRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID st
 		return err
 	}
 	if status != "in_review" {
-		return fmt.Errorf("round status is %q, not in_review", status)
+		return ErrRoundNotInReview
 	}
 	_, err = tx.Exec(ctx, `
 		UPDATE feature_debate_rounds
@@ -2457,12 +2463,20 @@ func (db *DB) RejectRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID st
 // for the case where the referenced round survives the delete
 // (fromRoundNumber > last_scored_round).
 func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, fromRoundNumber int) error {
-	if _, err := tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM feature_debate_rounds
 		  WHERE debate_id = $1 AND round_number >= $2`,
 		debateID, fromRoundNumber,
-	); err != nil {
+	)
+	if err != nil {
 		return err
+	}
+	// Guard against "?from=999 on a 3-round debate" — a request that
+	// targets a non-existent round range should be rejected, not
+	// silently clear effort_* + current_text unchanged. Return a
+	// sentinel the handler maps to 404.
+	if tag.RowsAffected() == 0 {
+		return ErrNoRoundsToUndo
 	}
 
 	// Recompute current_text from the largest remaining accepted
@@ -2470,18 +2484,18 @@ func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, 
 	// remain. Rejected rounds are explicitly excluded — they never
 	// modified current_text.
 	var newCurrentText string
-	if err := tx.QueryRow(ctx, `
+	if scanErr := tx.QueryRow(ctx, `
 		SELECT COALESCE(
 			(SELECT output_text FROM feature_debate_rounds
 			  WHERE debate_id = $1 AND status = 'accepted'
 			  ORDER BY round_number DESC LIMIT 1),
 			(SELECT seed_description FROM feature_debates WHERE id = $1)
 		)`, debateID,
-	).Scan(&newCurrentText); err != nil {
-		return err
+	).Scan(&newCurrentText); scanErr != nil {
+		return scanErr
 	}
 
-	_, err := tx.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		UPDATE feature_debates
 		   SET current_text = $1,
 		       effort_score = NULL,
