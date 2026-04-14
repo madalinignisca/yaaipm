@@ -26,6 +26,21 @@ type RefineInput struct {
 	SystemPrompt string
 }
 
+// Refiner request defaults. Centralized so every adapter uses the same
+// Temperature and MaxTokens without drift; if we ever need to tune
+// these for debate mode globally, the change lives in one place.
+//
+// refinerTemperature is low (0.3) — refactoring a spec should be
+// stable, not creative; clicking the same AI button twice on the same
+// seed should produce near-identical output.
+//
+// refinerMaxTokens is generous for any realistic feature description
+// (20k chars ≈ 5k tokens) with headroom for the model to elaborate.
+const (
+	refinerMaxTokens   = 4096
+	refinerTemperature = 0.3
+)
+
 // FinishReason constants. Adapters MUST map provider-specific stop
 // reasons onto this set; the handler checks FinishReason == FinishReasonLength
 // as a single equality to decide truncation rejections.
