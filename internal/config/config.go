@@ -9,33 +9,36 @@ import (
 )
 
 type Config struct {
-	AnthropicModel              string
-	GeminiAPIKey                string
-	AESKey                      string
-	ListenAddr                  string
-	BaseURL                     string
-	SMTPHost                    string
-	SMTPPort                    string
-	SMTPUsername                string
-	SMTPPassword                string
-	SMTPFrom                    string
-	S3Bucket                    string
-	RPDisplayName               string
-	RPID                        string
-	S3Region                    string
-	S3SecretAccessKey           string
-	S3AccessKeyID               string
-	GeminiModel                 string
-	GeminiModelChat             string
-	GeminiModelPro              string
-	GeminiModelImage            string
-	GeminiModelImagePro         string
-	S3Endpoint                  string
-	SessionSecret               string
-	WorkspacesDir               string
-	AnthropicModelContent       string
-	DatabaseURL                 string
-	AnthropicAPIKey             string
+	AnthropicModel        string
+	GeminiAPIKey          string
+	AESKey                string
+	ListenAddr            string
+	BaseURL               string
+	SMTPHost              string
+	SMTPPort              string
+	SMTPUsername          string
+	SMTPPassword          string
+	SMTPFrom              string
+	S3Bucket              string
+	RPDisplayName         string
+	RPID                  string
+	S3Region              string
+	S3SecretAccessKey     string
+	S3AccessKeyID         string
+	GeminiModel           string
+	GeminiModelChat       string
+	GeminiModelPro        string
+	GeminiModelImage      string
+	GeminiModelImagePro   string
+	S3Endpoint            string
+	SessionSecret         string
+	WorkspacesDir         string
+	AnthropicModelContent string
+	DatabaseURL           string
+	AnthropicAPIKey       string
+	// OpenAI (used by Feature Debate Mode's ChatGPT refiner).
+	OpenAIAPIKey                string
+	OpenAIModel                 string
 	ProtectedSuperadmins        []string
 	RPOrigins                   []string
 	GeminiImageTextOutPrice     int64
@@ -177,6 +180,8 @@ func Load() (*Config, error) {
 		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
 		AnthropicModel:              envOrDefault("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
 		AnthropicModelContent:       envOrDefault("ANTHROPIC_MODEL_CONTENT", "claude-opus-4-6"),
+		OpenAIAPIKey:                os.Getenv("OPENAI_API_KEY"),
+		OpenAIModel:                 envOrDefault("OPENAI_MODEL", "gpt-5-mini"),
 		AnthropicInputPrice:         envInt64("ANTHROPIC_INPUT_PRICE", 300),
 		AnthropicOutputPrice:        envInt64("ANTHROPIC_OUTPUT_PRICE", 1500),
 		AnthropicContentInputPrice:  envInt64("ANTHROPIC_CONTENT_INPUT_PRICE", 1500),

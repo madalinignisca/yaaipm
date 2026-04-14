@@ -7,9 +7,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// DebateStatusActive is the feature_debates.status value for a debate
+// that is currently accepting rounds. Centralized here so the literal
+// 'active' string isn't repeated across query bodies (goconst).
+const DebateStatusActive = "active"
+
+// Feature Debate Mode sentinel errors. Callers (debate handler in
+// Task 7+) use errors.Is to route each distinct case to the correct
+// HTTP status per the spec §3.3 error discipline table.
+var (
+	ErrDebateNotActive     = errors.New("debate not active")
+	ErrInFlightAIRequest   = errors.New("AI request already in flight")
+	ErrStaleAIInput        = errors.New("current_text changed during AI call")
+	ErrInReviewRoundExists = errors.New("an in-review round already exists")
+	ErrDescriptionLocked   = errors.New("ticket description locked: active debate exists")
 )
 
 type DB struct {
@@ -2161,4 +2178,195 @@ func (db *DB) CountActiveRoundsForDebate(ctx context.Context, debateID string) (
 		debateID,
 	).Scan(&n)
 	return n, err
+}
+
+// ── Debate round lifecycle (spec §4.2) ────────────────────────────
+
+// ReserveInFlight transitions in_flight_request_id from NULL (or stale)
+// to a fresh UUID under the debate row's lock. Returns the reserved
+// request ID and a snapshot of current_text. Must be called inside a
+// tx the caller controls so the caller can Commit (releasing the lock)
+// before the long-running AI call begins.
+//
+// staleAfter is typically 90 seconds — 60s AI timeout + 30s buffer.
+// If an existing reservation is older than staleAfter it's treated as
+// orphaned (presumed server-crash mid-call) and overwritten.
+func (db *DB) ReserveInFlight(ctx context.Context, tx pgx.Tx, debateID string, staleAfter time.Duration) (reqID, snapshotCurrentText string, err error) {
+	var (
+		existingID  *string
+		existingAt  *time.Time
+		currentText string
+		status      string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT in_flight_request_id, in_flight_started_at, current_text, status
+		  FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
+	).Scan(&existingID, &existingAt, &currentText, &status)
+	if err != nil {
+		return "", "", err
+	}
+	if status != DebateStatusActive {
+		return "", "", ErrDebateNotActive
+	}
+	if existingID != nil {
+		if existingAt == nil || time.Since(*existingAt) < staleAfter {
+			return "", "", ErrInFlightAIRequest
+		}
+		// else: orphaned, fall through and overwrite.
+	}
+	newID := uuid.NewString()
+	if _, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET in_flight_request_id = $1, in_flight_started_at = now()
+		 WHERE id = $2`, newID, debateID,
+	); err != nil {
+		return "", "", err
+	}
+	return newID, currentText, nil
+}
+
+// ClearInFlight unconditionally clears the reservation flag. Used in
+// error paths when an AI call fails or validation rejects the output.
+// Never returns ErrDebateNotActive — clearing a flag on a terminal
+// debate is a harmless no-op.
+func (db *DB) ClearInFlight(ctx context.Context, debateID string) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE feature_debates
+		   SET in_flight_request_id = NULL, in_flight_started_at = NULL
+		 WHERE id = $1`, debateID,
+	)
+	return err
+}
+
+// InsertDebateRoundInput captures all the fields the caller must
+// provide. DebateID and User/Model identifiers are required; tokens
+// and cost come from the provider's usage response.
+type InsertDebateRoundInput struct {
+	DebateID, Provider, Model, TriggeredBy string
+	Feedback                               string // empty string treated as NULL in DB
+	InputText, OutputText                  string
+	DiffUnified                            string // empty treated as NULL
+	InputTokens, OutputTokens              int
+	CostMicros                             int64
+}
+
+// InsertDebateRoundTx inserts an in_review round under the debate
+// row's lock, validating current_text hasn't drifted from the snapshot
+// the caller used when making the AI call. Returns the new round plus
+// the cents delta (for IncrementProjectCostCents).
+//
+// Caller MUST have opened the tx; this method takes FOR UPDATE on the
+// debate row as its first statement (belt-and-suspenders — the
+// reservation flag alone would be sufficient, but re-taking the lock
+// here survives refactors that forget to do it outside).
+//
+// Returns ErrStaleAIInput if current_text changed, ErrDebateNotActive
+// if status flipped, ErrInReviewRoundExists if the partial unique
+// index rejected the insert (shouldn't happen while in_flight is set
+// but defends against future code paths that forget).
+func (db *DB) InsertDebateRoundTx(
+	ctx context.Context, tx pgx.Tx,
+	in InsertDebateRoundInput, snapshotCurrentText string,
+) (*DebateRound, int64, error) {
+	var (
+		currentText    string
+		oldTotalMicros int64
+		status         string
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT current_text, total_cost_micros, status
+		  FROM feature_debates WHERE id = $1 FOR UPDATE`, in.DebateID,
+	).Scan(&currentText, &oldTotalMicros, &status)
+	if err != nil {
+		return nil, 0, err
+	}
+	if status != DebateStatusActive {
+		return nil, 0, ErrDebateNotActive
+	}
+	if currentText != snapshotCurrentText {
+		return nil, 0, ErrStaleAIInput
+	}
+
+	var maxRound int
+	if scanErr := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(round_number), 0) FROM feature_debate_rounds WHERE debate_id = $1`,
+		in.DebateID,
+	).Scan(&maxRound); scanErr != nil {
+		return nil, 0, scanErr
+	}
+
+	// Nullable pgx parameters: empty strings become NULL so the DB
+	// reflects "no feedback" / "no cached diff" rather than storing
+	// empty strings.
+	var feedbackParam, diffParam any
+	if in.Feedback != "" {
+		feedbackParam = in.Feedback
+	}
+	if in.DiffUnified != "" {
+		diffParam = in.DiffUnified
+	}
+
+	r := &DebateRound{}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO feature_debate_rounds
+			(debate_id, round_number, provider, model, triggered_by, feedback,
+			 input_text, output_text, diff_unified, status,
+			 input_tokens, output_tokens, cost_micros)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_review', $10, $11, $12)
+		RETURNING id, debate_id, round_number, provider, model, triggered_by,
+		          feedback, input_text, output_text, diff_unified, status,
+		          input_tokens, output_tokens, cost_micros, scorer_cost_micros,
+		          created_at, decided_at`,
+		in.DebateID, maxRound+1, in.Provider, in.Model, in.TriggeredBy, feedbackParam,
+		in.InputText, in.OutputText, diffParam,
+		in.InputTokens, in.OutputTokens, in.CostMicros,
+	).Scan(
+		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
+		&r.CreatedAt, &r.DecidedAt,
+	)
+	if err != nil {
+		// Translate partial-unique-index violation on status='in_review'.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, 0, ErrInReviewRoundExists
+		}
+		return nil, 0, err
+	}
+
+	newTotalMicros := oldTotalMicros + in.CostMicros
+	if _, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET total_cost_micros = $1,
+		       in_flight_request_id = NULL,
+		       in_flight_started_at = NULL,
+		       updated_at = now()
+		 WHERE id = $2`, newTotalMicros, in.DebateID,
+	); err != nil {
+		return nil, 0, err
+	}
+
+	centsDelta := newTotalMicros/10000 - oldTotalMicros/10000
+	return r, centsDelta, nil
+}
+
+// IncrementProjectCostCents adds the given delta to the project_costs
+// row for category='debate' in the current month, creating the row if
+// absent. Non-fatal at the handler layer — cost rollups are
+// reconstructable from feature_debate_rounds.cost_micros + scorer_cost_micros.
+func (db *DB) IncrementProjectCostCents(ctx context.Context, projectID string, deltaCents int64) error {
+	if deltaCents == 0 {
+		return nil
+	}
+	month := time.Now().Format("2006-01")
+	_, err := db.Pool.Exec(ctx, `
+		INSERT INTO project_costs (project_id, month, category, name, amount_cents)
+		VALUES ($1, $2, 'debate', 'AI debate rounds', $3)
+		ON CONFLICT (project_id, month, category, name)
+		   DO UPDATE SET amount_cents = project_costs.amount_cents + EXCLUDED.amount_cents,
+		                 updated_at = now()`,
+		projectID, month, deltaCents,
+	)
+	return err
 }
