@@ -1141,26 +1141,42 @@ func (db *DB) UpdateTicketAgentMode(ctx context.Context, id string, mode, agent 
 // during an active debate, use UpdateTicketMetadata which skips
 // description and skips the guard.
 func (db *DB) UpdateTicket(ctx context.Context, t *Ticket) error {
-	active, err := db.IsDebateActive(ctx, t.ID)
-	if err != nil {
-		return fmt.Errorf("checking debate active: %w", err)
-	}
-	if active {
-		var currentDesc string
-		if descErr := db.Pool.QueryRow(ctx,
-			`SELECT description_markdown FROM tickets WHERE id = $1`, t.ID,
-		).Scan(&currentDesc); descErr != nil {
-			return fmt.Errorf("loading ticket description for guard: %w", descErr)
-		}
-		if currentDesc != t.DescriptionMarkdown {
-			return ErrDescriptionLocked
-		}
-	}
-	_, err = db.Pool.Exec(ctx,
-		`UPDATE tickets SET title = $1, description_markdown = $2, priority = $3, date_start = $4, date_end = $5, assigned_to = $6, updated_at = now() WHERE id = $7`,
+	// Atomic guard via conditional WHERE: the update applies only when
+	// the new description matches the stored one (metadata-only case),
+	// or when no active debate exists for this ticket. A debate
+	// starting between check and write cannot slip an overwrite
+	// through — the subquery is evaluated inside the same statement.
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE tickets
+		   SET title = $1, description_markdown = $2, priority = $3,
+		       date_start = $4, date_end = $5, assigned_to = $6,
+		       updated_at = now()
+		 WHERE id = $7
+		   AND (
+		         description_markdown = $2
+		         OR NOT EXISTS (
+		            SELECT 1 FROM feature_debates
+		             WHERE ticket_id = $7 AND status = 'active'
+		         )
+		       )`,
 		t.Title, t.DescriptionMarkdown, t.Priority, t.DateStart, t.DateEnd, t.AssignedTo, t.ID)
 	if err != nil {
 		return fmt.Errorf("updating ticket: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Either the ticket doesn't exist or the guard blocked the
+		// update. Distinguish by existence check so callers get the
+		// right sentinel.
+		var exists bool
+		if qErr := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tickets WHERE id = $1)`, t.ID,
+		).Scan(&exists); qErr != nil {
+			return fmt.Errorf("post-guard existence check: %w", qErr)
+		}
+		if !exists {
+			return pgx.ErrNoRows
+		}
+		return ErrDescriptionLocked
 	}
 	return nil
 }
@@ -1187,18 +1203,32 @@ func (db *DB) UpdateTicketMetadata(ctx context.Context, id, title, priority stri
 // AI assistant tool, future paths) MUST use this method for
 // description changes so the guard is never bypassed.
 func (db *DB) UpdateTicketDescription(ctx context.Context, id, newMarkdown string) error {
-	active, err := db.IsDebateActive(ctx, id)
-	if err != nil {
-		return fmt.Errorf("checking debate active: %w", err)
-	}
-	if active {
-		return ErrDescriptionLocked
-	}
-	_, err = db.Pool.Exec(ctx,
-		`UPDATE tickets SET description_markdown = $1, updated_at = now() WHERE id = $2`,
-		newMarkdown, id)
+	// Atomic guard via NOT EXISTS subquery in the UPDATE. No TOCTOU
+	// window — a debate starting between a check and this call can't
+	// slip an overwrite through because the subquery is part of the
+	// same statement.
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE tickets
+		   SET description_markdown = $1, updated_at = now()
+		 WHERE id = $2
+		   AND NOT EXISTS (
+		     SELECT 1 FROM feature_debates
+		      WHERE ticket_id = $2 AND status = 'active'
+		   )`, newMarkdown, id)
 	if err != nil {
 		return fmt.Errorf("updating ticket description: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if qErr := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tickets WHERE id = $1)`, id,
+		).Scan(&exists); qErr != nil {
+			return fmt.Errorf("post-guard existence check: %w", qErr)
+		}
+		if !exists {
+			return pgx.ErrNoRows
+		}
+		return ErrDescriptionLocked
 	}
 	return nil
 }
@@ -1220,27 +1250,30 @@ func (db *DB) UpdateTicketDescription(ctx context.Context, id, newMarkdown strin
 var ErrExternalDescriptionEdit = errors.New("ticket description edited externally since debate started")
 
 func (db *DB) ApproveDebateTx(ctx context.Context, tx pgx.Tx, debateID, ticketID string) error {
+	// Single combined query locks BOTH the debate row and the ticket
+	// row atomically, not sequentially, and removes one round-trip
+	// from the success path. If no debate row matches (wrong id or
+	// wrong ticket_id pairing), pgx.ErrNoRows surfaces to the caller
+	// which maps it to 404/409 as appropriate.
 	var (
 		status       string
 		currentText  string
 		originalDesc string
+		ticketDesc   string
 	)
 	err := tx.QueryRow(ctx, `
-		SELECT status, current_text, original_ticket_description
-		  FROM feature_debates WHERE id = $1`, debateID,
-	).Scan(&status, &currentText, &originalDesc)
+		SELECT fd.status, fd.current_text, fd.original_ticket_description,
+		       t.description_markdown
+		  FROM feature_debates fd
+		  JOIN tickets t ON t.id = fd.ticket_id
+		 WHERE fd.id = $1 AND fd.ticket_id = $2
+		 FOR UPDATE`, debateID, ticketID,
+	).Scan(&status, &currentText, &originalDesc, &ticketDesc)
 	if err != nil {
 		return err
 	}
 	if status != DebateStatusActive {
 		return ErrDebateNotActive
-	}
-
-	var ticketDesc string
-	if tErr := tx.QueryRow(ctx,
-		`SELECT description_markdown FROM tickets WHERE id = $1 FOR UPDATE`, ticketID,
-	).Scan(&ticketDesc); tErr != nil {
-		return tErr
 	}
 	if ticketDesc != originalDesc {
 		return ErrExternalDescriptionEdit
@@ -1267,24 +1300,34 @@ func (db *DB) ApproveDebateTx(ctx context.Context, tx pgx.Tx, debateID, ticketID
 //
 // Caller MUST have opened the tx and already locked the debate row.
 func (db *DB) AbandonDebateTx(ctx context.Context, tx pgx.Tx, debateID string) error {
-	var status string
-	if err := tx.QueryRow(ctx,
-		`SELECT status FROM feature_debates WHERE id = $1`, debateID,
-	).Scan(&status); err != nil {
-		return err
-	}
-	if status != DebateStatusActive {
-		return ErrDebateNotActive
-	}
-	_, err := tx.Exec(ctx, `
+	// Atomic UPDATE with the status filter directly in WHERE. Common
+	// success path is a single statement instead of SELECT-then-UPDATE.
+	// RowsAffected==0 means either the debate is missing or terminal —
+	// one disambiguating SELECT yields the right sentinel.
+	tag, err := tx.Exec(ctx, `
 		UPDATE feature_debates
 		   SET status = 'abandoned',
 		       in_flight_request_id = NULL,
 		       in_flight_started_at = NULL,
 		       updated_at = now()
-		 WHERE id = $1`, debateID,
+		 WHERE id = $1 AND status = 'active'`, debateID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var exists bool
+	if qErr := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM feature_debates WHERE id = $1)`, debateID,
+	).Scan(&exists); qErr != nil {
+		return qErr
+	}
+	if !exists {
+		return pgx.ErrNoRows
+	}
+	return ErrDebateNotActive
 }
 
 // ListAgentReady returns tickets that are ready for agent processing.

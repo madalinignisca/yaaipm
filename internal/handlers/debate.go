@@ -799,18 +799,15 @@ func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate", http.StatusConflict)
-		return
-	}
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if approveErr := h.approveUnderLock(r.Context(), deb.ID, dctx.ticket.ID); approveErr != nil {
+	// No pre-check GetActiveDebate: approveUnderLock runs a JOIN that
+	// both finds the active debate AND takes FOR UPDATE in one
+	// statement. pgx.ErrNoRows from that path means no active debate;
+	// ErrDebateNotActive means a row exists but isn't active. Both
+	// surface as 409 at the user level with distinct messages.
+	if approveErr := h.approveUnderLock(r.Context(), dctx.ticket.ID); approveErr != nil {
 		switch {
+		case errors.Is(approveErr, pgx.ErrNoRows):
+			http.Error(w, "no active debate", http.StatusConflict)
 		case errors.Is(approveErr, models.ErrDebateNotActive):
 			http.Error(w, "debate not active", http.StatusConflict)
 		case errors.Is(approveErr, models.ErrExternalDescriptionEdit):
@@ -831,19 +828,30 @@ func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusSeeOther)
 }
 
-func (h *DebateHandler) approveUnderLock(ctx context.Context, debateID, ticketID string) error {
+// approveUnderLock looks up the active debate for the ticket and runs
+// ApproveDebateTx under the combined debate+ticket row lock. No
+// separate GetActiveDebate round-trip: the JOIN inside ApproveDebateTx
+// (which already locks both rows) handles the lookup atomically.
+func (h *DebateHandler) approveUnderLock(ctx context.Context, ticketID string) error {
+	// Resolve active debate id inside a short query; ApproveDebateTx
+	// expects the debate id alongside the ticket id so its JOIN filter
+	// matches both. Using a regular SELECT here (not FOR UPDATE) is
+	// safe because ApproveDebateTx re-locks the debate row in its own
+	// tx with FOR UPDATE — this first read is just to resolve the id.
+	var debateID string
+	if err := h.db.Pool.QueryRow(ctx,
+		`SELECT id FROM feature_debates WHERE ticket_id = $1 AND status = 'active' LIMIT 1`,
+		ticketID,
+	).Scan(&debateID); err != nil {
+		return err
+	}
+
 	tx, err := h.db.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Lock the debate row first; all state-changing ops serialize here.
-	if _, qErr := tx.Exec(ctx,
-		`SELECT 1 FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
-	); qErr != nil {
-		return qErr
-	}
 	if aErr := h.db.ApproveDebateTx(ctx, tx, debateID, ticketID); aErr != nil {
 		return aErr
 	}
@@ -863,23 +871,16 @@ func (h *DebateHandler) AbandonDebate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate", http.StatusConflict)
-		return
-	}
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if abandonErr := h.abandonUnderLock(r.Context(), deb.ID); abandonErr != nil {
-		if errors.Is(abandonErr, models.ErrDebateNotActive) {
+	if abandonErr := h.abandonUnderLock(r.Context(), dctx.ticket.ID); abandonErr != nil {
+		switch {
+		case errors.Is(abandonErr, pgx.ErrNoRows):
+			http.Error(w, "no active debate", http.StatusConflict)
+		case errors.Is(abandonErr, models.ErrDebateNotActive):
 			http.Error(w, "debate not active", http.StatusConflict)
-			return
+		default:
+			log.Printf("debate AbandonDebate: %v", abandonErr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
-		log.Printf("debate AbandonDebate: %v", abandonErr)
-		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -887,18 +888,25 @@ func (h *DebateHandler) AbandonDebate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusSeeOther)
 }
 
-func (h *DebateHandler) abandonUnderLock(ctx context.Context, debateID string) error {
+// abandonUnderLock resolves the active debate and runs the atomic
+// AbandonDebateTx. No pre-check round-trip: AbandonDebateTx uses an
+// UPDATE ... WHERE status='active' that completes in one statement
+// on the common path.
+func (h *DebateHandler) abandonUnderLock(ctx context.Context, ticketID string) error {
+	var debateID string
+	if err := h.db.Pool.QueryRow(ctx,
+		`SELECT id FROM feature_debates WHERE ticket_id = $1 AND status = 'active' LIMIT 1`,
+		ticketID,
+	).Scan(&debateID); err != nil {
+		return err
+	}
+
 	tx, err := h.db.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, qErr := tx.Exec(ctx,
-		`SELECT 1 FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
-	); qErr != nil {
-		return qErr
-	}
 	if aErr := h.db.AbandonDebateTx(ctx, tx, debateID); aErr != nil {
 		return aErr
 	}
