@@ -39,6 +39,37 @@ func TestOpenAIRefiner_RefineWithoutClientErrors(t *testing.T) {
 	}
 }
 
+func TestIsReasoningOpenAIModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// Reasoning models per go-openai's ReasoningValidator.
+		{"gpt-5", true},
+		{"gpt-5-mini", true},
+		{"gpt-5-nano", true},
+		{"o1", true},
+		{"o1-mini", true},
+		{"o1-preview", true},
+		{"o3", true},
+		{"o3-mini", true},
+		{"o4-mini", true},
+		// Legacy chat models — the other branch.
+		{"gpt-4", false},
+		{"gpt-4o", false},
+		{"gpt-4o-mini", false},
+		{"gpt-3.5-turbo", false},
+		// Unknown models → false (caller uses legacy branch).
+		{"unknown", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isReasoningOpenAIModel(c.model); got != c.want {
+			t.Errorf("isReasoningOpenAIModel(%q) = %v, want %v", c.model, got, c.want)
+		}
+	}
+}
+
 func TestMapOpenAIFinishReason(t *testing.T) {
 	cases := []struct {
 		in   openai.FinishReason

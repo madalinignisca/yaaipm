@@ -54,15 +54,28 @@ func (r *OpenAIRefiner) Refine(ctx context.Context, in RefineInput) (RefineOutpu
 		return RefineOutput{}, fmt.Errorf("openai refiner: client not configured")
 	}
 
-	resp, err := r.c.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+	// Reasoning-model branch: go-openai's ReasoningValidator rejects
+	// MaxTokens on gpt-5*/o1*/o3*/o4* and requires Temperature to be 0
+	// or exactly 1. For those models we set MaxCompletionTokens and
+	// leave Temperature unset (SDK default: 1). Legacy chat models
+	// (gpt-4*) keep the MaxTokens + low-temperature shape that
+	// matches the Anthropic/Gemini adapters' deterministic-refactor
+	// posture.
+	req := openai.ChatCompletionRequest{
 		Model: r.c.model,
 		Messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleSystem, Content: resolveSystemPrompt(in.SystemPrompt)},
 			{Role: openai.ChatMessageRoleUser, Content: buildRefineUserPrompt(in.CurrentText, in.Feedback)},
 		},
-		MaxTokens:   refinerMaxTokens,
-		Temperature: refinerTemperature,
-	})
+	}
+	if isReasoningOpenAIModel(r.c.model) {
+		req.MaxCompletionTokens = refinerMaxTokens
+		// Temperature left at zero-value; SDK omits it (default 1).
+	} else {
+		req.MaxTokens = refinerMaxTokens
+		req.Temperature = refinerTemperature
+	}
+	resp, err := r.c.client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		return RefineOutput{}, fmt.Errorf("openai refine: %w", err)
 	}
@@ -86,6 +99,23 @@ func (r *OpenAIRefiner) Refine(ctx context.Context, in RefineInput) (RefineOutpu
 			Model:        r.c.model,
 		},
 	}, nil
+}
+
+// isReasoningOpenAIModel reports whether the given model ID is an
+// OpenAI reasoning model (gpt-5*, o1*, o3*, o4*). These models use
+// a different request shape: MaxCompletionTokens instead of MaxTokens,
+// and Temperature fixed at 1 (the SDK's default when unset).
+//
+// The SDK enforces these rules via its internal ReasoningValidator;
+// getting the request shape wrong for a reasoning model produces a
+// client-side validation error before the request ever hits the API.
+// See reasoning_validator.go in github.com/sashabaranov/go-openai for
+// the canonical list.
+func isReasoningOpenAIModel(model string) bool {
+	return strings.HasPrefix(model, "gpt-5") ||
+		strings.HasPrefix(model, "o1") ||
+		strings.HasPrefix(model, "o3") ||
+		strings.HasPrefix(model, "o4")
 }
 
 // mapOpenAIFinishReason normalizes the OpenAI SDK's FinishReason to
