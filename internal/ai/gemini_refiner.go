@@ -56,7 +56,12 @@ func (r *GeminiRefiner) Refine(ctx context.Context, in RefineInput) (RefineOutpu
 		return RefineOutput{}, fmt.Errorf("gemini refine: %w", err)
 	}
 
-	text := extractGeminiText(resp)
+	// Trim BEFORE the empty-check so whitespace-only responses (just
+	// "\n" or "   ") are rejected too — otherwise a model returning
+	// only whitespace would pass the empty-string guard and then be
+	// TrimSpace'd to "" before the caller sees it, defeating the
+	// defense-in-depth we document against silent data loss.
+	text := strings.TrimSpace(extractGeminiText(resp))
 	if text == "" {
 		return RefineOutput{}, fmt.Errorf("gemini refine: empty response from model %s", r.model)
 	}
@@ -73,7 +78,7 @@ func (r *GeminiRefiner) Refine(ctx context.Context, in RefineInput) (RefineOutpu
 	}
 
 	return RefineOutput{
-		Text:         strings.TrimSpace(text),
+		Text:         text,
 		FinishReason: finish,
 		Usage: RefineUsage{
 			InputTokens:  inputTok,
