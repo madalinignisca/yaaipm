@@ -1568,10 +1568,14 @@ gh pr create --base feature/debate-mode-v1 --title "feat(ai): OpenAIRefiner adap
 ## Task 7: feat(debate) — handlers `/debate` (GET) + `/start` (POST) + `/rounds` (POST create)
 
 **Files:**
+- Create: `internal/diff/diff.go` — `ComputeUnified` + `RenderHTML`. Originally slated for Task 10; moved here because the handler in this task already calls `diff.ComputeUnified` on round creation. The package is small (~60 lines total); splitting it across tasks gained nothing and introduced a forward reference.
+- Create: `internal/diff/diff_test.go`
 - Create: `internal/handlers/debate.go`
 - Create: `internal/handlers/debate_test.go`
+- Create: empty template skeletons in `templates/pages/debate.html`, `templates/components/debate_round.html`, `templates/components/debate_next_round.html` (content lands in Task 10, but the files must exist so `engine.RenderPartial` in handler tests doesn't error on missing templates)
 - Modify: `cmd/server/main.go` (wire `DebateHandler`, register routes)
-- Modify: `internal/models/queries.go` (add `InsertDebateRound`, `ReserveInFlight`, `ClearInFlight`, `GetTicketForOrg` if not present, `RecordRoundCost` helper)
+- Modify: `internal/models/queries.go` (add `InsertDebateRound`, `ReserveInFlight`, `ClearInFlight`, `GetTicketForOrg` if not present, `IncrementProjectCostCents` helper)
+- Modify: `go.mod` / `go.sum` (add `github.com/sergi/go-diff`)
 
 **Depends on:** Tasks 2, 3 merged.
 
@@ -1580,6 +1584,36 @@ gh pr create --base feature/debate-mode-v1 --title "feat(ai): OpenAIRefiner adap
 ```bash
 git checkout feature/debate-mode-v1 && git pull && git checkout -b feature/debate-handlers-1
 ```
+
+- [ ] **Step 7.1.5: Create the diff package**
+
+```bash
+go get github.com/sergi/go-diff/diffmatchpatch
+```
+
+Create `internal/diff/diff.go` (same content as originally shown in Task 10.2 — moved here because it's a handler dependency). See Task 10.2 for the full file contents; treat it as authoritative and copy from there.
+
+Create `internal/diff/diff_test.go` with the three tests originally shown in Task 10.2 (`TestComputeUnified_IdenticalIsEmpty`, `TestComputeUnified_AddLine`, `TestRenderHTML_EscapesHTMLChars`).
+
+Run: `go test ./internal/diff -v` — all three PASS.
+
+- [ ] **Step 7.1.6: Create empty template skeletons**
+
+```bash
+for f in templates/pages/debate.html \
+         templates/components/debate_round.html \
+         templates/components/debate_next_round.html \
+         templates/components/debate_seed.html \
+         templates/components/debate_sidebar.html \
+         templates/components/debate_timeline.html; do
+  mkdir -p $(dirname "$f")
+  cat > "$f" <<'TEMPL'
+{{/* Skeleton — full content added in Task 10 UI pass. */}}
+TEMPL
+done
+```
+
+These exist so `engine.RenderPartial(w, "debate_round.html", ...)` in handler tests doesn't fail on "template not found". Task 10 overwrites them with real content.
 
 - [ ] **Step 7.2: Add the supporting queries**
 
@@ -1663,8 +1697,9 @@ type InsertDebateRoundInput struct {
 // hasn't drifted from the snapshot. Returns the new round + cents_delta to
 // apply to project_costs.
 //
-// The CALLER must run this inside a tx that has done FOR UPDATE on the
-// debate row already.
+// The CALLER MUST ensure the debate row is locked FOR UPDATE before calling
+// this function. InsertDebateRoundTx itself re-validates with FOR UPDATE to
+// prevent any TOCTOU window between caller's lock and this statement.
 func (db *DB) InsertDebateRoundTx(ctx context.Context, tx pgx.Tx, in InsertDebateRoundInput, snapshottedCurrentText string) (*DebateRound, int64, error) {
     var (
         currentText     string
@@ -1673,7 +1708,7 @@ func (db *DB) InsertDebateRoundTx(ctx context.Context, tx pgx.Tx, in InsertDebat
     )
     err := tx.QueryRow(ctx, `
         SELECT current_text, total_cost_micros, status
-          FROM feature_debates WHERE id = $1`, in.DebateID,
+          FROM feature_debates WHERE id = $1 FOR UPDATE`, in.DebateID,
     ).Scan(&currentText, &oldTotalMicros, &status)
     if err != nil { return nil, 0, err }
     if status != "active" {
@@ -1785,10 +1820,12 @@ import (
     "errors"
     "fmt"
     "net/http"
+    "strconv"
     "strings"
     "time"
 
     "github.com/go-chi/chi/v5"
+    "github.com/google/uuid"   // used by queries.go's ReserveInFlight via models package
     "github.com/jackc/pgx/v5"
 
     "github.com/yourorg/forgedesk/internal/ai"
@@ -1797,6 +1834,16 @@ import (
     "github.com/yourorg/forgedesk/internal/models"
     "github.com/yourorg/forgedesk/internal/render"
 )
+
+// Import note: `strconv` is used by UndoRound (added in Task 8) but we
+// include it here so Tasks 7, 8, 9 all work from the same import block.
+// `uuid` is technically used only by queries.go's ReserveInFlight, but
+// listing it here for visibility since it's a new dep relative to existing
+// handler files — confirm it's present before importing in your version.
+// uuid package is already in go.mod (v1.6.0); no `go get` needed.
+//
+// Similarly `time` is used by DebateConfig fields (StaleReservationAge,
+// AICallTimeout).
 
 type DebateConfig struct {
     ClientRoundCap      int           // 10
@@ -2593,15 +2640,21 @@ func TestConcurrentAcceptAndUndo_Serialized(t *testing.T) {
     }()
 
     a, b := <-ch, <-ch
-    successCount := 0
+    successCount, conflictCount := 0, 0
     for _, r := range []res{a, b} {
-        if r.code == 200 { successCount++ }
+        switch r.code {
+        case http.StatusOK:       successCount++
+        case http.StatusNotFound: conflictCount++ // round deleted out from under accept
+        case http.StatusConflict: conflictCount++ // debate-level lock contention
+        }
     }
-    // At most one succeeds; the other gets either 404 (round deleted by undo)
-    // or 409 (debate-level lock contention).
-    require.LessOrEqual(t, successCount, 2, "both can succeed if undo runs after accept commits")
+    // The invariant we're testing: regardless of which goroutine wins, the DB
+    // ends up consistent. Both CAN succeed if they serialize cleanly (accept
+    // commits first, undo then cascades it away). Both CANNOT produce a state
+    // where current_text references a deleted round's output.
+    require.Equal(t, 2, successCount+conflictCount, "every goroutine must terminate with a definitive status")
 
-    // Either way, DB consistency: rounds[0].output_text should equal
+    // DB consistency: rounds[0].output_text should equal
     // current_text (the invariant). Reload and assert.
     rounds, _ := env.DB.GetDebateRounds(ctx, deb.ID)
     debReloaded, _ := env.DB.GetDebateByID(ctx, deb.ID)
@@ -3045,19 +3098,13 @@ gh pr create --base feature/debate-mode-v1 --title "feat(debate): approve, aband
 ## Task 10: feat(debate) — page template, diff rendering, sidebar, CSS, E2E
 
 **Files:**
-- Create: `internal/diff/diff.go`
-- Create: `internal/diff/diff_test.go`
-- Create: `templates/pages/debate.html`
-- Create: `templates/components/debate_seed.html`
-- Create: `templates/components/debate_round.html`
-- Create: `templates/components/debate_sidebar.html`
-- Create: `templates/components/debate_next_round.html`
-- Create: `templates/components/debate_timeline.html`
+- Modify (fill in skeletons created in Task 7): `templates/pages/debate.html`, `templates/components/debate_seed.html`, `templates/components/debate_round.html`, `templates/components/debate_sidebar.html`, `templates/components/debate_next_round.html`, `templates/components/debate_timeline.html`
+- `internal/diff/diff.go` and `_test.go` were already created in Task 7.1.5 — this task does not touch them.
 - Create: `e2e/tests/06-debate/golden-path.spec.ts`
 - Modify: `static/css/app.css` (~80 lines added)
 - Modify: `templates/pages/ticket_detail.html` (add "Debate this feature" entry button on feature tickets)
-- Modify: `internal/render/render.go` (add `mul`, `relTime` if not present, in FuncMap)
-- Modify: `go.mod` / `go.sum` (add `github.com/sergi/go-diff`)
+- Modify: `internal/render/render.go` (add `mul`, `relTime`, `derefInt`, `derefString`, `renderDiff` to FuncMap)
+- `go.mod` / `go.sum` already have `sergi/go-diff` from Task 7.1.5.
 
 **Depends on:** Tasks 7, 8, 9 merged.
 
@@ -3067,13 +3114,11 @@ gh pr create --base feature/debate-mode-v1 --title "feat(debate): approve, aband
 git checkout feature/debate-mode-v1 && git pull && git checkout -b feature/debate-ui
 ```
 
-- [ ] **Step 10.2: Add the diff package**
+- [ ] **Step 10.2: (Moved to Task 7.1.5 — already done. Kept here for reference of the full file contents.)**
 
-```bash
-go get github.com/sergi/go-diff/diffmatchpatch
-```
+The diff package and its tests were created in Task 7 so the handler could use them. The authoritative file contents are shown below for completeness; if you're implementing Task 7, use these for Step 7.1.5.
 
-Create `internal/diff/diff.go`:
+`internal/diff/diff.go`:
 
 ```go
 // Package diff provides server-side unified diff computation and HTML
@@ -3207,9 +3252,17 @@ In `internal/render/render.go`, find the FuncMap initialization and add:
     default: return fmt.Sprintf("%dd ago", int(d.Hours()/24))
     }
 },
+// derefInt / derefString / derefTime safely dereference nullable pointers
+// for template-side display. Used by debate_sidebar.html (EffortScore,
+// EffortHours, EffortReasoning are all *int / *string).
+"derefInt":    func(p *int) int      { if p == nil { return 0 }; return *p },
+"derefString": func(p *string) string { if p == nil { return "" }; return *p },
+"derefTime":   func(p *time.Time) *time.Time { return p }, // identity; templates can range/compare on nil too
 ```
 
 (Add `"github.com/yourorg/forgedesk/internal/diff"` to imports.)
+
+Update the sidebar partial in Task 10.5 to use `derefInt .EffortScore` instead of `deref .EffortScore`, and `derefString .EffortReasoning` instead of `deref .EffortReasoning`. (The single-name `deref` used earlier in 10.5 was a placeholder; the concrete typed helpers above are what lands in the FuncMap.)
 
 - [ ] **Step 10.4: Write `templates/pages/debate.html`**
 
