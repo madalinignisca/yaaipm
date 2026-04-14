@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -840,6 +841,17 @@ func (e *toolExecutor) updateTicket(ctx context.Context, args map[string]any) (m
 	}
 
 	if err := e.db.UpdateTicket(ctx, ticket); err != nil {
+		// Surface the debate-mode lockout back to the LLM as a tool
+		// error rather than an infra failure. The chat assistant's
+		// tool-execution path will include this in the model's next
+		// turn context so it can explain the refusal to the user
+		// rather than retrying blindly.
+		if errors.Is(err, models.ErrDescriptionLocked) {
+			return map[string]any{
+				"error":   "description_locked",
+				"message": "The ticket description is locked because a debate is currently active on this feature. Ask the user to finish or abandon the debate, then retry.",
+			}, nil
+		}
 		return nil, fmt.Errorf("updating ticket: %w", err)
 	}
 

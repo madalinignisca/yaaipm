@@ -271,6 +271,8 @@ func main() {
 		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", debateH.AcceptRound)
 		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/reject", debateH.RejectRound)
 		r.Post("/tickets/{ticketID}/debate/undo", debateH.UndoRound)
+		r.Post("/tickets/{ticketID}/debate/approve", debateH.ApproveDebate)
+		r.Post("/tickets/{ticketID}/debate/abandon", debateH.AbandonDebate)
 
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)

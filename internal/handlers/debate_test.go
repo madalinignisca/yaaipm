@@ -3,12 +3,14 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/middleware"
@@ -52,6 +54,8 @@ func setupDebateTestEnv(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore)
 		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", h.AcceptRound)
 		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/reject", h.RejectRound)
 		r.Post("/tickets/{ticketID}/debate/undo", h.UndoRound)
+		r.Post("/tickets/{ticketID}/debate/approve", h.ApproveDebate)
+		r.Post("/tickets/{ticketID}/debate/abandon", h.AbandonDebate)
 	})
 	return r, db, sessions
 }
@@ -513,4 +517,191 @@ func TestUndoRound_RejectsInvalidFrom(t *testing.T) {
 			t.Errorf("qs=%q: status = %d, want 400", qs, rec.Code)
 		}
 	}
+}
+
+func TestApproveDebate_WritesCurrentTextAndRedirects(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	// Accept one round so the debate has a current_text to approve.
+	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"the approved description"})
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/approve", http.NoBody)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body = %q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Hx-Redirect"); got != "/tickets/"+ticket.ID {
+		t.Errorf("Hx-Redirect = %q, want /tickets/%s", got, ticket.ID)
+	}
+
+	// Debate must be terminal + ticket description updated.
+	_, err := db.GetActiveDebate(ctx, ticket.ID)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("expected pgx.ErrNoRows after approve (no active debate), got %v", err)
+	}
+	updated, err := db.GetTicket(ctx, ticket.ID)
+	if err != nil {
+		t.Fatalf("GetTicket after approve: %v", err)
+	}
+	if updated.DescriptionMarkdown != "the approved description" {
+		t.Errorf("ticket description = %q, want %q", updated.DescriptionMarkdown, "the approved description")
+	}
+}
+
+func TestApproveDebate_CASRejectsExternalEdit(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"the approved description"})
+
+	// Simulate an out-of-band edit — e.g., a v0.1.0 pod during
+	// rolling upgrade — bypassing the IsDebateActive guard by
+	// writing the ticket description directly. The CAS in
+	// ApproveDebateTx must detect the drift and refuse.
+	if _, execErr := db.Pool.Exec(ctx,
+		`UPDATE tickets SET description_markdown = 'sneaky external edit' WHERE id = $1`,
+		ticket.ID,
+	); execErr != nil {
+		t.Fatalf("simulating external edit: %v", execErr)
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/approve", http.NoBody)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "edited externally") {
+		t.Errorf("expected 'edited externally' error, got: %q", rec.Body.String())
+	}
+
+	// Debate must stay active; ticket must still show the external
+	// edit (we don't silently overwrite).
+	deb, err := db.GetActiveDebate(ctx, ticket.ID)
+	if err != nil {
+		t.Fatalf("GetActiveDebate: %v", err)
+	}
+	if deb.Status != "active" {
+		t.Errorf("debate status = %q, want active (CAS should not terminate)", deb.Status)
+	}
+	updated, _ := db.GetTicket(ctx, ticket.ID)
+	if updated.DescriptionMarkdown != "sneaky external edit" {
+		t.Errorf("ticket description = %q, expected external edit preserved", updated.DescriptionMarkdown)
+	}
+}
+
+func TestAbandonDebate_MarksAbandonedLeavesDescription(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	// Start debate + accept a round; description should NOT change on abandon.
+	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"never-approved draft"})
+
+	originalTicket, _ := db.GetTicket(ctx, ticket.ID)
+	originalDesc := originalTicket.DescriptionMarkdown
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/abandon", http.NoBody)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+
+	// No active debate should remain; terminal state persists but is
+	// no longer the "active" row that IsDebateActive matches.
+	if active, _ := db.IsDebateActive(ctx, ticket.ID); active {
+		t.Error("debate should no longer be active after Abandon")
+	}
+
+	updated, _ := db.GetTicket(ctx, ticket.ID)
+	if updated.DescriptionMarkdown != originalDesc {
+		t.Errorf("abandon changed description: %q → %q", originalDesc, updated.DescriptionMarkdown)
+	}
+}
+
+func TestUpdateTicketDescription_BlockedByActiveDebate(t *testing.T) {
+	// Model-layer guard test: the single-write-path invariant.
+	// Calls db.UpdateTicketDescription directly so this test catches
+	// bypasses from ANY caller (HTTP handler, AI assistant tool,
+	// future import path), not just a specific handler flow.
+	pool := testutil.SetupTestDB(t)
+	db := models.NewDB(pool)
+	sessions := auth.NewSessionStore(pool)
+	ticket, _ := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	// No active debate → update succeeds.
+	if err := db.UpdateTicketDescription(ctx, ticket.ID, "freshly rewritten"); err != nil {
+		t.Fatalf("UpdateTicketDescription (no debate): %v", err)
+	}
+	got, _ := db.GetTicket(ctx, ticket.ID)
+	if got.DescriptionMarkdown != "freshly rewritten" {
+		t.Errorf("first update failed silently: got %q", got.DescriptionMarkdown)
+	}
+
+	// Start a debate → subsequent UpdateTicketDescription returns
+	// ErrDescriptionLocked regardless of caller identity.
+	if _, err := db.StartDebate(ctx, ticket.ID, ticket.ProjectID,
+		mustResolveOrgID(t, db, ticket.ProjectID), ticket.CreatedBy); err != nil {
+		t.Fatalf("StartDebate: %v", err)
+	}
+	err := db.UpdateTicketDescription(ctx, ticket.ID, "debate should block this")
+	if !errors.Is(err, models.ErrDescriptionLocked) {
+		t.Fatalf("expected ErrDescriptionLocked, got %v", err)
+	}
+	got, _ = db.GetTicket(ctx, ticket.ID)
+	if got.DescriptionMarkdown == "debate should block this" {
+		t.Error("UpdateTicketDescription wrote through the guard")
+	}
+}
+
+func TestUpdateTicketMetadata_AllowedDuringActiveDebate(t *testing.T) {
+	// Metadata (title, priority, dates, assignee) stays editable
+	// during an active debate — only description is locked.
+	pool := testutil.SetupTestDB(t)
+	db := models.NewDB(pool)
+	sessions := auth.NewSessionStore(pool)
+	ticket, _ := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	if _, err := db.StartDebate(ctx, ticket.ID, ticket.ProjectID,
+		mustResolveOrgID(t, db, ticket.ProjectID), ticket.CreatedBy); err != nil {
+		t.Fatalf("StartDebate: %v", err)
+	}
+
+	if err := db.UpdateTicketMetadata(ctx, ticket.ID, "new title", "high", nil, nil, nil); err != nil {
+		t.Fatalf("UpdateTicketMetadata during active debate: %v", err)
+	}
+	got, _ := db.GetTicket(ctx, ticket.ID)
+	if got.Title != "new title" {
+		t.Errorf("title = %q, want 'new title'", got.Title)
+	}
+	if got.Priority != "high" {
+		t.Errorf("priority = %q, want 'high'", got.Priority)
+	}
+}
+
+func mustResolveOrgID(t *testing.T, db *models.DB, projectID string) string {
+	t.Helper()
+	var orgID string
+	if err := db.Pool.QueryRow(context.Background(),
+		`SELECT org_id FROM projects WHERE id = $1`, projectID,
+	).Scan(&orgID); err != nil {
+		t.Fatalf("resolving org from project: %v", err)
+	}
+	return orgID
 }
