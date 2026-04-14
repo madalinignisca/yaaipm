@@ -26,25 +26,35 @@ type RefineInput struct {
 	SystemPrompt string
 }
 
-// RefineOutput is the normalized response shape returned by every refiner.
+// FinishReason constants. Adapters MUST map provider-specific stop
+// reasons onto this set; the handler checks FinishReason == FinishReasonLength
+// as a single equality to decide truncation rejections.
 //
-// FinishReason MUST be one of the normalized values below. Adapters are
-// responsible for mapping provider-specific stop reasons onto this set:
-//
-//	"stop"           — model completed normally
-//	"length"         — output truncated by token limit (maps from OpenAI's
-//	                   "length", Anthropic's "max_tokens", Gemini's
-//	                   FinishReasonMaxTokens). The CreateRound handler
-//	                   rejects these rounds (spec §3.2) to prevent
-//	                   truncated output from silently overwriting a
-//	                   ticket description on approve.
-//	"content_filter" — output blocked by safety filter
-//	"tool_calls"     — model requested tool invocation (not used in debate
-//	                   mode but reserved so the vocabulary is stable)
+//   - FinishReasonStop          — model completed normally
+//   - FinishReasonLength        — output truncated by token limit
+//     (adapters map OpenAI's "length",
+//     Anthropic's "max_tokens",
+//     Gemini's FinishReasonMaxTokens to this)
+//   - FinishReasonContentFilter — output blocked by safety filter
+//   - FinishReasonToolCalls     — model requested tool invocation
+//     (not used in debate mode but reserved
+//     so the vocabulary is stable)
 //
 // Any provider-specific reason not in this set may be surfaced raw; the
 // handler treats unknown FinishReason values as "stop-equivalent" and
 // accepts the round (provided other validation passes).
+const (
+	FinishReasonStop          = "stop"
+	FinishReasonLength        = "length"
+	FinishReasonContentFilter = "content_filter"
+	FinishReasonToolCalls     = "tool_calls"
+)
+
+// RefineOutput is the normalized response shape returned by every refiner.
+// FinishReason uses the normalized vocabulary above; the CreateRound
+// handler rejects rounds whose FinishReason == FinishReasonLength
+// (spec §3.2) to prevent truncated AI output from silently overwriting a
+// ticket description on approve.
 type RefineOutput struct {
 	Text         string
 	Usage        RefineUsage

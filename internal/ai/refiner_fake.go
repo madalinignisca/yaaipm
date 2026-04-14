@@ -42,7 +42,7 @@ func (f *FakeRefiner) Refine(_ context.Context, in RefineInput) (RefineOutput, e
 		Usage: RefineUsage{
 			InputTokens:  inputTok,
 			OutputTokens: outputTok,
-			CostMicros:   computeCostMicros(f.ModelVal, inputTok, outputTok),
+			CostMicros:   ComputeCostMicros(f.ModelVal, inputTok, outputTok),
 			Model:        f.ModelVal,
 		},
 	}, nil
