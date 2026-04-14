@@ -6,9 +6,11 @@ import "context"
 // to exercise the full round lifecycle without burning real AI API calls.
 // Configure NameVal, ModelVal, and OutputFunc; CallCount tracks invocations.
 //
-// Lives in a _test.go file but in the ai package (not ai_test) so handler
-// tests in a different package can import it via a typed alias. This mirrors
-// how gemini_test.go sets up its fixtures.
+// This file intentionally has NO _test.go suffix: Go restricts test-only
+// files to their own package, so putting the fakes in refiner_fake_test.go
+// would make them inaccessible to handler tests in internal/handlers_test.
+// Shipping ~60 lines of test doubles in the production binary is
+// negligible; this matches how net/http/httptest exposes its fakes.
 type FakeRefiner struct {
 	NameVal, ModelVal string
 	// OutputFunc returns (text, finishReason, err). Callers drive behavior

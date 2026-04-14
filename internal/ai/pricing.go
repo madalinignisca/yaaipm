@@ -38,8 +38,16 @@ func computeCostMicros(model string, inputTokens, outputTokens int) int64 {
 // costCentsDelta returns the number of cents (i.e. amount_cents units in
 // project_costs) to add after a round of AI cost accrual. It computes the
 // delta of floor(totalMicros / 10000) before and after adding this round's
-// cost, so rounding error is bounded to <1 cent per debate rather than
-// <1 cent per round (spec §6).
+// cost, so rounding error is bounded to <1 cent PER DEBATE rather than
+// <1 cent per round. This is the §6 "cumulative floor" design.
+//
+// Note: spec §7.3 contains stale test examples (TestCostMicrosToAddCents
+// with per-round ceiling semantics) that pre-date the §6 decision to
+// switch to cumulative-floor. The authoritative behavior is this
+// function's implementation; §7.3 test names reference an earlier
+// revision's helper that was renamed to costCentsDelta. Our actual test
+// (pricing_test.go:TestCostCentsDelta + TestCostCentsDelta_Accumulates
+// ToBoundedError) pins the correct cumulative-floor semantics.
 //
 // Arguments:
 //   - oldTotalMicros: feature_debates.total_cost_micros BEFORE this round
