@@ -60,8 +60,8 @@ func (r *OpenAIRefiner) Refine(ctx context.Context, in RefineInput) (RefineOutpu
 			{Role: openai.ChatMessageRoleSystem, Content: resolveSystemPrompt(in.SystemPrompt)},
 			{Role: openai.ChatMessageRoleUser, Content: buildRefineUserPrompt(in.CurrentText, in.Feedback)},
 		},
-		MaxTokens:   4096,
-		Temperature: 0.3,
+		MaxTokens:   refinerMaxTokens,
+		Temperature: refinerTemperature,
 	})
 	if err != nil {
 		return RefineOutput{}, fmt.Errorf("openai refine: %w", err)
@@ -110,13 +110,27 @@ func mapOpenAIFinishReason(reason openai.FinishReason) string {
 		// truncation/filter signals.
 		return FinishReasonStop
 	default:
+		// Tightened unknown-reason heuristic: classify into ContentFilter
+		// before Length so a future "safety_limit_exceeded" doesn't get
+		// mis-recorded as a truncation in the audit trail. Truncation
+		// patterns must contain a token/length/truncat marker — the
+		// standalone "exceeded" substring is too broad and was removed.
 		raw := strings.ToLower(string(reason))
-		if strings.Contains(raw, "max") ||
+		switch {
+		case strings.Contains(raw, "safety") ||
+			strings.Contains(raw, "refus") ||
+			strings.Contains(raw, "filter") ||
+			strings.Contains(raw, "prohibit") ||
+			strings.Contains(raw, "block"):
+			return FinishReasonContentFilter
+		case strings.Contains(raw, "max_tokens") ||
+			strings.Contains(raw, "max_completion") ||
+			strings.Contains(raw, "context_length") ||
 			strings.Contains(raw, "length") ||
-			strings.Contains(raw, "exceeded") ||
-			strings.Contains(raw, "truncat") {
+			strings.Contains(raw, "truncat"):
 			return FinishReasonLength
+		default:
+			return string(reason)
 		}
-		return string(reason)
 	}
 }

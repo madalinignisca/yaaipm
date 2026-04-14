@@ -54,6 +54,13 @@ func TestMapOpenAIFinishReason(t *testing.T) {
 		// Future truncation-shaped reasons → FinishReasonLength.
 		{openai.FinishReason("context_length_exceeded"), FinishReasonLength},
 		{openai.FinishReason("max_completion_tokens"), FinishReasonLength},
+		{openai.FinishReason("output_truncated"), FinishReasonLength},
+		// Future safety-shaped reasons → FinishReasonContentFilter.
+		// Previously "safety_limit_exceeded" would have mis-mapped to
+		// FinishReasonLength via the overly-broad "exceeded" substring.
+		{openai.FinishReason("safety_limit_exceeded"), FinishReasonContentFilter},
+		{openai.FinishReason("prohibited_content"), FinishReasonContentFilter},
+		{openai.FinishReason("refused_by_model"), FinishReasonContentFilter},
 		// Truly unknown → surfaced raw.
 		{openai.FinishReason("something_new"), "something_new"},
 	}
