@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -125,6 +126,57 @@ func main() {
 	}
 	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient, chatHub, cfg)
 
+	// Feature Debate Mode (v0.2.0). Construct the refiner registry
+	// lazily from whichever provider keys are configured — missing
+	// keys mean the corresponding AI-picker button will return 400
+	// ("unknown provider") on click rather than silently falling back
+	// to another vendor (spec §3.2).
+	//
+	// DEBATE_REFINER_MODE=fake replaces every configured refiner with
+	// an ai.FakeRefiner that returns a canned string. Only for E2E
+	// tests (Playwright golden-path spec in e2e/tests/06-debate/)
+	// that otherwise would need a real API key per run. Guarded
+	// against production misconfiguration: panics at startup if the
+	// env is set AND the configured BaseURL looks production-shaped
+	// (anything that isn't localhost/127.0.0.1 or explicitly marked
+	// as an http test origin). Fakes in production are how you ship
+	// a feature that "works" but talks to no real AI.
+	debateRefinerMode := os.Getenv("DEBATE_REFINER_MODE")
+	if debateRefinerMode == "fake" {
+		if !isLocalDebateEnv(cfg.BaseURL) {
+			log.Fatalf("DEBATE_REFINER_MODE=fake set against non-local BaseURL %q — refusing to start (see cmd/server/main.go)", cfg.BaseURL)
+		}
+		log.Printf("WARNING: DEBATE_REFINER_MODE=fake — all debate refiners return canned output")
+	}
+
+	debateRefiners := map[string]ai.Refiner{}
+	if cfg.AnthropicAPIKey != "" {
+		anthropicClient := ai.NewAnthropicClient(cfg.AnthropicAPIKey, ai.AnthropicModels{
+			Default: cfg.AnthropicModel,
+			Content: cfg.AnthropicModelContent,
+		})
+		debateRefiners["claude"] = ai.NewAnthropicRefiner(anthropicClient, cfg.AnthropicModel)
+	}
+	if geminiClient != nil {
+		debateRefiners["gemini"] = ai.NewGeminiRefiner(geminiClient, cfg.GeminiModel)
+	}
+	if cfg.OpenAIAPIKey != "" {
+		debateRefiners["openai"] = ai.NewOpenAIRefiner(ai.NewOpenAIClient(cfg.OpenAIAPIKey, cfg.OpenAIModel))
+	}
+	// Swap in fakes for E2E tests when explicitly opted in (guarded
+	// against production above).
+	if debateRefinerMode == "fake" {
+		debateRefiners = buildFakeDebateRefiners()
+	}
+	var debateScorer ai.Scorer
+	if geminiClient != nil {
+		// v1 hardcodes Gemini as the scorer (spec §3.2); phase-2 issue
+		// #63 makes this configurable per project.
+		debateScorer = ai.NewGeminiScorer(geminiClient, cfg.GeminiModel)
+	}
+	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, handlers.DefaultDebateConfig())
+	log.Printf("Feature Debate Mode wired (%d refiners, scorer=%v)", len(debateRefiners), debateScorer != nil)
+
 	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
 	authLimiter := middleware.NewRateLimiter(0.5, 5)
 
@@ -235,6 +287,17 @@ func main() {
 		r.Put("/tickets/{ticketID}", ticketH.UpdateTicket)
 		r.Delete("/tickets/{ticketID}", ticketH.DeleteTicket)
 
+		// Feature Debate Mode (spec §4). Task 9 extends this block
+		// with approve/abandon.
+		r.Get("/tickets/{ticketID}/debate", debateH.ShowDebate)
+		r.Post("/tickets/{ticketID}/debate/start", debateH.StartDebate)
+		r.Post("/tickets/{ticketID}/debate/rounds", debateH.CreateRound)
+		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", debateH.AcceptRound)
+		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/reject", debateH.RejectRound)
+		r.Post("/tickets/{ticketID}/debate/undo", debateH.UndoRound)
+		r.Post("/tickets/{ticketID}/debate/approve", debateH.ApproveDebate)
+		r.Post("/tickets/{ticketID}/debate/abandon", debateH.AbandonDebate)
+
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
 
@@ -296,4 +359,61 @@ func main() {
 		log.Fatalf("server error: %v", listenErr)
 	}
 	log.Println("Server stopped")
+}
+
+// isLocalDebateEnv returns true iff the BaseURL parses to a hostname
+// that's either an IPv4/IPv6 loopback address OR ends with one of the
+// reserved local TLDs (.local, .test). Uses url.Parse + strings.HasSuffix
+// rather than substring matching so a URL like
+// https://localhost.example.com or https://speed-test.net doesn't
+// accidentally bypass the production safety guard.
+//
+// Anything else — including plain hostnames, LAN IPs, public domains,
+// and unparseable URLs — is rejected so a misconfigured prod env can't
+// silently serve fake AI output to real users.
+func isLocalDebateEnv(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	// Loopback exact matches.
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	// Reserved local TLDs (RFC 6761 / mDNS) — must be a SUFFIX
+	// preceded by a dot, not a substring. Prevents
+	// "localhost.example.com" or "speed-test.net" from matching.
+	if strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".test") {
+		return true
+	}
+	return false
+}
+
+// buildFakeDebateRefiners returns a refiner registry backed entirely
+// by ai.FakeRefiner so E2E tests exercise the handler flow without
+// hitting a real AI provider. Each fake returns a provider-tagged
+// canned string — varied enough that golden-path tests can assert
+// which provider's button was clicked.
+func buildFakeDebateRefiners() map[string]ai.Refiner {
+	mk := func(name, model string) ai.Refiner {
+		return &ai.FakeRefiner{
+			NameVal: name, ModelVal: model,
+			OutputFunc: func(in ai.RefineInput) (string, string, error) {
+				// Always return a non-trivial string so the handler's
+				// MinOutputLen check passes. Include the original
+				// text to keep the diff renderer's output interesting.
+				return "Refactored by " + name + ":\n\n" + in.CurrentText + "\n\n- added by fake refiner", ai.FinishReasonStop, nil
+			},
+		}
+	}
+	return map[string]ai.Refiner{
+		"claude": mk("claude", ai.ModelClaudeSonnet46),
+		"gemini": mk("gemini", ai.ModelGeminiFlash),
+		"openai": mk("openai", ai.ModelGPT5Mini),
+	}
 }

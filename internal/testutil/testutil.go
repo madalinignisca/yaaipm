@@ -38,7 +38,10 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 		t.Skipf("skipping integration test: cannot ping test DB: %v", err)
 	}
 
-	// Clean all tables (order matters due to foreign keys)
+	// Clean all tables (order matters due to foreign keys).
+	// Child tables listed before parents: even though CASCADE would handle
+	// most chains, explicit deletion keeps cleanup deterministic and makes
+	// FK-dependency changes obvious in diffs.
 	tables := []string{
 		"reactions",
 		"ai_messages",
@@ -47,6 +50,12 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 		"project_costs",
 		"ticket_activities",
 		"comments",
+		// Debate rounds reference debates; debates reference tickets + users
+		// (ON DELETE RESTRICT on started_by/triggered_by), so purge rounds
+		// first, then debates, then the rest.
+		"feature_debate_rounds",
+		"feature_debates",
+		"brief_revisions",
 		"tickets",
 		"projects",
 		"invitations",

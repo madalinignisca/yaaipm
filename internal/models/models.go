@@ -236,3 +236,46 @@ type PlatformSettings struct {
 	ContactPhones      string    `db:"contact_phones"`
 	ContactEmails      string    `db:"contact_emails"`
 }
+
+type FeatureDebate struct {
+	CreatedAt                 time.Time  `db:"created_at"`
+	UpdatedAt                 time.Time  `db:"updated_at"`
+	InFlightStartedAt         *time.Time `db:"in_flight_started_at"`
+	EffortScoredAt            *time.Time `db:"effort_scored_at"`
+	InFlightRequestID         *string    `db:"in_flight_request_id"`
+	EffortScore               *int       `db:"effort_score"`
+	EffortHours               *int       `db:"effort_hours"`
+	EffortReasoning           *string    `db:"effort_reasoning"`
+	LastScoredRoundID         *string    `db:"last_scored_round_id"`
+	ApprovedText              *string    `db:"approved_text"`
+	ID                        string     `db:"id"`
+	TicketID                  string     `db:"ticket_id"`
+	ProjectID                 string     `db:"project_id"`
+	OrgID                     string     `db:"org_id"`
+	StartedBy                 string     `db:"started_by"`
+	Status                    string     `db:"status"` // active | approved | abandoned
+	SeedDescription           string     `db:"seed_description"`
+	CurrentText               string     `db:"current_text"`
+	OriginalTicketDescription string     `db:"original_ticket_description"`
+	TotalCostMicros           int64      `db:"total_cost_micros"`
+}
+
+type DebateRound struct {
+	CreatedAt        time.Time  `db:"created_at"`
+	DecidedAt        *time.Time `db:"decided_at"`
+	Feedback         *string    `db:"feedback"`
+	DiffUnified      *string    `db:"diff_unified"`
+	InputTokens      *int       `db:"input_tokens"`
+	OutputTokens     *int       `db:"output_tokens"`
+	CostMicros       *int64     `db:"cost_micros"`
+	ScorerCostMicros *int64     `db:"scorer_cost_micros"`
+	ID               string     `db:"id"`
+	DebateID         string     `db:"debate_id"`
+	Provider         string     `db:"provider"` // claude | gemini | openai
+	Model            string     `db:"model"`
+	TriggeredBy      string     `db:"triggered_by"`
+	InputText        string     `db:"input_text"`
+	OutputText       string     `db:"output_text"`
+	Status           string     `db:"status"` // in_review | accepted | rejected
+	RoundNumber      int        `db:"round_number"`
+}

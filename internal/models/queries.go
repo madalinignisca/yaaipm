@@ -7,9 +7,28 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// DebateStatusActive is the feature_debates.status value for a debate
+// that is currently accepting rounds. Centralized here so the literal
+// 'active' string isn't repeated across query bodies (goconst).
+const DebateStatusActive = "active"
+
+// Feature Debate Mode sentinel errors. Callers (debate handler in
+// Task 7+) use errors.Is to route each distinct case to the correct
+// HTTP status per the spec §3.3 error discipline table.
+var (
+	ErrDebateNotActive     = errors.New("debate not active")
+	ErrInFlightAIRequest   = errors.New("AI request already in flight")
+	ErrStaleAIInput        = errors.New("current_text changed during AI call")
+	ErrInReviewRoundExists = errors.New("an in-review round already exists")
+	ErrDescriptionLocked   = errors.New("ticket description locked: active debate exists")
+	ErrRoundNotInReview    = errors.New("round is not in review state")
+	ErrNoRoundsToUndo      = errors.New("undo matched no rounds")
 )
 
 type DB struct {
@@ -1109,14 +1128,206 @@ func (db *DB) UpdateTicketAgentMode(ctx context.Context, id string, mode, agent 
 	return nil
 }
 
+// UpdateTicket updates a ticket's title, description, priority,
+// dates, and assignee in a single statement. If a debate is active
+// for this ticket AND the new description differs from the stored
+// description, returns ErrDescriptionLocked — preventing debate-
+// guarded overwrites regardless of which caller (HTTP handler or
+// AI assistant tool) tries to bypass the lockout.
+//
+// The guard lives in the model layer so every caller gets it for
+// free; spec §3.3 "single write path" invariant. For callers that
+// explicitly need to update metadata-only (title/priority/dates)
+// during an active debate, use UpdateTicketMetadata which skips
+// description and skips the guard.
 func (db *DB) UpdateTicket(ctx context.Context, t *Ticket) error {
-	_, err := db.Pool.Exec(ctx,
-		`UPDATE tickets SET title = $1, description_markdown = $2, priority = $3, date_start = $4, date_end = $5, assigned_to = $6, updated_at = now() WHERE id = $7`,
+	// Atomic guard via conditional WHERE: the update applies only when
+	// the new description matches the stored one (metadata-only case),
+	// or when no active debate exists for this ticket. A debate
+	// starting between check and write cannot slip an overwrite
+	// through — the subquery is evaluated inside the same statement.
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE tickets
+		   SET title = $1, description_markdown = $2, priority = $3,
+		       date_start = $4, date_end = $5, assigned_to = $6,
+		       updated_at = now()
+		 WHERE id = $7
+		   AND (
+		         description_markdown = $2
+		         OR NOT EXISTS (
+		            SELECT 1 FROM feature_debates
+		             WHERE ticket_id = $7 AND status = 'active'
+		         )
+		       )`,
 		t.Title, t.DescriptionMarkdown, t.Priority, t.DateStart, t.DateEnd, t.AssignedTo, t.ID)
 	if err != nil {
 		return fmt.Errorf("updating ticket: %w", err)
 	}
+	if tag.RowsAffected() == 0 {
+		// Either the ticket doesn't exist or the guard blocked the
+		// update. Distinguish by existence check so callers get the
+		// right sentinel.
+		var exists bool
+		if qErr := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tickets WHERE id = $1)`, t.ID,
+		).Scan(&exists); qErr != nil {
+			return fmt.Errorf("post-guard existence check: %w", qErr)
+		}
+		if !exists {
+			return pgx.ErrNoRows
+		}
+		return ErrDescriptionLocked
+	}
 	return nil
+}
+
+// UpdateTicketMetadata updates everything EXCEPT description_markdown.
+// No debate guard — title, priority, dates, and assignee remain
+// editable while a debate is active.
+func (db *DB) UpdateTicketMetadata(ctx context.Context, id, title, priority string, dateStart, dateEnd *time.Time, assignedTo *string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE tickets
+		    SET title = $1, priority = $2, date_start = $3, date_end = $4,
+		        assigned_to = $5, updated_at = now()
+		  WHERE id = $6`,
+		title, priority, dateStart, dateEnd, assignedTo, id)
+	if err != nil {
+		return fmt.Errorf("updating ticket metadata: %w", err)
+	}
+	return nil
+}
+
+// UpdateTicketDescription updates description_markdown ONLY, with the
+// model-layer debate-active guard. Returns ErrDescriptionLocked if a
+// debate is currently active for the ticket. Callers (HTTP handler,
+// AI assistant tool, future paths) MUST use this method for
+// description changes so the guard is never bypassed.
+func (db *DB) UpdateTicketDescription(ctx context.Context, id, newMarkdown string) error {
+	// Atomic guard via NOT EXISTS subquery in the UPDATE. No TOCTOU
+	// window — a debate starting between a check and this call can't
+	// slip an overwrite through because the subquery is part of the
+	// same statement.
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE tickets
+		   SET description_markdown = $1, updated_at = now()
+		 WHERE id = $2
+		   AND NOT EXISTS (
+		     SELECT 1 FROM feature_debates
+		      WHERE ticket_id = $2 AND status = 'active'
+		   )`, newMarkdown, id)
+	if err != nil {
+		return fmt.Errorf("updating ticket description: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if qErr := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tickets WHERE id = $1)`, id,
+		).Scan(&exists); qErr != nil {
+			return fmt.Errorf("post-guard existence check: %w", qErr)
+		}
+		if !exists {
+			return pgx.ErrNoRows
+		}
+		return ErrDescriptionLocked
+	}
+	return nil
+}
+
+// ApproveDebateTx writes the debate's current_text to the ticket's
+// description_markdown and transitions the debate to 'approved'.
+// Enforces two invariants under the caller's debate-row lock:
+//   - Debate must be status='active' (ErrDebateNotActive otherwise —
+//     terminal states can't be re-approved or flipped from abandoned).
+//   - tickets.description_markdown must equal the snapshot taken at
+//     StartDebate (original_ticket_description). If another code path
+//     edited the description out-of-band (e.g., a v0.1.0 pod during
+//     a rolling upgrade, before the IsDebateActive guard was in
+//     place), we refuse rather than silently overwrite. CAS failure
+//     maps to 409 at the handler so the user is told to Abandon
+//     the debate and manually reconcile.
+//
+// Caller MUST have opened the tx and already locked the debate row.
+var ErrExternalDescriptionEdit = errors.New("ticket description edited externally since debate started")
+
+func (db *DB) ApproveDebateTx(ctx context.Context, tx pgx.Tx, debateID, ticketID string) error {
+	// Single combined query locks BOTH the debate row and the ticket
+	// row atomically, not sequentially, and removes one round-trip
+	// from the success path. If no debate row matches (wrong id or
+	// wrong ticket_id pairing), pgx.ErrNoRows surfaces to the caller
+	// which maps it to 404/409 as appropriate.
+	var (
+		status       string
+		currentText  string
+		originalDesc string
+		ticketDesc   string
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT fd.status, fd.current_text, fd.original_ticket_description,
+		       t.description_markdown
+		  FROM feature_debates fd
+		  JOIN tickets t ON t.id = fd.ticket_id
+		 WHERE fd.id = $1 AND fd.ticket_id = $2
+		 FOR UPDATE`, debateID, ticketID,
+	).Scan(&status, &currentText, &originalDesc, &ticketDesc)
+	if err != nil {
+		return err
+	}
+	if status != DebateStatusActive {
+		return ErrDebateNotActive
+	}
+	if ticketDesc != originalDesc {
+		return ErrExternalDescriptionEdit
+	}
+
+	if _, uErr := tx.Exec(ctx,
+		`UPDATE tickets SET description_markdown = $1, updated_at = now() WHERE id = $2`,
+		currentText, ticketID,
+	); uErr != nil {
+		return uErr
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET status = 'approved', approved_text = $1, updated_at = now()
+		 WHERE id = $2`, currentText, debateID,
+	)
+	return err
+}
+
+// AbandonDebateTx marks the debate as abandoned and force-clears any
+// lingering in_flight_request_id so the user can always unlock the
+// description even if a previous CreateRound crashed mid-AI-call.
+// The ticket's description is left untouched.
+//
+// Caller MUST have opened the tx and already locked the debate row.
+func (db *DB) AbandonDebateTx(ctx context.Context, tx pgx.Tx, debateID string) error {
+	// Atomic UPDATE with the status filter directly in WHERE. Common
+	// success path is a single statement instead of SELECT-then-UPDATE.
+	// RowsAffected==0 means either the debate is missing or terminal —
+	// one disambiguating SELECT yields the right sentinel.
+	tag, err := tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET status = 'abandoned',
+		       in_flight_request_id = NULL,
+		       in_flight_started_at = NULL,
+		       updated_at = now()
+		 WHERE id = $1 AND status = 'active'`, debateID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var exists bool
+	if qErr := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM feature_debates WHERE id = $1)`, debateID,
+	).Scan(&exists); qErr != nil {
+		return qErr
+	}
+	if !exists {
+		return pgx.ErrNoRows
+	}
+	return ErrDebateNotActive
 }
 
 // ListAgentReady returns tickets that are ready for agent processing.
@@ -1964,4 +2175,592 @@ func (db *DB) GetTOTPLastUsed(ctx context.Context, userID string) (*time.Time, e
 		return nil, fmt.Errorf("getting totp last used: %w", err)
 	}
 	return lastUsed, nil
+}
+
+// ── Feature Debates ───────────────────────────────────────────────
+
+// featureDebateColumns lists the column order used by every SELECT / RETURNING
+// clause in the debate queries. Keeping it in one place prevents drift across
+// the many scan targets below.
+const featureDebateColumns = `id, ticket_id, project_id, org_id, started_by, status,
+	seed_description, current_text, original_ticket_description,
+	in_flight_request_id, in_flight_started_at, total_cost_micros,
+	effort_score, effort_hours, effort_reasoning, effort_scored_at,
+	last_scored_round_id, approved_text, created_at, updated_at`
+
+// scanFeatureDebate reads one row from a pgx.Row or pgx.Rows into a *FeatureDebate.
+type featureDebateScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanFeatureDebate(row featureDebateScanner, deb *FeatureDebate) error {
+	return row.Scan(
+		&deb.ID, &deb.TicketID, &deb.ProjectID, &deb.OrgID, &deb.StartedBy, &deb.Status,
+		&deb.SeedDescription, &deb.CurrentText, &deb.OriginalTicketDescription,
+		&deb.InFlightRequestID, &deb.InFlightStartedAt, &deb.TotalCostMicros,
+		&deb.EffortScore, &deb.EffortHours, &deb.EffortReasoning, &deb.EffortScoredAt,
+		&deb.LastScoredRoundID, &deb.ApprovedText, &deb.CreatedAt, &deb.UpdatedAt,
+	)
+}
+
+// StartDebate creates an active debate for the given ticket, or returns the
+// existing one if another request already created it. Idempotent under
+// concurrent calls (ON CONFLICT DO NOTHING + fallback SELECT). Spec §4.1.
+//
+// A small retry loop covers a narrow concurrency window: if transaction A
+// inserted a conflicting row and then rolled back between this call's INSERT
+// and its fallback SELECT, the fallback sees pgx.ErrNoRows. On the next
+// attempt either the INSERT succeeds (no active row now) or the SELECT
+// finds a freshly committed one. 2 attempts are always sufficient.
+func (db *DB) StartDebate(ctx context.Context, ticketID, projectID, orgID, userID string) (*FeatureDebate, error) {
+	var desc string
+	if err := db.Pool.QueryRow(ctx,
+		`SELECT description_markdown FROM tickets WHERE id = $1`, ticketID,
+	).Scan(&desc); err != nil {
+		return nil, fmt.Errorf("loading ticket description: %w", err)
+	}
+
+	var lastErr error
+	for attempt := range 2 {
+		deb := &FeatureDebate{}
+		err := scanFeatureDebate(db.Pool.QueryRow(ctx,
+			`INSERT INTO feature_debates (
+				ticket_id, project_id, org_id, started_by, status,
+				seed_description, current_text, original_ticket_description,
+				total_cost_micros
+			) VALUES ($1, $2, $3, $4, 'active', $5, $5, $5, 0)
+			ON CONFLICT (ticket_id) WHERE status = 'active' DO NOTHING
+			RETURNING `+featureDebateColumns,
+			ticketID, projectID, orgID, userID, desc,
+		), deb)
+		if err == nil {
+			return deb, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("inserting feature_debate: %w", err)
+		}
+		// Conflict path: try to find the committed active row.
+		existing, selErr := db.GetActiveDebate(ctx, ticketID)
+		if selErr == nil {
+			return existing, nil
+		}
+		if !errors.Is(selErr, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("loading active debate after conflict: %w", selErr)
+		}
+		// ErrNoRows from fallback means the conflicting tx rolled back between
+		// our INSERT and SELECT. Retry once.
+		lastErr = selErr
+		_ = attempt
+	}
+	return nil, fmt.Errorf("StartDebate exhausted retries: %w", lastErr)
+}
+
+// GetActiveDebate returns the single active debate for a ticket, or pgx.ErrNoRows.
+func (db *DB) GetActiveDebate(ctx context.Context, ticketID string) (*FeatureDebate, error) {
+	deb := &FeatureDebate{}
+	err := scanFeatureDebate(db.Pool.QueryRow(ctx,
+		`SELECT `+featureDebateColumns+` FROM feature_debates
+		  WHERE ticket_id = $1 AND status = 'active' LIMIT 1`,
+		ticketID,
+	), deb)
+	if err != nil {
+		return nil, err
+	}
+	return deb, nil
+}
+
+// GetDebateByID returns a debate by id regardless of status.
+func (db *DB) GetDebateByID(ctx context.Context, debateID string) (*FeatureDebate, error) {
+	deb := &FeatureDebate{}
+	err := scanFeatureDebate(db.Pool.QueryRow(ctx,
+		`SELECT `+featureDebateColumns+` FROM feature_debates WHERE id = $1`,
+		debateID,
+	), deb)
+	if err != nil {
+		return nil, err
+	}
+	return deb, nil
+}
+
+// IsDebateActive returns true if any debate is active for the given ticket.
+// Used by UpdateTicketDescription guard (Task 9).
+func (db *DB) IsDebateActive(ctx context.Context, ticketID string) (bool, error) {
+	var exists bool
+	err := db.Pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM feature_debates
+		  WHERE ticket_id = $1 AND status = 'active')`,
+		ticketID,
+	).Scan(&exists)
+	return exists, err
+}
+
+// GetLatestRound returns the round with the highest round_number for the
+// given debate (any status), or pgx.ErrNoRows if the debate has no rounds.
+// Used by the CreateRound handler (spec §4.2) to enforce the "one in-review
+// round at a time" pre-check before taking the debate lock.
+func (db *DB) GetLatestRound(ctx context.Context, debateID string) (*DebateRound, error) {
+	r := &DebateRound{}
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, debate_id, round_number, provider, model, triggered_by,
+		       feedback, input_text, output_text, diff_unified, status,
+		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
+		       created_at, decided_at
+		  FROM feature_debate_rounds
+		 WHERE debate_id = $1
+		 ORDER BY round_number DESC LIMIT 1`, debateID,
+	).Scan(
+		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
+		&r.CreatedAt, &r.DecidedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// GetDebateRounds returns rounds for a debate in round_number ASC order.
+func (db *DB) GetDebateRounds(ctx context.Context, debateID string) ([]DebateRound, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, debate_id, round_number, provider, model, triggered_by,
+		       feedback, input_text, output_text, diff_unified, status,
+		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
+		       created_at, decided_at
+		  FROM feature_debate_rounds
+		 WHERE debate_id = $1
+		 ORDER BY round_number ASC`, debateID)
+	if err != nil {
+		return nil, fmt.Errorf("listing debate rounds: %w", err)
+	}
+	defer rows.Close()
+	var out []DebateRound
+	for rows.Next() {
+		var r DebateRound
+		if err := rows.Scan(
+			&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
+			&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+			&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
+			&r.CreatedAt, &r.DecidedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning debate round: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CountUserRoundsLast24h returns the count of rounds triggered by the given
+// user within the last 24 hours. Backs the per-user daily safety fuse (spec §6).
+func (db *DB) CountUserRoundsLast24h(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM feature_debate_rounds
+		  WHERE triggered_by = $1 AND created_at >= now() - INTERVAL '24 hours'`,
+		userID,
+	).Scan(&n)
+	return n, err
+}
+
+// CountActiveRoundsForDebate returns the count of in_review + accepted rounds
+// for a debate. Rejected rounds don't count toward the per-feature cap.
+func (db *DB) CountActiveRoundsForDebate(ctx context.Context, debateID string) (int, error) {
+	var n int
+	err := db.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM feature_debate_rounds
+		  WHERE debate_id = $1 AND status IN ('in_review','accepted')`,
+		debateID,
+	).Scan(&n)
+	return n, err
+}
+
+// ── Debate round lifecycle (spec §4.2) ────────────────────────────
+
+// ReserveInFlight transitions in_flight_request_id from NULL (or stale)
+// to a fresh UUID under the debate row's lock. Returns the reserved
+// request ID and a snapshot of current_text. Must be called inside a
+// tx the caller controls so the caller can Commit (releasing the lock)
+// before the long-running AI call begins.
+//
+// staleAfter is typically 90 seconds — 60s AI timeout + 30s buffer.
+// If an existing reservation is older than staleAfter it's treated as
+// orphaned (presumed server-crash mid-call) and overwritten.
+func (db *DB) ReserveInFlight(ctx context.Context, tx pgx.Tx, debateID string, staleAfter time.Duration) (reqID, snapshotCurrentText string, err error) {
+	var (
+		existingID  *string
+		existingAt  *time.Time
+		currentText string
+		status      string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT in_flight_request_id, in_flight_started_at, current_text, status
+		  FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
+	).Scan(&existingID, &existingAt, &currentText, &status)
+	if err != nil {
+		return "", "", err
+	}
+	if status != DebateStatusActive {
+		return "", "", ErrDebateNotActive
+	}
+	if existingID != nil {
+		if existingAt == nil || time.Since(*existingAt) < staleAfter {
+			return "", "", ErrInFlightAIRequest
+		}
+		// else: orphaned, fall through and overwrite.
+	}
+	newID := uuid.NewString()
+	if _, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET in_flight_request_id = $1, in_flight_started_at = now()
+		 WHERE id = $2`, newID, debateID,
+	); err != nil {
+		return "", "", err
+	}
+	return newID, currentText, nil
+}
+
+// ClearInFlight unconditionally clears the reservation flag. Used in
+// error paths when an AI call fails or validation rejects the output.
+// Never returns ErrDebateNotActive — clearing a flag on a terminal
+// debate is a harmless no-op.
+func (db *DB) ClearInFlight(ctx context.Context, debateID string) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE feature_debates
+		   SET in_flight_request_id = NULL, in_flight_started_at = NULL
+		 WHERE id = $1`, debateID,
+	)
+	return err
+}
+
+// InsertDebateRoundInput captures all the fields the caller must
+// provide. DebateID and User/Model identifiers are required; tokens
+// and cost come from the provider's usage response.
+type InsertDebateRoundInput struct {
+	DebateID, Provider, Model, TriggeredBy string
+	Feedback                               string // empty string treated as NULL in DB
+	InputText, OutputText                  string
+	DiffUnified                            string // empty treated as NULL
+	InputTokens, OutputTokens              int
+	CostMicros                             int64
+}
+
+// InsertDebateRoundTx inserts an in_review round under the debate
+// row's lock, validating current_text hasn't drifted from the snapshot
+// the caller used when making the AI call. Returns the new round plus
+// the cents delta (for IncrementProjectCostCents).
+//
+// Caller MUST have opened the tx; this method takes FOR UPDATE on the
+// debate row as its first statement (belt-and-suspenders — the
+// reservation flag alone would be sufficient, but re-taking the lock
+// here survives refactors that forget to do it outside).
+//
+// Returns ErrStaleAIInput if current_text changed, ErrDebateNotActive
+// if status flipped, ErrInReviewRoundExists if the partial unique
+// index rejected the insert (shouldn't happen while in_flight is set
+// but defends against future code paths that forget).
+func (db *DB) InsertDebateRoundTx(
+	ctx context.Context, tx pgx.Tx,
+	in InsertDebateRoundInput, snapshotCurrentText string,
+) (*DebateRound, int64, error) {
+	var (
+		currentText    string
+		oldTotalMicros int64
+		status         string
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT current_text, total_cost_micros, status
+		  FROM feature_debates WHERE id = $1 FOR UPDATE`, in.DebateID,
+	).Scan(&currentText, &oldTotalMicros, &status)
+	if err != nil {
+		return nil, 0, err
+	}
+	if status != DebateStatusActive {
+		return nil, 0, ErrDebateNotActive
+	}
+	if currentText != snapshotCurrentText {
+		return nil, 0, ErrStaleAIInput
+	}
+
+	var maxRound int
+	if scanErr := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(round_number), 0) FROM feature_debate_rounds WHERE debate_id = $1`,
+		in.DebateID,
+	).Scan(&maxRound); scanErr != nil {
+		return nil, 0, scanErr
+	}
+
+	// Nullable pgx parameters: empty strings become NULL so the DB
+	// reflects "no feedback" / "no cached diff" rather than storing
+	// empty strings.
+	var feedbackParam, diffParam any
+	if in.Feedback != "" {
+		feedbackParam = in.Feedback
+	}
+	if in.DiffUnified != "" {
+		diffParam = in.DiffUnified
+	}
+
+	r := &DebateRound{}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO feature_debate_rounds
+			(debate_id, round_number, provider, model, triggered_by, feedback,
+			 input_text, output_text, diff_unified, status,
+			 input_tokens, output_tokens, cost_micros)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_review', $10, $11, $12)
+		RETURNING id, debate_id, round_number, provider, model, triggered_by,
+		          feedback, input_text, output_text, diff_unified, status,
+		          input_tokens, output_tokens, cost_micros, scorer_cost_micros,
+		          created_at, decided_at`,
+		in.DebateID, maxRound+1, in.Provider, in.Model, in.TriggeredBy, feedbackParam,
+		in.InputText, in.OutputText, diffParam,
+		in.InputTokens, in.OutputTokens, in.CostMicros,
+	).Scan(
+		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
+		&r.CreatedAt, &r.DecidedAt,
+	)
+	if err != nil {
+		// Translate partial-unique-index violation on status='in_review'.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, 0, ErrInReviewRoundExists
+		}
+		return nil, 0, err
+	}
+
+	newTotalMicros := oldTotalMicros + in.CostMicros
+	if _, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET total_cost_micros = $1,
+		       in_flight_request_id = NULL,
+		       in_flight_started_at = NULL,
+		       updated_at = now()
+		 WHERE id = $2`, newTotalMicros, in.DebateID,
+	); err != nil {
+		return nil, 0, err
+	}
+
+	centsDelta := newTotalMicros/10000 - oldTotalMicros/10000
+	return r, centsDelta, nil
+}
+
+// getRoundWithTx re-fetches a round after mutation so the caller
+// receives the updated status/decided_at without a second round-trip.
+// Internal helper used by AcceptRoundTx below.
+func (db *DB) getRoundWithTx(ctx context.Context, tx pgx.Tx, roundID string) (*DebateRound, error) {
+	r := &DebateRound{}
+	err := tx.QueryRow(ctx, `
+		SELECT id, debate_id, round_number, provider, model, triggered_by,
+		       feedback, input_text, output_text, diff_unified, status,
+		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
+		       created_at, decided_at
+		  FROM feature_debate_rounds WHERE id = $1`, roundID,
+	).Scan(
+		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
+		&r.CreatedAt, &r.DecidedAt,
+	)
+	return r, err
+}
+
+// AcceptRoundTx transitions an in_review round to accepted under the
+// debate row's lock. Updates feature_debates.current_text to the
+// round's output_text so subsequent round-creation sees the new
+// baseline. Returns the refreshed round.
+//
+// Caller MUST have opened the tx and already locked the debate row
+// with FOR UPDATE. This method locks the specific round being
+// accepted (FOR UPDATE on feature_debate_rounds) to defend against
+// concurrent mutations of the same round, but relies on the caller's
+// debate-row lock for the broader state invariants.
+//
+// Returns pgx.ErrNoRows if the round doesn't exist under this debate,
+// ErrRoundNotInReview if the round is not in_review (already accepted
+// or rejected — stale client view).
+func (db *DB) AcceptRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID string) (*DebateRound, error) {
+	var status, outputText string
+	err := tx.QueryRow(ctx, `
+		SELECT status, output_text FROM feature_debate_rounds
+		 WHERE id = $1 AND debate_id = $2 FOR UPDATE`,
+		roundID, debateID,
+	).Scan(&status, &outputText)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, pgx.ErrNoRows
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status != "in_review" {
+		return nil, ErrRoundNotInReview
+	}
+
+	if _, err = tx.Exec(ctx, `
+		UPDATE feature_debate_rounds
+		   SET status = 'accepted', decided_at = now()
+		 WHERE id = $1`, roundID,
+	); err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET current_text = $1, updated_at = now()
+		 WHERE id = $2`, outputText, debateID,
+	); err != nil {
+		return nil, err
+	}
+
+	return db.getRoundWithTx(ctx, tx, roundID)
+}
+
+// RejectRoundTx transitions an in_review round to rejected. Does NOT
+// touch feature_debates.current_text — rejected rounds never
+// contributed to the accepted text chain.
+func (db *DB) RejectRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID string) error {
+	var status string
+	err := tx.QueryRow(ctx, `
+		SELECT status FROM feature_debate_rounds
+		 WHERE id = $1 AND debate_id = $2 FOR UPDATE`,
+		roundID, debateID,
+	).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgx.ErrNoRows
+	}
+	if err != nil {
+		return err
+	}
+	if status != "in_review" {
+		return ErrRoundNotInReview
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE feature_debate_rounds
+		   SET status = 'rejected', decided_at = now()
+		 WHERE id = $1`, roundID,
+	)
+	return err
+}
+
+// UndoRoundsFromTx deletes every round with round_number >=
+// fromRoundNumber (cascading undo per spec §4.4), recomputes
+// current_text from the largest remaining accepted round (or the
+// seed description if none remain), and resets the effort_* fields
+// so the next accept re-scores from scratch.
+//
+// Caller MUST have opened the tx and already locked the debate row
+// with FOR UPDATE. last_scored_round_id is cleared via ON DELETE SET
+// NULL on the cyclic FK when the targeted round is deleted; the
+// explicit nulling of effort_* in this UPDATE is belt-and-suspenders
+// for the case where the referenced round survives the delete
+// (fromRoundNumber > last_scored_round).
+func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, fromRoundNumber int) error {
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM feature_debate_rounds
+		  WHERE debate_id = $1 AND round_number >= $2`,
+		debateID, fromRoundNumber,
+	)
+	if err != nil {
+		return err
+	}
+	// Guard against "?from=999 on a 3-round debate" — a request that
+	// targets a non-existent round range should be rejected, not
+	// silently clear effort_* + current_text unchanged. Return a
+	// sentinel the handler maps to 404.
+	if tag.RowsAffected() == 0 {
+		return ErrNoRoundsToUndo
+	}
+
+	// Recompute current_text from the largest remaining accepted
+	// round, falling back to the debate's seed when no accepted rounds
+	// remain. Rejected rounds are explicitly excluded — they never
+	// modified current_text.
+	var newCurrentText string
+	if scanErr := tx.QueryRow(ctx, `
+		SELECT COALESCE(
+			(SELECT output_text FROM feature_debate_rounds
+			  WHERE debate_id = $1 AND status = 'accepted'
+			  ORDER BY round_number DESC LIMIT 1),
+			(SELECT seed_description FROM feature_debates WHERE id = $1)
+		)`, debateID,
+	).Scan(&newCurrentText); scanErr != nil {
+		return scanErr
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET current_text = $1,
+		       effort_score = NULL,
+		       effort_hours = NULL,
+		       effort_reasoning = NULL,
+		       effort_scored_at = NULL,
+		       last_scored_round_id = NULL,
+		       updated_at = now()
+		 WHERE id = $2`, newCurrentText, debateID,
+	)
+	return err
+}
+
+// UpdateEffortScoreCondTx writes a scorer result conditionally, only
+// if the debate is still active-or-approved AND the scored round is
+// fresher than whatever the last_scored_round_id already points to.
+// Out-of-order scorer responses (scorer for round N finishes after
+// scorer for round N+1) are silently discarded — the freshest
+// accepted round's score always wins. See spec §4.3 step 8.
+func (db *DB) UpdateEffortScoreCondTx(
+	ctx context.Context, tx pgx.Tx,
+	debateID, scoredRoundID string,
+	score, hours int, reasoning string,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET effort_score = $1,
+		       effort_hours = $2,
+		       effort_reasoning = $3,
+		       effort_scored_at = now(),
+		       last_scored_round_id = $4,
+		       updated_at = now()
+		 WHERE id = $5
+		   AND status IN ('active','approved')
+		   AND (last_scored_round_id IS NULL
+		     OR (SELECT round_number FROM feature_debate_rounds WHERE id = last_scored_round_id)
+		      < (SELECT round_number FROM feature_debate_rounds WHERE id = $4))`,
+		score, hours, reasoning, scoredRoundID, debateID,
+	)
+	return err
+}
+
+// UpdateScorerCostMicros persists the scorer call's cost on the
+// round row, independent of whether the effort_* score update ran
+// (the score might be discarded as out-of-order but we still billed
+// for the call, and the canonical per-round audit trail must reflect
+// that).
+func (db *DB) UpdateScorerCostMicros(ctx context.Context, tx pgx.Tx, roundID string, cost int64) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE feature_debate_rounds SET scorer_cost_micros = $1 WHERE id = $2`,
+		cost, roundID,
+	)
+	return err
+}
+
+// IncrementProjectCostCents adds the given delta to the project_costs
+// row for category='debate' in the current month, creating the row if
+// absent. Non-fatal at the handler layer — cost rollups are
+// reconstructable from feature_debate_rounds.cost_micros + scorer_cost_micros.
+func (db *DB) IncrementProjectCostCents(ctx context.Context, projectID string, deltaCents int64) error {
+	if deltaCents == 0 {
+		return nil
+	}
+	// UTC to keep month buckets stable across server/DB tz drift and
+	// around month boundaries.
+	month := time.Now().UTC().Format("2006-01")
+	_, err := db.Pool.Exec(ctx, `
+		INSERT INTO project_costs (project_id, month, category, name, amount_cents)
+		VALUES ($1, $2, 'debate', 'AI debate rounds', $3)
+		ON CONFLICT (project_id, month, category, name)
+		   DO UPDATE SET amount_cents = project_costs.amount_cents + EXCLUDED.amount_cents,
+		                 updated_at = now()`,
+		projectID, month, deltaCents,
+	)
+	return err
 }

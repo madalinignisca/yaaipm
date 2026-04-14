@@ -1,0 +1,67 @@
+{{define "content"}}
+{{with .Data}}
+<div class="debate-page">
+  <header class="debate-header flex items-center justify-between mb-md">
+    <div>
+      <a href="/tickets/{{.Ticket.ID}}" class="btn btn-ghost btn-sm">← Back to ticket</a>
+      <h2 class="mt-sm">Debate — {{.Ticket.Title}}</h2>
+    </div>
+    {{if .Debate}}
+      <form method="POST"
+            action="/tickets/{{.Ticket.ID}}/debate/abandon"
+            hx-confirm="Abandon this debate? The ticket description will not change and the debate will be archived.">
+        {{csrfField}}
+        <button type="submit" class="btn btn-danger btn-sm">Abandon</button>
+      </form>
+    {{end}}
+  </header>
+
+  {{if .Debate}}
+    <div class="debate-body">
+      <div class="debate-timeline" id="rounds">
+        {{template "debate_seed.html" dict
+            "Debate" .Debate
+            "RoundsExist" (gt (len .Rounds) 0)}}
+
+        {{$inReview := false}}
+        {{range .Rounds}}
+          {{if eq .Status "in_review"}}{{$inReview = true}}{{end}}
+          {{template "debate_round.html" dict
+              "Round" .
+              "TicketID" $.Data.Ticket.ID}}
+        {{end}}
+
+        {{if not $inReview}}
+          {{template "debate_next_round.html" dict
+              "Debate" .Debate
+              "Providers" .Providers
+              "TicketID" .Ticket.ID}}
+        {{end}}
+
+        <div id="thinking" class="htmx-indicator" aria-live="polite">
+          AI is thinking…
+        </div>
+      </div>
+
+      <aside id="sidebar" class="debate-sidebar">
+        {{template "debate_sidebar.html" .Debate}}
+      </aside>
+    </div>
+  {{else}}
+    <div class="debate-empty card mt-lg">
+      <h3>No active debate for this feature</h3>
+      <p class="subtitle">
+        Starting a debate locks the ticket description until the debate is
+        approved or abandoned. Until then, the current description shown
+        below is what the AI will refactor in round 1.
+      </p>
+      <div class="prose card mt-md">{{markdown .Ticket.DescriptionMarkdown}}</div>
+      <form method="POST" action="/tickets/{{.Ticket.ID}}/debate/start" class="mt-md">
+        {{csrfField}}
+        <button type="submit" class="btn btn-primary">Start debate</button>
+      </form>
+    </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}

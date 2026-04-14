@@ -1,0 +1,52 @@
+{{define "debate_round.html"}}
+{{with .Round}}
+<div class="round round-{{.Status}}" data-round-id="{{.ID}}">
+  {{if eq .Status "in_review"}}
+    <div class="round-header">
+      <span class="label">Round {{.RoundNumber}} · {{.Provider}} · awaiting your decision</span>
+    </div>
+    {{renderDiff .DiffUnified}}
+    <div class="round-actions flex gap-sm mt-sm">
+      <button class="btn btn-success btn-sm"
+              hx-post="/tickets/{{$.TicketID}}/debate/rounds/{{.ID}}/accept"
+              hx-target="closest .round"
+              hx-swap="outerHTML">
+        Accept
+      </button>
+      <button class="btn btn-secondary btn-sm"
+              hx-post="/tickets/{{$.TicketID}}/debate/rounds/{{.ID}}/reject"
+              hx-target="closest .round"
+              hx-swap="outerHTML">
+        Reject
+      </button>
+    </div>
+  {{else if eq .Status "accepted"}}
+    <div class="round-header" x-data="{open: false}">
+      <button type="button" @click="open = !open" class="round-summary">
+        <span class="label">
+          Round {{.RoundNumber}} · {{.Provider}} · accepted · {{relTime .DecidedAt}}
+        </span>
+        <span class="round-toggle" x-text="open ? '▾' : '▸'">▸</span>
+      </button>
+      <div x-show="open" x-cloak class="round-details">
+        {{renderDiff .DiffUnified}}
+      </div>
+    </div>
+    <div class="round-actions mt-sm">
+      <form method="POST"
+            action="/tickets/{{$.TicketID}}/debate/undo?from={{.RoundNumber}}"
+            hx-confirm="Undo this round? All later rounds will also be undone.">
+        {{csrfField}}
+        <button type="submit" class="btn btn-ghost btn-xs">Undo from here</button>
+      </form>
+    </div>
+  {{else}}{{/* rejected */}}
+    <div class="round-header round-rejected">
+      <span class="label">
+        Round {{.RoundNumber}} · {{.Provider}} · rejected · {{relTime .DecidedAt}}
+      </span>
+    </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}
