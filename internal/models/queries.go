@@ -2359,7 +2359,9 @@ func (db *DB) IncrementProjectCostCents(ctx context.Context, projectID string, d
 	if deltaCents == 0 {
 		return nil
 	}
-	month := time.Now().Format("2006-01")
+	// UTC to keep month buckets stable across server/DB tz drift and
+	// around month boundaries.
+	month := time.Now().UTC().Format("2006-01")
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO project_costs (project_id, month, category, name, amount_cents)
 		VALUES ($1, $2, 'debate', 'AI debate rounds', $3)

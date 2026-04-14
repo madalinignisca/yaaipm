@@ -13,6 +13,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -130,9 +131,34 @@ func (h *DebateHandler) requireDebateContext(r *http.Request) (debateContext, in
 		return debateContext{}, http.StatusBadRequest, errors.New("debate is for features only")
 	}
 
-	// Resolve org for the ticket. For staff users with no selected org
-	// context, we trust the ticket's project.org_id via a lookup.
+	// Resolve the org that owns the ticket's project. For client users,
+	// AuthMiddleware guarantees an org context AND GetTicketScoped's
+	// WHERE clause already enforces that context equals the ticket's
+	// project's org, so middleware.GetOrg is authoritative for clients.
+	//
+	// For staff, the session's selected org may differ from the
+	// ticket's project org (staff can view tickets across orgs). In
+	// that case we look up the project's org from the DB so the debate
+	// is correctly scoped — otherwise we'd either stamp the debate
+	// with the wrong org_id or fail with an empty UUID at insert.
 	org := middleware.GetOrg(r)
+	if auth.IsStaffOrAbove(user.Role) {
+		proj, err := h.db.GetProjectByID(r.Context(), ticket.ProjectID)
+		if err != nil {
+			return debateContext{}, http.StatusInternalServerError, err
+		}
+		if org == nil || org.ID != proj.OrgID {
+			org, err = h.db.GetOrgByID(r.Context(), proj.OrgID)
+			if err != nil {
+				return debateContext{}, http.StatusInternalServerError, err
+			}
+		}
+	}
+	if org == nil {
+		// Client users hit this only if AuthMiddleware regresses; defend
+		// against that by refusing rather than proceeding with nil org.
+		return debateContext{}, http.StatusBadRequest, errors.New("organization context required")
+	}
 	return debateContext{user: user, org: org, ticket: ticket}, 0, nil
 }
 
@@ -175,7 +201,11 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 
 	var rounds []models.DebateRound
 	if deb != nil {
-		rounds, _ = h.db.GetDebateRounds(r.Context(), deb.ID)
+		rounds, err = h.db.GetDebateRounds(r.Context(), deb.ID)
+		if err != nil {
+			h.engine.RenderError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 
 	_ = h.engine.Render(w, r, "debate.html", render.PageData{
@@ -206,7 +236,7 @@ func (h *DebateHandler) StartDebate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err = h.db.StartDebate(r.Context(),
-		dctx.ticket.ID, dctx.ticket.ProjectID, projectOrgID(dctx), dctx.user.ID,
+		dctx.ticket.ID, dctx.ticket.ProjectID, dctx.org.ID, dctx.user.ID,
 	); err != nil {
 		h.engine.RenderError(w, http.StatusInternalServerError, "could not start debate")
 		return
@@ -216,27 +246,9 @@ func (h *DebateHandler) StartDebate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusSeeOther)
 }
 
-// projectOrgID resolves the org_id for the ticket's project. For
-// client users the middleware-selected org is authoritative; for
-// staff the ticket may be on a project not in the currently-selected
-// org, so we look it up from the DB via the ticket's project.
-//
-// Returns the empty string if lookup fails — StartDebate's FK
-// constraint will then reject the insert with a foreign-key violation,
-// which the caller surfaces as a 500. Preferable to silently using a
-// wrong org_id.
-func projectOrgID(dctx debateContext) string {
-	if dctx.org != nil {
-		return dctx.org.ID
-	}
-	// Staff user without selected org: we don't have the project's
-	// org_id pre-loaded in debateContext; callers that hit this path
-	// are rare (staff visiting a debate page for a ticket in a project
-	// whose org isn't their current context) and we'd need an extra
-	// query to resolve it. For v1, require staff to have an org
-	// selected; clients always do (AuthMiddleware enforces).
-	return ""
-}
+// (projectOrgID helper removed — requireDebateContext now resolves
+// org from the ticket's project directly, so there's never an empty
+// dctx.org at this point.)
 
 // ── POST /tickets/{ticketID}/debate/rounds ────────────────────────
 
@@ -285,7 +297,15 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Caps (read-only pre-check; re-checked under lock in step 2).
+	// Caps — v1 coarse safety fuse per spec §6. Re-checked implicitly
+	// by the debate-row FOR UPDATE in step 2 for same-debate races,
+	// but concurrent requests against DIFFERENT debates (same user,
+	// different features) can still pass both pre-checks before either
+	// inserts. A pg_advisory_xact_lock on the user's ID would close
+	// the gap; v1 deliberately doesn't add it since phase-2 issue #64
+	// (per-org monthly $ budget) supersedes this fuse anyway, and a
+	// buggy script hitting N tickets at once is a rare shape compared
+	// to hitting one ticket N times.
 	if !auth.IsStaffOrAbove(dctx.user.Role) {
 		if roundCount, rcErr := h.db.CountActiveRoundsForDebate(r.Context(), deb.ID); rcErr == nil && roundCount >= h.cfg.ClientRoundCap {
 			http.Error(w, "round cap reached for this feature", http.StatusTooManyRequests)
@@ -314,7 +334,13 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		_ = h.db.ClearInFlight(r.Context(), deb.ID)
-		http.Error(w, "AI call failed: "+err.Error(), http.StatusBadGateway)
+		// Log the detailed error server-side for operator triage;
+		// surface a generic message to the client so we don't leak
+		// API keys, internal paths, or provider response fragments
+		// via the error envelope.
+		log.Printf("debate CreateRound: refiner %s failed for debate %s: %v",
+			refiner.Name(), deb.ID, err)
+		http.Error(w, "AI call failed; please retry", http.StatusBadGateway)
 		return
 	}
 
@@ -347,8 +373,14 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 6: cost rollup — non-fatal.
-	_ = h.db.IncrementProjectCostCents(r.Context(), dctx.ticket.ProjectID, centsDelta)
+	// Step 6: cost rollup — non-fatal. The canonical per-round data
+	// lives on feature_debate_rounds.cost_micros; project_costs is a
+	// rollup that can be reconstructed by SUM-ing rounds. We log
+	// failures at WARN so operators can spot persistent rollup
+	// drift without users seeing errors on successful rounds.
+	if err := h.db.IncrementProjectCostCents(r.Context(), dctx.ticket.ProjectID, centsDelta); err != nil {
+		log.Printf("debate CreateRound: project_costs rollup failed for debate %s: %v", deb.ID, err)
+	}
 
 	_ = h.engine.RenderPartial(w, "debate_round.html", round)
 }
