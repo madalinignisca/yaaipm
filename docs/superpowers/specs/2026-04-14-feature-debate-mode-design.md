@@ -51,7 +51,9 @@ New migration `000032_feature_debates.{up,down}.sql`. Two tables:
 | `org_id` | UUID FK → organizations(id) | **`ON DELETE CASCADE`** — denormalized for tenant scoping |
 | `started_by` | UUID FK → users(id) | **`ON DELETE RESTRICT`** — user records aren't deleted while they own audit history; deletion is blocked until the debate is removed or reassigned by superadmin |
 | `status` | TEXT | `'active' \| 'approved' \| 'abandoned'` |
-| `seed_description` | TEXT | Snapshot at start; frozen after round 1 |
+| `seed_description` | TEXT | The text the **first AI refactor will operate on**. Editable while no rounds exist AND no AI request is in flight (see `in_flight_request_id` below). Can diverge from `original_ticket_description` if the user edits it before round 1. |
+| `original_ticket_description` | TEXT | **Immutable snapshot** of `tickets.description_markdown` at the moment of `StartDebate`. Used by the §4.5 Approve CAS guard to detect external edits made *after* the debate started. Distinct from `seed_description` because the user can edit the seed in the debate UI without it counting as an "external edit." |
+| `in_flight_request_id` | UUID | Nullable. Set briefly by `CreateRound` to a generated UUID before releasing the debate lock and starting the AI call; cleared (set NULL) by the same handler when the AI call returns and the round is inserted (or fails). Used to (a) lock seed edits during an in-flight AI request, (b) detect orphaned in-flight requests on operator inspection. |
 | `current_text` | TEXT | Latest accepted text; mutated on accept |
 | `effort_score` | INT | 1..10, nullable |
 | `effort_hours` | INT | Human-hours estimate, nullable |
@@ -85,7 +87,8 @@ Indexes (`feature_debates`):
 | `diff_unified` | TEXT | Cached unified diff; nullable recomputes |
 | `status` | TEXT | `'in_review' \| 'accepted' \| 'rejected'` |
 | `input_tokens`, `output_tokens` | INT | |
-| `cost_micros` | BIGINT | Millionths of USD |
+| `cost_micros` | BIGINT | **Refiner** call cost in millionths of USD (1 cent = 10,000 micros). |
+| `scorer_cost_micros` | BIGINT | Nullable. **Scorer** call cost (set on accept when the scorer runs after this round). Without this column, the round-row would be incomplete: scorer cost would only live in `project_costs` rollup and the audit trail couldn't reconstruct per-round AI spend. |
 | `created_at` | TIMESTAMPTZ | |
 | `decided_at` | TIMESTAMPTZ | Nullable; set on accept/reject |
 
@@ -120,11 +123,23 @@ ALTER TABLE feature_debates
     ADD COLUMN last_scored_round_id UUID
         REFERENCES feature_debate_rounds(id) ON DELETE SET NULL;
 
--- 4. Existing partial unique index from §3.1 main body, plus the
---    one-in-review-per-debate index, plus the (triggered_by, created_at) index.
+-- 4. Indexes: partial unique on (ticket_id) WHERE active; full ticket_id;
+--    (org_id, status); project_id; started_by;
+--    rounds: (debate_id, round_number DESC); (debate_id, status, round_number DESC);
+--    partial unique (debate_id) WHERE status='in_review';
+--    (triggered_by, created_at DESC).
 ```
 
-The down-migration reverses in opposite order: drop indexes → drop `feature_debate_rounds` → drop `feature_debates`. PostgreSQL's `DROP TABLE` cascades the FK constraints automatically.
+**Down-migration must explicitly drop the cyclic FK first** — `DROP TABLE` does not cascade across mutual references. Postgres will error with a dependency violation otherwise:
+
+```sql
+-- 1. Break the cycle by dropping the FK that points from debates → rounds.
+ALTER TABLE feature_debates DROP CONSTRAINT feature_debates_last_scored_round_id_fkey;
+
+-- 2. Now safe to drop in order.
+DROP TABLE feature_debate_rounds;
+DROP TABLE feature_debates;
+```
 
 ### 3.1.ter — `project_costs` constraint update
 
@@ -137,7 +152,17 @@ ALTER TABLE project_costs ADD CONSTRAINT project_costs_category_check
                         'testing_container', 'debate'));
 ```
 
-The down-migration restores the original constraint (and would error if any rows with `category='debate'` exist — the operator must delete those first).
+**Down-migration is data-dependent.** Restoring the original constraint will fail if any rows with `category='debate'` exist. The down-migration deletes those rows first (the canonical per-round cost data lives on `feature_debate_rounds.cost_micros` + `scorer_cost_micros`, so the rollup data is reconstructable):
+
+```sql
+DELETE FROM project_costs WHERE category = 'debate';
+ALTER TABLE project_costs DROP CONSTRAINT IF EXISTS project_costs_category_check;
+ALTER TABLE project_costs ADD CONSTRAINT project_costs_category_check
+    CHECK (category IN ('base_fee', 'dev_environment', 'testing_db',
+                        'testing_container'));
+```
+
+This makes the down-migration atomic and safe in CI/CD pipelines.
 
 **Queries added to `internal/models/queries.go`:**
 
@@ -336,18 +361,27 @@ Page renders with empty rounds list and seed-editable card.
 
 ### 4.2 Round lifecycle
 
-1. User edits seed (optional, round 0 only), clicks an AI button.
+1. User edits seed (optional, before any round AND before any AI is in flight), clicks an AI button.
 2. `POST /rounds` with `provider`, `feedback` form fields.
-3. Handler validates: ticket is feature, debate is active, **per-feature round cap not hit (10 for clients), daily per-user safety fuse not hit (50/day for clients)**. Loads `current_text` via plain SELECT (no lock) — staleness here is harmless because step 7 below relies on a DB-level invariant, not optimistic concurrency.
-4. Handler calls `Refiner.Refine(ctx, {CurrentText: current_text, Feedback, SystemPrompt})` with 60s timeout. **No DB lock held during this call** — the "one in-review round per debate" invariant is enforced by the partial unique index `idx_feature_debate_rounds_one_in_review_per_debate` (§3.1), so there is no race window we need to serialize through application-level locking. This is the architectural change that prevents Abandon/Undo from being blocked behind every AI request.
-5. **Output validation** (per §3.2): reject 502 if `Text` empty, `len(Text) < MinOutputLen`, or `FinishReason in {"length", "max_tokens"}`. No DB write.
-6. Compute diff (`internal/diff.ComputeUnified(current_text, output)`).
-7. Open short tx, re-`SELECT status FROM feature_debates WHERE id=:debate_id FOR UPDATE`. If `status != 'active'` → 409 (debate was abandoned/approved during the AI call). Re-check round caps under lock (TOCTOU). Then `INSERT INTO feature_debate_rounds (..., status='in_review', round_number=max+1)`.
-8. The INSERT can fail with `unique_violation` on `idx_feature_debate_rounds_one_in_review_per_debate` if another concurrent CreateRound finished its INSERT first. Translate to 409 with body `another round is already in review — accept or reject it first`. Commit tx, release lock.
-9. Increment `project_costs` (category=`debate`) for the round's `cost_micros` outside the tx (non-fatal).
+3. Handler validates outside any tx: ticket is feature, **per-feature round cap not hit (10 for clients), daily per-user safety fuse not hit (50/day for clients)**.
+4. **Reservation tx (microseconds):** open tx, `SELECT * FROM feature_debates WHERE id=:debate_id FOR UPDATE`. Validate:
+   - `status = 'active'` → else 409.
+   - `in_flight_request_id IS NULL` → else 409 ("another AI request is in flight; wait for it").
+   - Round caps still satisfied under lock.
+
+   Then `UPDATE feature_debates SET in_flight_request_id = :new_uuid WHERE id = :debate_id`. **Snapshot `current_text`** into a Go variable. Commit & release lock. The reservation lasts until step 7 clears the flag.
+5. Handler calls `Refiner.Refine(ctx, {CurrentText: snapshotted_current_text, Feedback, SystemPrompt})` with 60s timeout. **No DB lock held during this call.** Seed-edits and any future "in-flight" CreateRound attempts are blocked because `in_flight_request_id` is set.
+6. **Output validation** (per §3.2): reject 502 if `Text` empty, `len(Text) < MinOutputLen`, or `FinishReason in {"length", "max_tokens"}`. On rejection, run a small tx to clear `in_flight_request_id` (release reservation), then return 502.
+7. Compute diff (`internal/diff.ComputeUnified(snapshotted_current_text, output)`).
+8. **Insert tx (microseconds):** open tx, `SELECT status, current_text FROM feature_debates WHERE id=:debate_id FOR UPDATE`.
+   - If `status != 'active'` → clear in_flight_request_id; commit; return 409.
+   - **Stale-input check:** if `current_text != snapshotted_current_text` → another operation (Undo, etc.) changed `current_text` while the AI was reasoning. Clear `in_flight_request_id`; commit; return 409 with body `feature description changed while AI was processing — please retry`. The just-generated round would be based on stale input and is discarded.
+   - Otherwise, `INSERT INTO feature_debate_rounds (..., status='in_review', round_number=max+1, cost_micros=:refiner_cost)`. The INSERT may still fail with `unique_violation` on `idx_feature_debate_rounds_one_in_review_per_debate` (extremely unlikely given we hold the debate lock and `in_flight_request_id` blocks parallel CreateRounds — but a sibling check defends against any future code path). On conflict → 409.
+   - `UPDATE feature_debates SET in_flight_request_id = NULL WHERE id = :debate_id`. Commit, release lock.
+9. **Increment `project_costs`** for category=`debate`, amount = `costMicrosToAddCents(refiner_cost_micros)`. Outside the tx, non-fatal. See §6 for the cents/micros conversion.
 10. Return `debate_round.html` partial; HTMX appends it to `#rounds`.
 
-The lock window in step 7 is microseconds (an INSERT with no AI call), not seconds. Abandon and Undo can run concurrently with an in-flight AI request because they wait at most for that microsecond INSERT, not for the AI provider.
+**Lock contention**: both lock windows in steps 4 and 8 are microseconds (no AI call inside). Abandon, Undo, and Approve queue briefly behind each other but never wait on AI. The `in_flight_request_id` flag is the cooperative signal that an AI call is pending; it's the cross-tx baton that the lock alone can't carry.
 
 ### 4.3 Accept
 
@@ -364,15 +398,16 @@ The lock window in step 7 is microseconds (an INSERT with no AI call), not secon
     SET effort_score = $1, effort_hours = $2, effort_reasoning = $3,
         effort_scored_at = now(), last_scored_round_id = :acceptedRoundID
     WHERE id = :debate_id
-      AND status = 'active'
+      AND status IN ('active', 'approved')
       AND (last_scored_round_id IS NULL
            OR (SELECT round_number FROM feature_debate_rounds WHERE id = last_scored_round_id)
               < (SELECT round_number FROM feature_debate_rounds WHERE id = :acceptedRoundID));
     ```
-    The conditional `WHERE` discards out-of-order scorer responses: if a later round was scored first (because its scorer finished sooner), `last_scored_round_id` already points to a round_number ≥ this one's, and the UPDATE matches zero rows. The freshest accepted-round score always wins.
-9. If scorer fails: log at WARN with `{debate_id, round_id, provider, error}`; leave previous effort_* values untouched; accept still succeeded.
-10. **Increment `project_costs` (category=`debate`)** for the scorer's `cost_micros` outside the tx (non-fatal). Both refiner and scorer cost increments are tracked under the same category — this matters because the previous spec only tracked the refiner cost in §4.2 step 9, leaving scorer spend invisible in the project rollup. Underestimating spend by ~25% (the typical refiner-vs-scorer ratio) would have been a real budget blind spot.
-11. Return `debate_round.html` (accepted state) + OOB `debate_sidebar.html`.
+    Two filters apply jointly: (a) `status IN ('active','approved')` allows a late-arriving scorer result to land on an already-approved debate (the audit trail benefits, no risk because approved state is immutable elsewhere). (b) The `last_scored_round_id` ordering check discards out-of-order scorer responses: if a later round was scored first (because its scorer finished sooner), `last_scored_round_id` already points to a round_number ≥ this one's, and the UPDATE matches zero rows. The freshest accepted-round score always wins. Status `'abandoned'` is excluded — score updates on abandoned debates are pure noise.
+9. **Persist scorer cost on the round row:** `UPDATE feature_debate_rounds SET scorer_cost_micros = :scorer_cost WHERE id = :acceptedRoundID`. Always done (regardless of whether the score-row update in step 8 matched), so the canonical per-round audit trail in `feature_debate_rounds` is complete.
+10. If scorer fails: log at WARN with `{debate_id, round_id, provider, error}`; leave previous effort_* and `scorer_cost_micros` untouched; accept still succeeded.
+11. **Increment `project_costs`** (category=`debate`, amount = `costMicrosToAddCents(scorer_cost_micros)`) outside the tx (non-fatal). Both refiner and scorer cost increments are tracked under the same category. The canonical per-round data lives in the round row; `project_costs` is the rollup.
+12. Return `debate_round.html` (accepted state) + OOB `debate_sidebar.html`.
 
 **Rationale for step 6 commit before scoring:** scoring takes 2–10 seconds. Holding `FOR UPDATE` on the debate row across an AI call would serialize all parallel clicks on the page and could deadlock with reject/undo requests. Releasing the lock before the scorer call is the right tradeoff — the score is informational, not transactional.
 
@@ -392,8 +427,8 @@ The debate-level `FOR UPDATE` in step 3 prevents any concurrent `AcceptRound` fr
 ### 4.5 Approve
 
 1. `POST /approve`.
-2. Open tx. **First: `SELECT status, current_text, seed_description FROM feature_debates WHERE id=:debate_id FOR UPDATE`.** If `status != 'active'` → commit & return 409 (another request already approved or abandoned).
-3. **Compare-and-swap external-edit guard:** `SELECT description_markdown FROM tickets WHERE id=:ticket_id FOR UPDATE`. If `description_markdown != seed_description` → commit & return 409 with body `description changed externally since debate started — reload and review`. This catches edits that bypassed the `IsDebateActive` guard (rolling-deploy window where v0.1.0 pods don't have it, direct DB edits, future code paths that forget the guard).
+2. Open tx. **First: `SELECT status, current_text, original_ticket_description FROM feature_debates WHERE id=:debate_id FOR UPDATE`.** If `status != 'active'` → commit & return 409 (another request already approved or abandoned).
+3. **Compare-and-swap external-edit guard:** `SELECT description_markdown FROM tickets WHERE id=:ticket_id FOR UPDATE`. If `description_markdown != original_ticket_description` → commit & return 409 with body `description changed externally since debate started — reload and review`. **The CAS compares against `original_ticket_description` (immutable snapshot at debate start), NOT `seed_description`** — the user can edit the seed in the debate UI without that counting as an external edit, but any change to the actual ticket row from outside the debate flow is detected. This catches edits that bypassed the `IsDebateActive` guard (rolling-deploy window where v0.1.0 pods don't have it, direct DB edits, future code paths that forget the guard).
 4. `UPDATE tickets SET description_markdown = :current_text, updated_at=now() WHERE id=:ticket_id`.
 5. `UPDATE feature_debates SET status='approved', approved_text=:current_text, updated_at=now() WHERE id=:debate_id`.
 6. Commit tx.
@@ -427,8 +462,9 @@ Description untouched. Ticket becomes editable again. Approve and Abandon are mu
 - Clients, staff, and superadmin can all trigger debates.
 - **Per-feature round cap:** clients capped at 10 rounds per feature; staff and superadmin bypass.
 - **Per-user daily safety fuse (v1):** clients capped at 50 rounds per 24-hour window across all their debates; staff and superadmin bypass. This is a coarse stop-gap to prevent catastrophic accidental cost spikes (a buggy script, a misclicked retry loop) before the proper per-org $ budget ships in phase-2. Cap value is held in `DebateConfig.ClientDailyRoundCap` and easily tunable. Hitting the daily cap returns 429 with body `daily round limit reached — try again tomorrow or ask staff to bypass`.
-- Each round increments `project_costs` with category `debate` (monthly aggregate).
-- Cost-increment is non-fatal: if it fails, the round still succeeds. The canonical cost data is on `feature_debate_rounds.cost_micros`; `project_costs` is a rollup.
+- Each round increments `project_costs` with category `debate` (monthly aggregate). **Both** refiner cost (rolled in by §4.2 step 9) and scorer cost (rolled in by §4.3 step 11) flow into the same category.
+- **Units conversion is non-trivial** — `feature_debate_rounds.cost_micros` and `scorer_cost_micros` are in **millionths of USD**; `project_costs.amount_cents` is in **cents**. Conversion is `cents = (micros + 9999) / 10000` (ceiling division — under-counting is worse than over-counting by less than a cent for our use case). Implemented as `costMicrosToAddCents(micros int64) int64` helper in `internal/ai/pricing.go` and called by both the refiner and scorer cost-increment paths. Failing to convert (i.e. adding `cost_micros` directly into `amount_cents`) would over-report by 4 orders of magnitude — a $0.05 round becomes a $500 line item.
+- Cost-increment is non-fatal: if it fails, the round still succeeds. The canonical per-round cost data is on `feature_debate_rounds.cost_micros` (refiner) + `feature_debate_rounds.scorer_cost_micros` (scorer); `project_costs` is a rollup that can be reconstructed from these two columns.
 - Phase-2 issues add configurable scorer and per-org monthly $ budget. The phase-2 budget enforcement supersedes the daily safety fuse but does not replace it (defense in depth — the fuse stays).
 
 ## 7. Testing
@@ -485,7 +521,16 @@ Description untouched. Ticket becomes editable again. Approve and Abandon are mu
 - `TestUpdateTicketMetadata_AllowedDuringDebate` — updating priority/dates/title on a feature with an active debate succeeds (only `description_markdown` is locked).
 
 **Cost rollup completeness:**
-- `TestCostRollup_IncludesScorerSpend` — accept a round with fake refiner (cost_micros=100) and fake scorer (cost_micros=50); assert `project_costs` row for category=`debate` increased by 150, not just 100.
+- `TestCostRollup_IncludesScorerSpend` — accept a round with fake refiner (cost_micros=100,000) and fake scorer (cost_micros=50,000); assert `project_costs` row for category=`debate` increased by 15 cents (= 150,000 micros / 10,000), not 150,000 cents.
+- `TestCostMicrosToAddCents` — unit test for the conversion helper: 0 → 0, 1 → 1, 9999 → 1, 10000 → 1, 10001 → 2, 1234567 → 124. Ceiling division semantics.
+- `TestRoundRow_PersistsScorerCost` — accept a round with fake scorer; assert `feature_debate_rounds.scorer_cost_micros` is set to the scorer's cost, not just rolled into `project_costs`.
+
+**Stale-input race & in-flight reservation:**
+- `TestCreateRound_RejectsStaleAIResponse` — start a round (call enters fake refiner that blocks on a channel); concurrently undo a prior accepted round (changes `current_text`); release the refiner; the in-flight INSERT detects `current_text != snapshotted_current_text` and returns 409, no round inserted.
+- `TestCreateRound_RejectsParallelInFlight` — start a round (refiner blocks); attempt a second CreateRound on same debate; second returns 409 immediately because `in_flight_request_id` is set.
+- `TestSeedEdit_BlockedDuringInFlight` — start a round (refiner blocks); attempt to edit seed; returns 409.
+- `TestSeedEdit_BlockedAfterFirstRound` — accept round 1; attempt to edit seed; returns 400 ("seed frozen after round 1").
+- `TestApprove_CASUsesOriginalNotSeed` — start debate, edit seed (still legal at round 0), accept a round, then approve; CAS uses `original_ticket_description` (still equal to ticket) so approve succeeds. Without this distinction (CAS against `seed_description`), the approve would always fail after a seed edit.
 
 **Daily safety fuse:**
 - `TestClientDailyCap_EnforcedAt50` — client triggers 50 rounds in 24h across multiple debates; 51st returns 429.
