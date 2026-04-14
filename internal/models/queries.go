@@ -1995,6 +1995,12 @@ func scanFeatureDebate(row featureDebateScanner, deb *FeatureDebate) error {
 // StartDebate creates an active debate for the given ticket, or returns the
 // existing one if another request already created it. Idempotent under
 // concurrent calls (ON CONFLICT DO NOTHING + fallback SELECT). Spec §4.1.
+//
+// A small retry loop covers a narrow concurrency window: if transaction A
+// inserted a conflicting row and then rolled back between this call's INSERT
+// and its fallback SELECT, the fallback sees pgx.ErrNoRows. On the next
+// attempt either the INSERT succeeds (no active row now) or the SELECT
+// finds a freshly committed one. 2 attempts are always sufficient.
 func (db *DB) StartDebate(ctx context.Context, ticketID, projectID, orgID, userID string) (*FeatureDebate, error) {
 	var desc string
 	if err := db.Pool.QueryRow(ctx,
@@ -2003,25 +2009,39 @@ func (db *DB) StartDebate(ctx context.Context, ticketID, projectID, orgID, userI
 		return nil, fmt.Errorf("loading ticket description: %w", err)
 	}
 
-	deb := &FeatureDebate{}
-	err := scanFeatureDebate(db.Pool.QueryRow(ctx,
-		`INSERT INTO feature_debates (
-			ticket_id, project_id, org_id, started_by, status,
-			seed_description, current_text, original_ticket_description,
-			total_cost_micros
-		) VALUES ($1, $2, $3, $4, 'active', $5, $5, $5, 0)
-		ON CONFLICT (ticket_id) WHERE status = 'active' DO NOTHING
-		RETURNING `+featureDebateColumns,
-		ticketID, projectID, orgID, userID, desc,
-	), deb)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Concurrent INSERT lost the race; return the existing active row.
-		return db.GetActiveDebate(ctx, ticketID)
+	var lastErr error
+	for attempt := range 2 {
+		deb := &FeatureDebate{}
+		err := scanFeatureDebate(db.Pool.QueryRow(ctx,
+			`INSERT INTO feature_debates (
+				ticket_id, project_id, org_id, started_by, status,
+				seed_description, current_text, original_ticket_description,
+				total_cost_micros
+			) VALUES ($1, $2, $3, $4, 'active', $5, $5, $5, 0)
+			ON CONFLICT (ticket_id) WHERE status = 'active' DO NOTHING
+			RETURNING `+featureDebateColumns,
+			ticketID, projectID, orgID, userID, desc,
+		), deb)
+		if err == nil {
+			return deb, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("inserting feature_debate: %w", err)
+		}
+		// Conflict path: try to find the committed active row.
+		existing, selErr := db.GetActiveDebate(ctx, ticketID)
+		if selErr == nil {
+			return existing, nil
+		}
+		if !errors.Is(selErr, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("loading active debate after conflict: %w", selErr)
+		}
+		// ErrNoRows from fallback means the conflicting tx rolled back between
+		// our INSERT and SELECT. Retry once.
+		lastErr = selErr
+		_ = attempt
 	}
-	if err != nil {
-		return nil, fmt.Errorf("inserting feature_debate: %w", err)
-	}
-	return deb, nil
+	return nil, fmt.Errorf("StartDebate exhausted retries: %w", lastErr)
 }
 
 // GetActiveDebate returns the single active debate for a ticket, or pgx.ErrNoRows.
@@ -2061,6 +2081,32 @@ func (db *DB) IsDebateActive(ctx context.Context, ticketID string) (bool, error)
 		ticketID,
 	).Scan(&exists)
 	return exists, err
+}
+
+// GetLatestRound returns the round with the highest round_number for the
+// given debate (any status), or pgx.ErrNoRows if the debate has no rounds.
+// Used by the CreateRound handler (spec §4.2) to enforce the "one in-review
+// round at a time" pre-check before taking the debate lock.
+func (db *DB) GetLatestRound(ctx context.Context, debateID string) (*DebateRound, error) {
+	r := &DebateRound{}
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, debate_id, round_number, provider, model, triggered_by,
+		       feedback, input_text, output_text, diff_unified, status,
+		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
+		       created_at, decided_at
+		  FROM feature_debate_rounds
+		 WHERE debate_id = $1
+		 ORDER BY round_number DESC LIMIT 1`, debateID,
+	).Scan(
+		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
+		&r.CreatedAt, &r.DecidedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // GetDebateRounds returns rounds for a debate in round_number ASC order.

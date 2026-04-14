@@ -25,7 +25,12 @@ CREATE TABLE feature_debates (
     effort_scored_at            TIMESTAMPTZ,
     approved_text               TEXT,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Feature-only invariant placeholder (spec §3.1). Enforced in Go for v1
+    -- so ticket.type changes do not retroactively invalidate old debates.
+    -- This CHECK(true) is a schema marker for future relaxation: a later
+    -- migration can replace it with a real CHECK if/when we widen scope.
+    CONSTRAINT feature_debates_ticket_type_stub CHECK (true)
 );
 
 CREATE TABLE feature_debate_rounds (
