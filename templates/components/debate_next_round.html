@@ -1,1 +1,37 @@
-{{/* Skeleton — real content added in Task 10 (UI pass). */}}
+{{define "debate_next_round.html"}}
+<div class="card next-round mt-md">
+  <div class="label">Next round — optional feedback for the AI</div>
+
+  {{/* Two sibling forms rather than nesting: HTML5 disallows nested
+       <form> elements. The AI-picker form and the Approve-final form
+       both POST to different endpoints, so siblings is the natural
+       structure. Flexbox lays them out side-by-side. */}}
+  <form id="next-round-form"
+        hx-post="/tickets/{{.TicketID}}/debate/rounds"
+        hx-target="#next-round-form"
+        hx-swap="outerHTML"
+        hx-indicator="#thinking">
+    {{csrfField}}
+
+    <textarea name="feedback" rows="2" class="form-textarea mt-sm" maxlength="2000"
+              placeholder="e.g. 'Add a retention-override policy for specific event types'…"></textarea>
+
+    <div class="flex gap-sm mt-sm items-center">
+      <span class="subtitle">Refactor with:</span>
+      {{range .Providers}}
+        <button type="submit" name="provider" value="{{.}}" class="btn btn-secondary btn-sm">
+          {{if eq . "claude"}}Claude{{else if eq . "gemini"}}Gemini{{else if eq . "openai"}}ChatGPT{{else}}{{.}}{{end}}
+        </button>
+      {{end}}
+    </div>
+  </form>
+
+  <form method="POST"
+        action="/tickets/{{.TicketID}}/debate/approve"
+        class="approve-form mt-sm">
+    {{csrfField}}
+    <button type="submit" class="btn btn-primary btn-sm">Approve final</button>
+  </form>
+</div>
+{{end}}
+
