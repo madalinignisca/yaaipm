@@ -49,6 +49,9 @@ func setupDebateTestEnv(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore)
 		r.Get("/tickets/{ticketID}/debate", h.ShowDebate)
 		r.Post("/tickets/{ticketID}/debate/start", h.StartDebate)
 		r.Post("/tickets/{ticketID}/debate/rounds", h.CreateRound)
+		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", h.AcceptRound)
+		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/reject", h.RejectRound)
+		r.Post("/tickets/{ticketID}/debate/undo", h.UndoRound)
 	})
 	return r, db, sessions
 }
@@ -267,5 +270,247 @@ func TestCreateRound_RejectsUnknownProvider(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "unknown provider") {
 		t.Errorf("expected 'unknown provider', got: %q", rec.Body.String())
+	}
+}
+
+// startAndCreateRounds runs /start and then N round-creation requests
+// via the fake claude refiner, each auto-accepted. Returns the
+// accepted round records in creation order (length N). Used by
+// accept / reject / undo tests below.
+func startAndCreateRounds(t *testing.T, r *chi.Mux, db *models.DB, cookie *http.Cookie, ticketID string, outputs []string) []*models.DebateRound {
+	t.Helper()
+	ctx := context.Background()
+
+	// /start
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticketID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("/start: %d %s", startRec.Code, startRec.Body.String())
+	}
+
+	deb, err := db.GetActiveDebate(ctx, ticketID)
+	if err != nil {
+		t.Fatalf("GetActiveDebate: %v", err)
+	}
+
+	// The default fake refiner returns a constant string; we need to
+	// vary output per round so cascading-undo tests can distinguish
+	// rounds. Reach into the handler's refiner registry via the env
+	// we built in setupDebateTestEnv — but the test doesn't expose
+	// it. Instead: create rounds one at a time, manually updating the
+	// FakeRefiner's OutputFunc between calls via a closure variable.
+	// Simpler: use db-level shortcuts since the fake refiner's input
+	// doesn't vary meaningfully per round in these tests.
+	//
+	// For tests that DO need unique output per round, skip the HTTP
+	// /rounds path and insert rounds + accept them directly via
+	// AcceptRoundTx. That's what this helper does — it's an
+	// internal/testing-only shortcut, not a reflection of production
+	// flow (where the only way to create a round is through /rounds).
+	var accepted []*models.DebateRound
+	for i, out := range outputs {
+		currentText := deb.SeedDescription
+		if i > 0 {
+			currentText = outputs[i-1]
+		}
+		// Insert an in_review round under a short tx (re-using
+		// InsertDebateRoundTx against a fresh tx lock).
+		tx, err := db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		round, _, err := db.InsertDebateRoundTx(ctx, tx, models.InsertDebateRoundInput{
+			DebateID:    deb.ID,
+			Provider:    "claude",
+			Model:       ai.ModelClaudeSonnet46,
+			TriggeredBy: deb.StartedBy,
+			InputText:   currentText,
+			OutputText:  out,
+			CostMicros:  0,
+		}, currentText)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("InsertDebateRoundTx: %v", err)
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			t.Fatalf("Commit: %v", commitErr)
+		}
+
+		// Accept via the HTTP handler so we exercise the production
+		// tx path including the FOR UPDATE status check.
+		acceptRec := httptest.NewRecorder()
+		acceptReq := httptest.NewRequest(http.MethodPost,
+			"/tickets/"+ticketID+"/debate/rounds/"+round.ID+"/accept", http.NoBody)
+		acceptReq.AddCookie(cookie)
+		r.ServeHTTP(acceptRec, acceptReq)
+		if acceptRec.Code != http.StatusOK {
+			t.Fatalf("/accept round %d: %d %s", i+1, acceptRec.Code, acceptRec.Body.String())
+		}
+		// Re-fetch the round to get its updated (accepted) state.
+		rounds, err := db.GetDebateRounds(ctx, deb.ID)
+		if err != nil {
+			t.Fatalf("GetDebateRounds: %v", err)
+		}
+		for j := range rounds {
+			if rounds[j].ID == round.ID {
+				accepted = append(accepted, &rounds[j])
+				break
+			}
+		}
+	}
+	return accepted
+}
+
+func TestAcceptRound_UpdatesCurrentText(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"round 1 output"})
+
+	deb, err := db.GetActiveDebate(context.Background(), ticket.ID)
+	if err != nil {
+		t.Fatalf("GetActiveDebate: %v", err)
+	}
+	if deb.CurrentText != "round 1 output" {
+		t.Errorf("current_text = %q, want %q", deb.CurrentText, "round 1 output")
+	}
+}
+
+func TestRejectRound_LeavesCurrentTextUnchanged(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	// /start to open a debate.
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(startRec, startReq)
+
+	deb, _ := db.GetActiveDebate(ctx, ticket.ID)
+	originalText := deb.CurrentText
+
+	// Manually insert an in_review round.
+	tx, _ := db.Pool.Begin(ctx)
+	round, _, err := db.InsertDebateRoundTx(ctx, tx, models.InsertDebateRoundInput{
+		DebateID:    deb.ID,
+		Provider:    "claude",
+		Model:       ai.ModelClaudeSonnet46,
+		TriggeredBy: deb.StartedBy,
+		InputText:   originalText,
+		OutputText:  "a rejected draft",
+	}, originalText)
+	if err != nil {
+		t.Fatalf("InsertDebateRoundTx: %v", err)
+	}
+	_ = tx.Commit(ctx)
+
+	rejectRec := httptest.NewRecorder()
+	rejectReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/reject", http.NoBody)
+	rejectReq.AddCookie(cookie)
+	r.ServeHTTP(rejectRec, rejectReq)
+
+	if rejectRec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200; body = %q", rejectRec.Code, rejectRec.Body.String())
+	}
+	debReloaded, _ := db.GetActiveDebate(ctx, ticket.ID)
+	if debReloaded.CurrentText != originalText {
+		t.Errorf("reject changed current_text: %q → %q", originalText, debReloaded.CurrentText)
+	}
+}
+
+func TestUndoRound_CascadesLaterRoundsAndResetsEffort(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	// 3 accepted rounds.
+	rounds := startAndCreateRounds(t, r, db, cookie, ticket.ID,
+		[]string{"round 1 out", "round 2 out", "round 3 out"})
+	if len(rounds) != 3 {
+		t.Fatalf("expected 3 accepted rounds, got %d", len(rounds))
+	}
+
+	// Manually set effort fields so we can verify they get cleared.
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE feature_debates
+		   SET effort_score = 7, effort_hours = 10, effort_reasoning = 'test',
+		       effort_scored_at = now(), last_scored_round_id = $1
+		 WHERE ticket_id = $2`, rounds[2].ID, ticket.ID)
+	if err != nil {
+		t.Fatalf("seeding effort fields: %v", err)
+	}
+
+	// Undo from round 2 — should delete rounds 2 and 3, leave round 1.
+	undoRec := httptest.NewRecorder()
+	undoReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/undo?from=2", http.NoBody)
+	undoReq.AddCookie(cookie)
+	r.ServeHTTP(undoRec, undoReq)
+
+	if undoRec.Code != http.StatusSeeOther {
+		t.Errorf("undo status = %d, want %d", undoRec.Code, http.StatusSeeOther)
+	}
+
+	deb, _ := db.GetActiveDebate(ctx, ticket.ID)
+	if deb.CurrentText != "round 1 out" {
+		t.Errorf("current_text = %q, want 'round 1 out'", deb.CurrentText)
+	}
+	remaining, _ := db.GetDebateRounds(ctx, deb.ID)
+	if len(remaining) != 1 {
+		t.Errorf("remaining rounds = %d, want 1", len(remaining))
+	}
+	if deb.EffortScore != nil {
+		t.Errorf("effort_score should be nil after undo, got %d", *deb.EffortScore)
+	}
+	if deb.LastScoredRoundID != nil {
+		t.Errorf("last_scored_round_id should be nil after undo")
+	}
+}
+
+func TestUndoRound_AllRoundsFallsBackToSeed(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	startAndCreateRounds(t, r, db, cookie, ticket.ID,
+		[]string{"round 1", "round 2"})
+
+	undoRec := httptest.NewRecorder()
+	undoReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/undo?from=1", http.NoBody)
+	undoReq.AddCookie(cookie)
+	r.ServeHTTP(undoRec, undoReq)
+
+	if undoRec.Code != http.StatusSeeOther {
+		t.Errorf("status = %d, want 303; body = %q", undoRec.Code, undoRec.Body.String())
+	}
+	deb, _ := db.GetActiveDebate(context.Background(), ticket.ID)
+	if deb.CurrentText != deb.SeedDescription {
+		t.Errorf("current_text should fall back to seed after full undo: got %q, want %q",
+			deb.CurrentText, deb.SeedDescription)
+	}
+}
+
+func TestUndoRound_RejectsInvalidFrom(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+
+	// Start a debate first so the /undo handler reaches its query-param check.
+	startReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(httptest.NewRecorder(), startReq)
+
+	for _, qs := range []string{"", "from=0", "from=abc"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost,
+			"/tickets/"+ticket.ID+"/debate/undo?"+qs, http.NoBody)
+		req.AddCookie(cookie)
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("qs=%q: status = %d, want 400", qs, rec.Code)
+		}
 	}
 }

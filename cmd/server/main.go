@@ -263,11 +263,14 @@ func main() {
 		r.Put("/tickets/{ticketID}", ticketH.UpdateTicket)
 		r.Delete("/tickets/{ticketID}", ticketH.DeleteTicket)
 
-		// Feature Debate Mode (spec §4). Tasks 8-9 extend this block
-		// with accept/reject/undo/approve/abandon.
+		// Feature Debate Mode (spec §4). Task 9 extends this block
+		// with approve/abandon.
 		r.Get("/tickets/{ticketID}/debate", debateH.ShowDebate)
 		r.Post("/tickets/{ticketID}/debate/start", debateH.StartDebate)
 		r.Post("/tickets/{ticketID}/debate/rounds", debateH.CreateRound)
+		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", debateH.AcceptRound)
+		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/reject", debateH.RejectRound)
+		r.Post("/tickets/{ticketID}/debate/undo", debateH.UndoRound)
 
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)

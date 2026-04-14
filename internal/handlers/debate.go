@@ -15,6 +15,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -488,4 +489,309 @@ func (h *DebateHandler) writeInsertError(w http.ResponseWriter, err error) {
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// ── POST /tickets/{ticketID}/debate/rounds/{roundID}/accept ───────
+
+// AcceptRound marks an in_review round as accepted, updating
+// feature_debates.current_text to the round's output. After the
+// accept tx commits, fires scoreAfterAccept as a fire-and-forget
+// goroutine (spec §4.3 step 7) so the user's request returns
+// immediately instead of waiting on the scorer's 60s AI call.
+//
+// The scorer goroutine uses context.WithoutCancel so the user
+// closing the browser tab doesn't cancel the scorer tx mid-flight —
+// we've already billed for the refiner call that just succeeded;
+// the scorer call is a separate billable event that should either
+// complete cleanly or log a WARN, never leak half-done state.
+func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+	roundID := chi.URLParam(r, "roundID")
+	if roundID == "" {
+		http.Error(w, "missing round id", http.StatusBadRequest)
+		return
+	}
+
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "no active debate", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	round, err := h.acceptRoundUnderLock(r.Context(), deb.ID, roundID)
+	if err != nil {
+		h.writeAcceptError(w, err)
+		return
+	}
+
+	// Fire-and-forget scorer. context.WithoutCancel so a client
+	// disconnect doesn't cancel the in-flight scorer tx; we still
+	// honor the adapter's own AICallTimeout so the goroutine can't
+	// leak indefinitely.
+	if h.scorer != nil {
+		go h.scoreAfterAccept(context.WithoutCancel(r.Context()), deb.ID, round.ID, dctx.ticket.ProjectID)
+	}
+
+	_ = h.engine.RenderPartial(w, "debate_round.html", round)
+}
+
+// acceptRoundUnderLock runs the accept transaction: lock debate row,
+// lock round row, verify status == 'active' at the debate level,
+// update round + current_text, commit.
+func (h *DebateHandler) acceptRoundUnderLock(ctx context.Context, debateID, roundID string) (*models.DebateRound, error) {
+	tx, err := h.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Lock the debate row first. All state-changing operations take
+	// this lock as their first statement (spec §3.3 concurrency model)
+	// so accept / reject / undo / approve / abandon serialize cleanly.
+	var status string
+	if qErr := tx.QueryRow(ctx,
+		`SELECT status FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
+	).Scan(&status); qErr != nil {
+		return nil, qErr
+	}
+	if status != models.DebateStatusActive {
+		return nil, models.ErrDebateNotActive
+	}
+
+	round, err := h.db.AcceptRoundTx(ctx, tx, debateID, roundID)
+	if err != nil {
+		return nil, err
+	}
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		return nil, commitErr
+	}
+	return round, nil
+}
+
+// writeAcceptError maps accept-path sentinels to the right status.
+func (h *DebateHandler) writeAcceptError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		http.Error(w, "round not found", http.StatusNotFound)
+	case errors.Is(err, models.ErrDebateNotActive):
+		http.Error(w, "debate not active", http.StatusConflict)
+	default:
+		// Includes "round status is X, not in_review" — surface as 409
+		// since the client's view of the round is stale rather than
+		// infra failure.
+		if strings.Contains(err.Error(), "not in_review") {
+			http.Error(w, "round is not in review (stale state)", http.StatusConflict)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
+}
+
+// scoreAfterAccept runs the Scorer outside the accept tx (spec §4.3
+// step 7 — holding FOR UPDATE across a 60s AI call would serialize
+// Abandon/Undo behind every accept). On success, applies the score
+// conditionally (UpdateEffortScoreCondTx silently discards out-of-
+// order responses) and persists the scorer cost on the round row.
+// All three updates happen under a fresh debate-row lock to stay
+// consistent with the total_cost_micros accumulator (spec §6).
+//
+// Runs in its own goroutine; errors are logged at WARN and never
+// surfaced to the user (the accept already succeeded). The context
+// comes from context.WithoutCancel so client disconnect doesn't
+// abort the billing update.
+func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID, projectID string) {
+	// Respect the adapter's own timeout envelope so this goroutine
+	// can't wedge indefinitely on a stuck network call.
+	callCtx, cancel := context.WithTimeout(ctx, h.cfg.AICallTimeout)
+	defer cancel()
+
+	deb, err := h.db.GetDebateByID(callCtx, debateID)
+	if err != nil {
+		log.Printf("debate scoreAfterAccept: GetDebateByID %s: %v", debateID, err)
+		return
+	}
+
+	res, err := h.scorer.Score(callCtx, deb.CurrentText)
+	if err != nil {
+		log.Printf("debate scoreAfterAccept: scorer failed for debate %s round %s: %v", debateID, roundID, err)
+		return
+	}
+
+	// Accumulator + conditional score update under a fresh lock.
+	tx, err := h.db.Pool.Begin(ctx)
+	if err != nil {
+		log.Printf("debate scoreAfterAccept: Begin: %v", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var oldTotal int64
+	if qErr := tx.QueryRow(ctx,
+		`SELECT total_cost_micros FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
+	).Scan(&oldTotal); qErr != nil {
+		log.Printf("debate scoreAfterAccept: lock debate %s: %v", debateID, qErr)
+		return
+	}
+
+	if uErr := h.db.UpdateScorerCostMicros(ctx, tx, roundID, res.Usage.CostMicros); uErr != nil {
+		log.Printf("debate scoreAfterAccept: update scorer cost on round %s: %v", roundID, uErr)
+		return
+	}
+	if uErr := h.db.UpdateEffortScoreCondTx(ctx, tx, debateID, roundID, res.Score, res.Hours, res.Reasoning); uErr != nil {
+		log.Printf("debate scoreAfterAccept: UpdateEffortScoreCondTx debate %s: %v", debateID, uErr)
+		return
+	}
+
+	newTotal := oldTotal + res.Usage.CostMicros
+	if _, uErr := tx.Exec(ctx,
+		`UPDATE feature_debates SET total_cost_micros = $1, updated_at = now() WHERE id = $2`,
+		newTotal, debateID,
+	); uErr != nil {
+		log.Printf("debate scoreAfterAccept: update total_cost_micros debate %s: %v", debateID, uErr)
+		return
+	}
+
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		log.Printf("debate scoreAfterAccept: Commit debate %s: %v", debateID, commitErr)
+		return
+	}
+
+	centsDelta := newTotal/10000 - oldTotal/10000
+	if incErr := h.db.IncrementProjectCostCents(ctx, projectID, centsDelta); incErr != nil {
+		log.Printf("debate scoreAfterAccept: project_costs rollup for scorer cost: %v", incErr)
+	}
+}
+
+// ── POST /tickets/{ticketID}/debate/rounds/{roundID}/reject ───────
+
+// RejectRound marks an in_review round as rejected without touching
+// current_text. Returns the debate_next_round.html partial so HTMX
+// can replace the in-review card with the feedback+AI-picker form.
+func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+	roundID := chi.URLParam(r, "roundID")
+	if roundID == "" {
+		http.Error(w, "missing round id", http.StatusBadRequest)
+		return
+	}
+
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "no active debate", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if rejectErr := h.rejectRoundUnderLock(r.Context(), deb.ID, roundID); rejectErr != nil {
+		h.writeAcceptError(w, rejectErr) // same sentinel mapping as accept
+		return
+	}
+
+	_ = h.engine.RenderPartial(w, "debate_next_round.html", map[string]any{
+		"Debate":    deb,
+		"Providers": h.providerNames(),
+	})
+}
+
+func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roundID string) error {
+	tx, err := h.db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status string
+	if qErr := tx.QueryRow(ctx,
+		`SELECT status FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
+	).Scan(&status); qErr != nil {
+		return qErr
+	}
+	if status != models.DebateStatusActive {
+		return models.ErrDebateNotActive
+	}
+	if rErr := h.db.RejectRoundTx(ctx, tx, debateID, roundID); rErr != nil {
+		return rErr
+	}
+	return tx.Commit(ctx)
+}
+
+// ── POST /tickets/{ticketID}/debate/undo?from=N ───────────────────
+
+// UndoRound cascading-deletes every round with round_number >= N
+// and recomputes current_text. After undo, the client reloads the
+// debate page (via Hx-Redirect) to see the recomputed state —
+// simpler than the per-partial swap dance for timeline re-renders.
+func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+
+	fromStr := r.URL.Query().Get("from")
+	fromN, err := strconv.Atoi(fromStr)
+	if err != nil || fromN < 1 {
+		http.Error(w, "invalid from parameter", http.StatusBadRequest)
+		return
+	}
+
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "no active debate", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if undoErr := h.undoUnderLock(r.Context(), deb.ID, fromN); undoErr != nil {
+		if errors.Is(undoErr, models.ErrDebateNotActive) {
+			http.Error(w, "debate not active", http.StatusConflict)
+			return
+		}
+		log.Printf("debate UndoRound: %v", undoErr)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Hx-Redirect", "/tickets/"+dctx.ticket.ID+"/debate")
+	w.WriteHeader(http.StatusSeeOther)
+}
+
+func (h *DebateHandler) undoUnderLock(ctx context.Context, debateID string, fromN int) error {
+	tx, err := h.db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status string
+	if qErr := tx.QueryRow(ctx,
+		`SELECT status FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
+	).Scan(&status); qErr != nil {
+		return qErr
+	}
+	if status != models.DebateStatusActive {
+		return models.ErrDebateNotActive
+	}
+	if uErr := h.db.UndoRoundsFromTx(ctx, tx, debateID, fromN); uErr != nil {
+		return uErr
+	}
+	return tx.Commit(ctx)
 }
