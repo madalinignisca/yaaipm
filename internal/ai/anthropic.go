@@ -100,7 +100,7 @@ func (r *AnthropicRefiner) Refine(ctx context.Context, in RefineInput) (RefineOu
 		Model:     anthropic.Model(r.model),
 		MaxTokens: 4096,
 		System: []anthropic.TextBlockParam{
-			{Text: in.SystemPrompt},
+			{Text: resolveSystemPrompt(in.SystemPrompt)},
 		},
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(
@@ -144,8 +144,17 @@ func (r *AnthropicRefiner) Refine(ctx context.Context, in RefineInput) (RefineOu
 }
 
 // mapAnthropicStopReason normalizes Anthropic's stop_reason vocabulary
-// to the Refiner FinishReason contract (see refiner.go). Unknown values
-// are surfaced raw so the handler can treat them as "stop-equivalent".
+// to the Refiner FinishReason contract (see refiner.go). Known
+// truncation-like values map to FinishReasonLength so the handler's
+// single-equality check catches them all; unknown values are inspected
+// for truncation substrings before being surfaced raw.
+//
+// The substring check on the default branch catches future Anthropic
+// additions like "model_context_window_exceeded" without waiting for
+// an SDK bump — the cost of a false positive here (accidentally marking
+// a non-truncation reason as Length) is a 502 to the user on what
+// would otherwise be a successful round, which is strictly safer than
+// accepting a silently truncated description onto a ticket.
 func mapAnthropicStopReason(reason anthropic.StopReason) string {
 	switch reason {
 	case anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence:
@@ -157,6 +166,13 @@ func mapAnthropicStopReason(reason anthropic.StopReason) string {
 	case anthropic.StopReasonRefusal:
 		return FinishReasonContentFilter
 	default:
+		raw := strings.ToLower(string(reason))
+		if strings.Contains(raw, "max") ||
+			strings.Contains(raw, "length") ||
+			strings.Contains(raw, "exceeded") ||
+			strings.Contains(raw, "truncat") {
+			return FinishReasonLength
+		}
 		return string(reason)
 	}
 }

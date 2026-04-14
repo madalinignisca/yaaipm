@@ -44,12 +44,31 @@ func TestMapAnthropicStopReason(t *testing.T) {
 		{anthropic.StopReasonToolUse, FinishReasonToolCalls},
 		{anthropic.StopReasonRefusal, FinishReasonContentFilter},
 		{anthropic.StopReasonPauseTurn, string(anthropic.StopReasonPauseTurn)}, // surfaced raw
+		// Future/unknown truncation-shaped reasons map to FinishReasonLength
+		// via substring detection so the handler's single-equality truncation
+		// check catches them without an SDK bump.
+		{anthropic.StopReason("model_context_window_exceeded"), FinishReasonLength},
+		{anthropic.StopReason("output_length_limit"), FinishReasonLength},
+		{anthropic.StopReason("truncated_by_provider"), FinishReasonLength},
+		{anthropic.StopReason("totally_new_reason"), "totally_new_reason"}, // no substring match → raw
 	}
 	for _, c := range cases {
 		got := mapAnthropicStopReason(c.in)
 		if got != c.want {
 			t.Errorf("mapAnthropicStopReason(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestResolveSystemPrompt(t *testing.T) {
+	if got := resolveSystemPrompt("caller-supplied"); got != "caller-supplied" {
+		t.Errorf("caller-supplied prompt should pass through, got %q", got)
+	}
+	if got := resolveSystemPrompt(""); got == "" {
+		t.Error("empty input must resolve to the default fallback, got empty string")
+	}
+	if got := resolveSystemPrompt(""); !strings.Contains(got, "senior product engineer") {
+		t.Errorf("default fallback missing expected content: %q", got)
 	}
 }
 
