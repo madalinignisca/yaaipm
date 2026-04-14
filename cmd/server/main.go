@@ -130,6 +130,24 @@ func main() {
 	// keys mean the corresponding AI-picker button will return 400
 	// ("unknown provider") on click rather than silently falling back
 	// to another vendor (spec §3.2).
+	//
+	// DEBATE_REFINER_MODE=fake replaces every configured refiner with
+	// an ai.FakeRefiner that returns a canned string. Only for E2E
+	// tests (Playwright golden-path spec in e2e/tests/06-debate/)
+	// that otherwise would need a real API key per run. Guarded
+	// against production misconfiguration: panics at startup if the
+	// env is set AND the configured BaseURL looks production-shaped
+	// (anything that isn't localhost/127.0.0.1 or explicitly marked
+	// as an http test origin). Fakes in production are how you ship
+	// a feature that "works" but talks to no real AI.
+	debateRefinerMode := os.Getenv("DEBATE_REFINER_MODE")
+	if debateRefinerMode == "fake" {
+		if !isLocalDebateEnv(cfg.BaseURL) {
+			log.Fatalf("DEBATE_REFINER_MODE=fake set against non-local BaseURL %q — refusing to start (see cmd/server/main.go)", cfg.BaseURL)
+		}
+		log.Printf("WARNING: DEBATE_REFINER_MODE=fake — all debate refiners return canned output")
+	}
+
 	debateRefiners := map[string]ai.Refiner{}
 	if cfg.AnthropicAPIKey != "" {
 		anthropicClient := ai.NewAnthropicClient(cfg.AnthropicAPIKey, ai.AnthropicModels{
@@ -143,6 +161,11 @@ func main() {
 	}
 	if cfg.OpenAIAPIKey != "" {
 		debateRefiners["openai"] = ai.NewOpenAIRefiner(ai.NewOpenAIClient(cfg.OpenAIAPIKey, cfg.OpenAIModel))
+	}
+	// Swap in fakes for E2E tests when explicitly opted in (guarded
+	// against production above).
+	if debateRefinerMode == "fake" {
+		debateRefiners = buildFakeDebateRefiners()
 	}
 	var debateScorer ai.Scorer
 	if geminiClient != nil {
@@ -335,4 +358,55 @@ func main() {
 		log.Fatalf("server error: %v", listenErr)
 	}
 	log.Println("Server stopped")
+}
+
+// isLocalDebateEnv returns true iff the BaseURL looks like a local
+// development or test origin — the only contexts where
+// DEBATE_REFINER_MODE=fake is acceptable. Prod-like URLs (anything
+// with a real TLD, remote IP, or TLS) fall through to false.
+//
+// Conservative allowlist: accepts scheme+host combinations whose
+// hostname resolves to localhost, 127.0.0.1, ::1, or ends with
+// .local/.test. Anything else — including plain hostnames, LAN IPs,
+// and public domains — is rejected so a misconfigured prod env var
+// can't accidentally serve fake AI output to real users.
+func isLocalDebateEnv(baseURL string) bool {
+	lower := strings.ToLower(baseURL)
+	allowedHosts := []string{
+		"://localhost",
+		"://127.0.0.1",
+		"://[::1]",
+		".local",
+		".test",
+	}
+	for _, h := range allowedHosts {
+		if strings.Contains(lower, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildFakeDebateRefiners returns a refiner registry backed entirely
+// by ai.FakeRefiner so E2E tests exercise the handler flow without
+// hitting a real AI provider. Each fake returns a provider-tagged
+// canned string — varied enough that golden-path tests can assert
+// which provider's button was clicked.
+func buildFakeDebateRefiners() map[string]ai.Refiner {
+	mk := func(name, model string) ai.Refiner {
+		return &ai.FakeRefiner{
+			NameVal: name, ModelVal: model,
+			OutputFunc: func(in ai.RefineInput) (string, string, error) {
+				// Always return a non-trivial string so the handler's
+				// MinOutputLen check passes. Include the original
+				// text to keep the diff renderer's output interesting.
+				return "Refactored by " + name + ":\n\n" + in.CurrentText + "\n\n- added by fake refiner", ai.FinishReasonStop, nil
+			},
+		}
+	}
+	return map[string]ai.Refiner{
+		"claude": mk("claude", ai.ModelClaudeSonnet46),
+		"gemini": mk("gemini", ai.ModelGeminiFlash),
+		"openai": mk("openai", ai.ModelGPT5Mini),
+	}
 }

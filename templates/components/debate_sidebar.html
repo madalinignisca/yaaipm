@@ -1,1 +1,35 @@
-{{/* Skeleton — real content added in Task 10 (UI pass). */}}
+{{define "debate_sidebar.html"}}
+<div class="sidebar-inner">
+  {{if .EffortScore}}
+    {{$score := derefInt .EffortScore}}
+    {{$bucket := "low"}}{{if gt $score 5}}{{$bucket = "mid"}}{{end}}{{if gt $score 8}}{{$bucket = "high"}}{{end}}
+
+    <div class="label text-center">Effort score</div>
+    <div class="effort-score effort-{{$bucket}}">{{$score}}</div>
+    <div class="subtitle text-center">
+      {{if eq $bucket "low"}}Feature task only{{end}}
+      {{if eq $bucket "mid"}}Needs sub-tasks from start{{end}}
+      {{if eq $bucket "high"}}Consider splitting into multiple features{{end}}
+    </div>
+
+    <div class="effort-bar-vertical" title="{{derefString .EffortReasoning}}">
+      <div class="effort-pointer"
+           style="bottom: calc({{mul $score 10}}% - 2px)"></div>
+    </div>
+
+    <div class="effort-hours mt-md">
+      <div class="label">Est. human hours</div>
+      <div class="hours-number">~ {{derefInt .EffortHours}} h</div>
+      <div class="subtitle">full-stack, mid-senior</div>
+    </div>
+
+    <div class="effort-updated mt-sm">
+      Updated {{relTime .EffortScoredAt}} · via Gemini
+    </div>
+  {{else}}
+    <div class="effort-empty">
+      Score appears after the first accepted round.
+    </div>
+  {{end}}
+</div>
+{{end}}

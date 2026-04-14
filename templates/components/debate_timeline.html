@@ -1,1 +1,14 @@
-{{/* Skeleton — real content added in Task 10 (UI pass). */}}
+{{define "debate_timeline.html"}}
+{{template "debate_seed.html" dict
+    "Debate" .Debate
+    "RoundsExist" (gt (len .Rounds) 0)}}
+
+{{range .Rounds}}
+  {{template "debate_round.html" dict "Round" . "TicketID" $.TicketID}}
+{{end}}
+
+{{template "debate_next_round.html" dict
+    "Debate" .Debate
+    "Providers" .Providers
+    "TicketID" .TicketID}}
+{{end}}

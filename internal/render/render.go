@@ -14,6 +14,7 @@ import (
 	gorillacsrf "filippo.io/csrf/gorilla"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/madalin/forgedesk/internal/diff"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/static"
 	"github.com/microcosm-cc/bluemonday"
@@ -227,6 +228,65 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 			return template.JS(b)
 		},
+		// Feature Debate Mode helpers (spec §5 UI rendering).
+		// renderDiff takes a cached unified-diff string (stored on
+		// feature_debate_rounds.diff_unified) and returns sanitized
+		// HTML with diff-add/diff-del/diff-ctx class spans. Every
+		// line is HTMLEscaped in diff.RenderHTML; see that package
+		// for the safety audit.
+		"renderDiff": func(unified *string) template.HTML {
+			// Nil pointer (no cached diff) and empty string both route
+			// through diff.RenderHTML, which handles the empty case by
+			// returning just the outer <pre><code></code></pre> wrapper.
+			// Keeps the template.HTML construction confined to the
+			// already-audited helper rather than minting a new cast
+			// here.
+			var raw string
+			if unified != nil {
+				raw = *unified
+			}
+			return diff.RenderHTML(raw)
+		},
+		// derefInt / derefString unwrap nullable *int and *string
+		// fields for safe template-side display; zero/empty values
+		// substitute for nil. Used by debate_sidebar.html for the
+		// effort_score / effort_hours / effort_reasoning columns.
+		"derefInt": func(p *int) int {
+			if p == nil {
+				return 0
+			}
+			return *p
+		},
+		"derefString": func(p *string) string {
+			if p == nil {
+				return ""
+			}
+			return *p
+		},
+		// relTime renders a nullable *time.Time as "just now" / "5m ago"
+		// / "2h ago" / "3d ago" for the sidebar's "last scored"
+		// indicator. Returns an em-dash for nil so the template can
+		// always substitute it into a sentence fragment.
+		"relTime": func(t *time.Time) string {
+			if t == nil {
+				return "—"
+			}
+			d := time.Since(*t)
+			switch {
+			case d < time.Minute:
+				return "just now"
+			case d < time.Hour:
+				return fmt.Sprintf("%dm ago", int(d.Minutes()))
+			case d < 24*time.Hour:
+				return fmt.Sprintf("%dh ago", int(d.Hours()))
+			default:
+				return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+			}
+		},
+		// mul multiplies two ints; used by the effort-bar-vertical's
+		// inline CSS calc() for the score-pointer position
+		// (score * 10% per band point).
+		"mul": func(a, b int) int { return a * b },
 		"formatBytes": func(b int64) string {
 			const unit = 1024
 			if b < unit {

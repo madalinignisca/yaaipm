@@ -1779,3 +1779,129 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   }
 }
 
+/* ── Feature Debate Mode (Task 10) ─────────────────────────────
+ * Layout: two-column (timeline | sidebar) with the sidebar sticky.
+ * CSS-only effort bar uses a three-band gradient + tick pointer so
+ * the score is legible at a glance without any JS. Diff colors use
+ * translucent backgrounds so the text stays readable against the
+ * app's dark theme.
+ */
+
+.debate-page { padding: 1rem; }
+.debate-header { padding-bottom: 0.5rem; border-bottom: 1px solid var(--border, #2a2a2a); margin-bottom: 1rem; }
+
+.debate-body {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 1rem;
+}
+.debate-timeline { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+
+.debate-sidebar {
+  position: sticky;
+  top: 1rem;
+  align-self: start;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  padding: 1rem;
+}
+
+.debate-empty { padding: 1.5rem; }
+.debate-empty .card { padding: 1rem; }
+
+.debate-seed {
+  padding: 0.75rem;
+  border-left: 3px solid var(--accent, #4a90e2);
+}
+.debate-seed.seed-frozen {
+  opacity: 0.7;
+  border-left-color: #666;
+}
+
+.round {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  padding: 0.75rem;
+  background: var(--surface, #151515);
+}
+.round-in_review { border-color: #4a90e2; border-width: 2px; }
+.round-rejected { opacity: 0.5; }
+.round-header { display: flex; justify-content: space-between; align-items: center; }
+.round-summary {
+  display: flex; justify-content: space-between; align-items: center;
+  width: 100%; background: transparent; border: none; color: inherit;
+  padding: 0; cursor: pointer; text-align: left; font: inherit;
+}
+.round-toggle { opacity: 0.7; padding-left: 0.5rem; }
+.round-details { margin-top: 0.5rem; }
+.round-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+
+.diff-block {
+  font-family: monospace;
+  font-size: 0.85rem;
+  background: #111;
+  border-radius: 4px;
+  padding: 0.5rem;
+  line-height: 1.4;
+  white-space: pre;
+  overflow-x: auto;
+  margin: 0;
+}
+.diff-add { color: #86efac; background: rgba(34, 197, 94, 0.12); display: block; }
+.diff-del { color: #fca5a5; background: rgba(239, 68, 68, 0.12); display: block; }
+.diff-ctx { color: #888; display: block; }
+
+.next-round { border: 1px dashed var(--border, #2a2a2a); padding: 0.75rem; }
+.approve-form { display: inline-block; }
+
+.sidebar-inner { display: flex; flex-direction: column; }
+
+.effort-score {
+  font-size: 2rem; font-weight: 700; text-align: center; margin: 0.5rem 0;
+}
+.effort-low  { color: #22c55e; }
+.effort-mid  { color: #f59e0b; }
+.effort-high { color: #ef4444; }
+
+.effort-bar-vertical {
+  position: relative;
+  width: 22px;
+  height: 220px;
+  margin: 1rem auto;
+  background: linear-gradient(
+    to top,
+    #22c55e 0%, #22c55e 50%,
+    #f59e0b 50%, #f59e0b 80%,
+    #ef4444 80%, #ef4444 100%
+  );
+  border-radius: 4px;
+}
+.effort-pointer {
+  position: absolute;
+  right: -3px;
+  width: 28px;
+  height: 3px;
+  background: #fff;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
+}
+
+.effort-hours { text-align: center; border-top: 1px solid var(--border, #2a2a2a); padding-top: 0.5rem; }
+.hours-number { font-size: 1.5rem; font-weight: 600; }
+.effort-updated { font-size: 0.7rem; color: #666; margin-top: 0.5rem; text-align: center; }
+.effort-empty { color: #888; text-align: center; padding: 1rem; }
+
+[x-cloak] { display: none !important; }
+
+/* Collapse to single column on narrow screens */
+@media (max-width: 900px) {
+  .debate-body {
+    grid-template-columns: 1fr;
+  }
+  .debate-sidebar {
+    position: static;
+  }
+  .effort-bar-vertical {
+    height: 120px;
+  }
+}
+
