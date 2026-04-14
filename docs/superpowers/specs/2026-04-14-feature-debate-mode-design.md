@@ -57,10 +57,17 @@ New migration `000032_feature_debates.{up,down}.sql`. Two tables:
 | `effort_hours` | INT | Human-hours estimate, nullable |
 | `effort_reasoning` | TEXT | Scorer's short justification |
 | `effort_scored_at` | TIMESTAMPTZ | Nullable |
+| `last_scored_round_id` | UUID FK → feature_debate_rounds(id) | Nullable; identifies which accepted round produced the current `effort_*` snapshot. Used to discard stale out-of-order scorer responses (see §4.3 step 8). |
 | `approved_text` | TEXT | Set on approve; immutable thereafter |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
 
-Partial unique index: `idx_feature_debates_one_active_per_ticket ON feature_debates (ticket_id) WHERE status = 'active'`.
+Indexes (`feature_debates`):
+
+- `idx_feature_debates_one_active_per_ticket ON (ticket_id) WHERE status='active'` — partial unique, enforces "one active debate per ticket".
+- `idx_feature_debates_ticket ON (ticket_id)` — full index for cross-status lookups (audit history).
+- `idx_feature_debates_org_status ON (org_id, status)` — tenant-scoped active-debate listings.
+- `idx_feature_debates_project ON (project_id)` — backs the `project_id` FK so cascading project deletes don't full-scan; also speeds project-level audit queries.
+- `idx_feature_debates_started_by ON (started_by)` — backs the `started_by` FK so user lookup operations are not blocked by full scans during cascading effects (e.g. user reassignment by superadmin).
 
 **`feature_debate_rounds`** — one row per round:
 
@@ -114,6 +121,9 @@ Unique: `(debate_id, round_number)`. Indexes:
 | Per-feature round cap (clients only) | Handler counts rounds inside the tx that holds the debate lock, rejects with 429 if over cap — count is re-read under lock to prevent TOCTOU |
 | Feature-only (v1) | Handler-side check on `ticket.type`; DB stub `CHECK(true)` placeholder for future relaxation |
 | Debate has exactly one terminal state | Every state-changing tx starts with `SELECT status FROM feature_debates WHERE id=$1 FOR UPDATE` and rejects with 409 if `status != 'active'`. Approve and Abandon cannot both succeed on the same debate. |
+| Approve doesn't silently overwrite external edits | `ApproveDebate` performs a compare-and-swap: it reads `tickets.description_markdown` under the same tx and **rejects with 409** if it no longer equals `feature_debates.seed_description`. Any external edit (including from an old v0.1.0 pod during a rolling upgrade window) is therefore detected and the approve fails loudly instead of silently overwriting the edit. The user sees a "description changed externally — review and re-approve" message. |
+| Daily per-user round safety fuse | `CreateRound` counts `feature_debate_rounds WHERE triggered_by=$user AND created_at >= now() - INTERVAL '24 hours'`. Clients capped at 50/day, staff/superadmin uncapped. Returns 429 if over. This is **not** the phase-2 per-org $ budget — it's a coarse safety fuse to prevent catastrophic accidental cost spikes (a buggy script, a stuck retry loop) in v1 before budget enforcement ships. Cap value is configurable via `DebateConfig.ClientDailyRoundCap`. |
+| Scorer results applied in order (no stale overwrites) | `UpdateEffortScore` UPDATE includes `WHERE id=$1 AND (last_scored_round_id IS NULL OR (SELECT round_number FROM feature_debate_rounds WHERE id = last_scored_round_id) < (SELECT round_number FROM feature_debate_rounds WHERE id = $2))`. Out-of-order scorer responses (where round N's scorer finishes after round N+1's) are silently discarded. The freshest accepted-round score always wins. |
 
 ### 3.2 Provider abstraction (`internal/ai/`)
 
@@ -133,8 +143,9 @@ type RefineInput struct {
 }
 
 type RefineOutput struct {
-    Text  string
-    Usage RefineUsage
+    Text         string
+    Usage        RefineUsage
+    FinishReason string // "stop" | "length" | "content_filter" | "tool_calls" | provider-specific
 }
 
 type RefineUsage struct {
@@ -164,6 +175,14 @@ type ScoreResult struct {
 - `internal/ai/prompts/debate_system.md` — embedded system prompt for refiners
 - `internal/ai/prompts/debate_score_system.md` — embedded scorer prompt
 
+**Output validation contract** — every adapter MUST set `FinishReason` on `RefineOutput`. The handler treats the response as a hard error (502) when:
+
+- `Text` is empty or whitespace-only after trim
+- `len(Text) < 10` (sanity floor; a real refactor is never two words)
+- `FinishReason == "length"` or `"max_tokens"` — output was truncated by the provider's token limit; accepting it would risk overwriting the ticket description with truncated content
+
+These checks live in the handler, not in the adapter, so the rejection is uniform across all three providers.
+
 Missing provider key at startup → Refiner is omitted from the registry; attempting that provider returns 503 (not a silent fallback).
 
 ### 3.3 Handler + UI (`internal/handlers/debate.go`, `templates/pages/debate.html`)
@@ -180,9 +199,11 @@ type DebateHandler struct {
 }
 
 type DebateConfig struct {
-    ClientRoundCap int    // 10
-    MaxFeedbackLen int    // 2000
-    MaxTextLen     int    // 20000
+    ClientRoundCap      int    // 10 — per-feature cap for clients
+    ClientDailyRoundCap int    // 50 — per-user-per-day safety fuse for clients
+    MaxFeedbackLen      int    // 2000
+    MaxTextLen          int    // 20000
+    MinOutputLen        int    // 10  — minimum AI output length to accept
 }
 ```
 
@@ -268,10 +289,13 @@ Page renders with empty rounds list and seed-editable card.
 
 1. User edits seed (optional, round 0 only), clicks an AI button.
 2. `POST /rounds` with `provider`, `feedback` form fields.
-3. Handler validates: ticket is feature, no in-review round exists, round cap not hit.
-4. Handler calls `Refiner.Refine(ctx, {CurrentText: debate.current_text, Feedback, SystemPrompt})` with 60s timeout.
-5. On success: insert round row (`status='in_review'`, `diff_unified` cached), increment `project_costs.ai_debate` cost aggregate (non-fatal).
-6. Return `debate_round.html` partial; HTMX appends it to `#rounds`.
+3. Handler validates: ticket is feature, no in-review round exists, **per-feature round cap not hit (10 for clients), daily per-user safety fuse not hit (50/day for clients)**.
+4. Handler opens tx, takes `SELECT * FROM feature_debates WHERE id=:debate_id FOR UPDATE` to serialize against accept/reject/undo/approve/abandon. Re-checks invariants under the lock (TOCTOU).
+5. Handler calls `Refiner.Refine(ctx, {CurrentText: debate.current_text, Feedback, SystemPrompt})` with 60s timeout. Note: this AI call happens **inside** the lock — round creation is the only state-changing tx that holds the lock across an AI call, because there's no meaningful "pre-validate then commit" split for round creation. To bound lock contention, only one round can be in flight per debate (which is exactly the invariant we want).
+6. **Output validation** (per §3.2): reject 502 if `Text` empty, `len(Text) < MinOutputLen`, or `FinishReason in {"length", "max_tokens"}`. Lock released without inserting a row.
+7. On success: insert round row (`status='in_review'`, `diff_unified` cached), commit tx, release lock.
+8. Increment `project_costs.ai_debate` cost aggregate outside the tx (non-fatal).
+9. Return `debate_round.html` partial; HTMX appends it to `#rounds`.
 
 ### 4.3 Accept
 
@@ -281,8 +305,19 @@ Page renders with empty rounds list and seed-editable card.
 4. `UPDATE feature_debate_rounds SET status='accepted', decided_at=now() WHERE id=:rid`.
 5. `UPDATE feature_debates SET current_text=round.output_text, updated_at=now() WHERE id=:debate_id`.
 6. Commit tx. Release debate lock.
-7. Call `Scorer.Score(ctx, newCurrentText)` with 60s timeout (outside the tx — scoring should not hold locks).
-8. If scorer succeeds: open a short tx, re-`SELECT ... FOR UPDATE` debate, update `effort_score/hours/reasoning/effort_scored_at`. If debate's status is no longer `active` (e.g. approved/abandoned meanwhile), silently skip the update — the score would be stale anyway.
+7. Call `Scorer.Score(ctx, newCurrentText)` with 60s timeout (outside the tx — scoring should not hold locks). **Capture the just-accepted round's id (call it `acceptedRoundID`) and pass it to step 8.**
+8. If scorer succeeds: open a short tx, re-`SELECT ... FOR UPDATE` debate, then update conditionally:
+    ```sql
+    UPDATE feature_debates
+    SET effort_score = $1, effort_hours = $2, effort_reasoning = $3,
+        effort_scored_at = now(), last_scored_round_id = :acceptedRoundID
+    WHERE id = :debate_id
+      AND status = 'active'
+      AND (last_scored_round_id IS NULL
+           OR (SELECT round_number FROM feature_debate_rounds WHERE id = last_scored_round_id)
+              < (SELECT round_number FROM feature_debate_rounds WHERE id = :acceptedRoundID));
+    ```
+    The conditional `WHERE` discards out-of-order scorer responses: if a later round was scored first (because its scorer finished sooner), `last_scored_round_id` already points to a round_number ≥ this one's, and the UPDATE matches zero rows. The freshest accepted-round score always wins.
 9. If scorer fails: log at WARN with `{debate_id, round_id, provider, error}`; leave previous effort_* values untouched; accept still succeeded.
 10. Return `debate_round.html` (accepted state) + OOB `debate_sidebar.html`.
 
@@ -304,13 +339,16 @@ The debate-level `FOR UPDATE` in step 3 prevents any concurrent `AcceptRound` fr
 ### 4.5 Approve
 
 1. `POST /approve`.
-2. Open tx. **First: `SELECT status, current_text FROM feature_debates WHERE id=:debate_id FOR UPDATE`.** If `status != 'active'` → commit & return 409 (another request already approved or abandoned).
-3. `UPDATE tickets SET description_markdown = :current_text, updated_at=now() WHERE id=:ticket_id`.
-4. `UPDATE feature_debates SET status='approved', approved_text=:current_text, updated_at=now() WHERE id=:debate_id`.
-5. Commit tx.
-6. Response: `HX-Redirect: /projects/:pid/tickets/:tid`.
+2. Open tx. **First: `SELECT status, current_text, seed_description FROM feature_debates WHERE id=:debate_id FOR UPDATE`.** If `status != 'active'` → commit & return 409 (another request already approved or abandoned).
+3. **Compare-and-swap external-edit guard:** `SELECT description_markdown FROM tickets WHERE id=:ticket_id FOR UPDATE`. If `description_markdown != seed_description` → commit & return 409 with body `description changed externally since debate started — reload and review`. This catches edits that bypassed the `IsDebateActive` guard (rolling-deploy window where v0.1.0 pods don't have it, direct DB edits, future code paths that forget the guard).
+4. `UPDATE tickets SET description_markdown = :current_text, updated_at=now() WHERE id=:ticket_id`.
+5. `UPDATE feature_debates SET status='approved', approved_text=:current_text, updated_at=now() WHERE id=:debate_id`.
+6. Commit tx.
+7. Response: `HX-Redirect: /projects/:pid/tickets/:tid`.
 
 Once approved, the debate row is immutable for everything except `updated_at`. `approved_text` is frozen. The `UpdateTicket` handler's `IsDebateActive` guard now returns false, so the ticket's description can be edited directly again.
+
+The CAS in step 3 means an approve can fail through no fault of the user — if a v0.1.0 pod processed a manual edit during a rolling upgrade window, the debate's approve will reject with 409. The user can then either (a) abandon the debate and start over with the new seed, or (b) reject the external change manually and re-approve. We don't try to auto-merge — divergent edits aren't safely auto-mergeable for prose.
 
 ### 4.6 Abandon
 
@@ -334,10 +372,11 @@ Description untouched. Ticket becomes editable again. Approve and Abandon are mu
 ## 6. Cost & role gating
 
 - Clients, staff, and superadmin can all trigger debates.
-- Clients capped at 10 rounds per feature; staff and superadmin bypass.
+- **Per-feature round cap:** clients capped at 10 rounds per feature; staff and superadmin bypass.
+- **Per-user daily safety fuse (v1):** clients capped at 50 rounds per 24-hour window across all their debates; staff and superadmin bypass. This is a coarse stop-gap to prevent catastrophic accidental cost spikes (a buggy script, a misclicked retry loop) before the proper per-org $ budget ships in phase-2. Cap value is held in `DebateConfig.ClientDailyRoundCap` and easily tunable. Hitting the daily cap returns 429 with body `daily round limit reached — try again tomorrow or ask staff to bypass`.
 - Each round increments `project_costs` with category `debate` (monthly aggregate).
 - Cost-increment is non-fatal: if it fails, the round still succeeds. The canonical cost data is on `feature_debate_rounds.cost_micros`; `project_costs` is a rollup.
-- Phase-2 issues add configurable scorer and per-org monthly $ budget.
+- Phase-2 issues add configurable scorer and per-org monthly $ budget. The phase-2 budget enforcement supersedes the daily safety fuse but does not replace it (defense in depth — the fuse stays).
 
 ## 7. Testing
 
@@ -379,6 +418,18 @@ Description untouched. Ticket becomes editable again. Approve and Abandon are mu
 - `TestConcurrentAcceptAndUndo_Serialized` — one goroutine accepts round 3 while another undoes from round 2; exactly one completes successfully — if undo wins, accept returns 404 (round deleted); if accept wins, undo sees the newly-accepted round and still cascades it away.
 - `TestConcurrentApproveAndAbandon_MutuallyExclusive` — fire both at the same debate; one returns 200 with its terminal status, other returns 409; DB shows a single terminal status (approved XOR abandoned).
 - `TestDescriptionEditLockedDuringActiveDebate` — `UpdateTicket` on feature with active debate → 409.
+- `TestApprove_RejectsExternalEdit_CAS` — start debate, accept a round, then bypass the guard with a direct DB UPDATE to `tickets.description_markdown`, then call Approve → 409 with "description changed externally" message; debate stays `active`.
+- `TestScorer_StaleResponseDiscarded` — accept rounds N and N+1 in quick succession with a fake scorer that delays N's response artificially; assert that after both responses land, `effort_*` reflects round N+1 (the freshest) and `last_scored_round_id == round_N+1.id`.
+
+**Output validation:**
+- `TestRefine_RejectsEmptyOutput` — fake refiner returns `""` → 502, no round inserted.
+- `TestRefine_RejectsTruncatedOutput` — fake refiner returns text with `FinishReason="length"` → 502, no round inserted.
+- `TestRefine_RejectsTinyOutput` — fake refiner returns `"ok"` (below `MinOutputLen`) → 502.
+
+**Daily safety fuse:**
+- `TestClientDailyCap_EnforcedAt50` — client triggers 50 rounds in 24h across multiple debates; 51st returns 429.
+- `TestClientDailyCap_StaffBypass` — same scenario as staff → 51st succeeds.
+- `TestClientDailyCap_RollsOver` — round inserted 25h ago doesn't count toward the cap.
 
 ### 7.4 E2E (Playwright)
 
@@ -429,6 +480,12 @@ If the feature must be withdrawn after release, follow this **strict order**:
 Reverting in the opposite order (migration first, image second) would leave v0.2.0 pods calling `IsDebateActive` against a missing table and failing every `UpdateTicket` request. The correct ordering avoids the need for defensive table-missing code in the guard.
 
 The only behavioral change to existing flows is the `UpdateTicket` guard itself; with no `feature_debates` table present (pre-migration or post-rollback) and no v0.2.0 code running, behavior is identical to v0.1.0.
+
+### 10.1 Rolling-deploy compatibility (v0.1.0 → v0.2.0)
+
+During a rolling deploy the cluster runs both v0.1.0 and v0.2.0 pods simultaneously for ~30 seconds. v0.1.0 pods do not know about debates and therefore do not enforce the `IsDebateActive` guard on `UpdateTicket`. A user who hits a v0.1.0 pod during this window can edit the description of a feature ticket that has an active debate.
+
+The **CAS guard in `ApproveDebate` (§4.5 step 3)** catches this case: if the ticket's description no longer equals `feature_debates.seed_description` at approve time, the approve fails with 409 and the user is informed of the external edit. No silent overwrite is possible. This makes the feature safe to roll out without a multi-PR deployment choreography (a "guard-only" PR followed later by the main feature PR), at the cost of one rare-but-recoverable failure mode for users unlucky enough to be the test case.
 
 ## 11. Observability
 
