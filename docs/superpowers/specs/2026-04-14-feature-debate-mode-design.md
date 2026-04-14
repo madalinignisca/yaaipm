@@ -57,7 +57,7 @@ New migration `000032_feature_debates.{up,down}.sql`. Two tables:
 | `effort_hours` | INT | Human-hours estimate, nullable |
 | `effort_reasoning` | TEXT | Scorer's short justification |
 | `effort_scored_at` | TIMESTAMPTZ | Nullable |
-| `last_scored_round_id` | UUID FK → feature_debate_rounds(id) | Nullable; identifies which accepted round produced the current `effort_*` snapshot. Used to discard stale out-of-order scorer responses (see §4.3 step 8). |
+| `last_scored_round_id` | UUID FK → feature_debate_rounds(id) | Nullable; **`ON DELETE SET NULL`** (critical — without this, `Undo` deleting the round currently referenced here would fail with a constraint violation). Identifies which accepted round produced the current `effort_*` snapshot. Used to discard stale out-of-order scorer responses (see §4.3 step 8). Because this FK creates a cycle (`feature_debates → feature_debate_rounds → feature_debates`), the migration adds it via `ALTER TABLE` after both tables exist; see §3.1.bis below. |
 | `approved_text` | TEXT | Set on approve; immutable thereafter |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
 
@@ -93,6 +93,51 @@ Unique: `(debate_id, round_number)`. Indexes:
 
 - `(debate_id, round_number DESC)` — chronological listing.
 - `(debate_id, status, round_number DESC)` — accelerates the undo recompute path (`WHERE status='accepted' ORDER BY round_number DESC LIMIT 1`) and status-filtered lookups without scanning the full partition.
+- `(triggered_by, created_at DESC)` — backs the per-user daily safety fuse query in §6 (`WHERE triggered_by=$1 AND created_at >= now() - INTERVAL '24 hours'`); without this, fuse enforcement does a per-user scan that grows linearly with table size.
+
+**Partial unique index — invariant: at most one in-review round per debate:**
+
+```sql
+CREATE UNIQUE INDEX idx_feature_debate_rounds_one_in_review_per_debate
+    ON feature_debate_rounds (debate_id) WHERE status = 'in_review';
+```
+
+This is the v1 *primary* enforcement of the "one in-review round at a time" rule. Without it, the `CreateRound` handler would have to hold a `FOR UPDATE` lock on the debate row across the 60-second AI call to prevent races — that would serialize Abandon and Undo behind every AI request. With this index, the handler instead runs lock-free during the AI call and lets the INSERT either succeed or fail-with-constraint-violation when the row lands; failure → 409. See §4.2.
+
+### 3.1.bis — Migration ordering for the FK cycle
+
+The `feature_debates.last_scored_round_id` FK references `feature_debate_rounds(id)`, while `feature_debate_rounds.debate_id` references `feature_debates(id)`. To avoid a chicken-and-egg problem at migration time, the up-migration applies the schema in this order:
+
+```sql
+-- 1. Create feature_debates without last_scored_round_id.
+CREATE TABLE feature_debates ( ... full schema except last_scored_round_id ... );
+
+-- 2. Create feature_debate_rounds (FK to feature_debates already valid).
+CREATE TABLE feature_debate_rounds ( ... );
+
+-- 3. Add last_scored_round_id as a nullable column with ON DELETE SET NULL.
+ALTER TABLE feature_debates
+    ADD COLUMN last_scored_round_id UUID
+        REFERENCES feature_debate_rounds(id) ON DELETE SET NULL;
+
+-- 4. Existing partial unique index from §3.1 main body, plus the
+--    one-in-review-per-debate index, plus the (triggered_by, created_at) index.
+```
+
+The down-migration reverses in opposite order: drop indexes → drop `feature_debate_rounds` → drop `feature_debates`. PostgreSQL's `DROP TABLE` cascades the FK constraints automatically.
+
+### 3.1.ter — `project_costs` constraint update
+
+The existing `project_costs` table (migration `000012`) carries a `CHECK` constraint restricting `category` to `{base_fee, dev_environment, testing_db, testing_container}`. The debate feature needs a new `debate` category for the cost rollup in §6. The same migration adds:
+
+```sql
+ALTER TABLE project_costs DROP CONSTRAINT IF EXISTS project_costs_category_check;
+ALTER TABLE project_costs ADD CONSTRAINT project_costs_category_check
+    CHECK (category IN ('base_fee', 'dev_environment', 'testing_db',
+                        'testing_container', 'debate'));
+```
+
+The down-migration restores the original constraint (and would error if any rows with `category='debate'` exist — the operator must delete those first).
 
 **Queries added to `internal/models/queries.go`:**
 
@@ -107,7 +152,11 @@ Unique: `(debate_id, round_number)`. Indexes:
 - `UpdateEffortScore(ctx, debateID, score, hours, reasoning) → error`
 - `ApproveDebate(ctx, debateID, ticketID) → error` — transaction writes `approved_text`, sets status, and updates `tickets.description_markdown`
 - `AbandonDebate(ctx, debateID) → error`
-- `IsDebateActive(ctx, ticketID) → bool` — used by `UpdateTicket` guard
+- `IsDebateActive(ctx, ticketID) → bool` — used by guarded write paths
+- `UpdateTicketMetadata(ctx, ticketID, fields)` — splits off from existing `UpdateTicket`. Updates everything **except** `description_markdown` (priority, dates, title, assigned_to). No debate guard — these fields are independently editable while a debate is active.
+- `UpdateTicketDescription(ctx, ticketID, newMarkdown)` — replaces the description-update path of existing `UpdateTicket`. **Embeds `IsDebateActive` guard at the model layer**: returns `ErrDescriptionLocked` if active debate exists. All callers — HTTP handler, AI assistant tool, future import paths — automatically get the guard. This eliminates the single-write-path violation where `internal/handlers/assistant.go`'s `update_ticket` tool could bypass an HTTP-handler-only guard.
+
+The existing `db.UpdateTicket` is removed; `internal/handlers/tickets.go` and `internal/handlers/assistant.go` are updated to call the appropriate split method.
 
 **Invariant enforcement:**
 
@@ -117,7 +166,7 @@ Unique: `(debate_id, round_number)`. Indexes:
 | Round numbers monotonic per debate | `UNIQUE (debate_id, round_number)` + handler assigns `max+1` inside the same tx that holds `SELECT ... FOR UPDATE` on the debate row |
 | Seed immutable after round 1 | Handler rejects 400 on edit-seed if `len(rounds) > 0` |
 | Cascading undo | Tx: `SELECT * FROM feature_debates WHERE id=$1 FOR UPDATE` → `DELETE FROM feature_debate_rounds WHERE debate_id=$1 AND round_number >= $2` → recompute + UPDATE debate |
-| Ticket description frozen during active debate | `UpdateTicket` handler calls `IsDebateActive`, returns 409 if true. Handler is the **single write path** to `description_markdown` — any bypass (direct SQL, future import handler, etc.) is a bug and must route through this guard. |
+| Ticket description frozen during active debate | Guard moved to the **model layer** in `UpdateTicketDescription` — returns `ErrDescriptionLocked` if `IsDebateActive` is true. The HTTP handler translates to 409, the AI assistant tool surfaces the error to the model. The previous handler-only design left a bypass through `internal/handlers/assistant.go`'s `update_ticket` tool which calls the model directly; moving the guard down closes that gap permanently. The CAS check in §4.5 step 3 is the second line of defense for any rolling-deploy or future-code bypass that this guard misses. |
 | Per-feature round cap (clients only) | Handler counts rounds inside the tx that holds the debate lock, rejects with 429 if over cap — count is re-read under lock to prevent TOCTOU |
 | Feature-only (v1) | Handler-side check on `ticket.type`; DB stub `CHECK(true)` placeholder for future relaxation |
 | Debate has exactly one terminal state | Every state-changing tx starts with `SELECT status FROM feature_debates WHERE id=$1 FOR UPDATE` and rejects with 409 if `status != 'active'`. Approve and Abandon cannot both succeed on the same debate. |
@@ -289,13 +338,16 @@ Page renders with empty rounds list and seed-editable card.
 
 1. User edits seed (optional, round 0 only), clicks an AI button.
 2. `POST /rounds` with `provider`, `feedback` form fields.
-3. Handler validates: ticket is feature, no in-review round exists, **per-feature round cap not hit (10 for clients), daily per-user safety fuse not hit (50/day for clients)**.
-4. Handler opens tx, takes `SELECT * FROM feature_debates WHERE id=:debate_id FOR UPDATE` to serialize against accept/reject/undo/approve/abandon. Re-checks invariants under the lock (TOCTOU).
-5. Handler calls `Refiner.Refine(ctx, {CurrentText: debate.current_text, Feedback, SystemPrompt})` with 60s timeout. Note: this AI call happens **inside** the lock — round creation is the only state-changing tx that holds the lock across an AI call, because there's no meaningful "pre-validate then commit" split for round creation. To bound lock contention, only one round can be in flight per debate (which is exactly the invariant we want).
-6. **Output validation** (per §3.2): reject 502 if `Text` empty, `len(Text) < MinOutputLen`, or `FinishReason in {"length", "max_tokens"}`. Lock released without inserting a row.
-7. On success: insert round row (`status='in_review'`, `diff_unified` cached), commit tx, release lock.
-8. Increment `project_costs.ai_debate` cost aggregate outside the tx (non-fatal).
-9. Return `debate_round.html` partial; HTMX appends it to `#rounds`.
+3. Handler validates: ticket is feature, debate is active, **per-feature round cap not hit (10 for clients), daily per-user safety fuse not hit (50/day for clients)**. Loads `current_text` via plain SELECT (no lock) — staleness here is harmless because step 7 below relies on a DB-level invariant, not optimistic concurrency.
+4. Handler calls `Refiner.Refine(ctx, {CurrentText: current_text, Feedback, SystemPrompt})` with 60s timeout. **No DB lock held during this call** — the "one in-review round per debate" invariant is enforced by the partial unique index `idx_feature_debate_rounds_one_in_review_per_debate` (§3.1), so there is no race window we need to serialize through application-level locking. This is the architectural change that prevents Abandon/Undo from being blocked behind every AI request.
+5. **Output validation** (per §3.2): reject 502 if `Text` empty, `len(Text) < MinOutputLen`, or `FinishReason in {"length", "max_tokens"}`. No DB write.
+6. Compute diff (`internal/diff.ComputeUnified(current_text, output)`).
+7. Open short tx, re-`SELECT status FROM feature_debates WHERE id=:debate_id FOR UPDATE`. If `status != 'active'` → 409 (debate was abandoned/approved during the AI call). Re-check round caps under lock (TOCTOU). Then `INSERT INTO feature_debate_rounds (..., status='in_review', round_number=max+1)`.
+8. The INSERT can fail with `unique_violation` on `idx_feature_debate_rounds_one_in_review_per_debate` if another concurrent CreateRound finished its INSERT first. Translate to 409 with body `another round is already in review — accept or reject it first`. Commit tx, release lock.
+9. Increment `project_costs` (category=`debate`) for the round's `cost_micros` outside the tx (non-fatal).
+10. Return `debate_round.html` partial; HTMX appends it to `#rounds`.
+
+The lock window in step 7 is microseconds (an INSERT with no AI call), not seconds. Abandon and Undo can run concurrently with an in-flight AI request because they wait at most for that microsecond INSERT, not for the AI provider.
 
 ### 4.3 Accept
 
@@ -319,7 +371,8 @@ Page renders with empty rounds list and seed-editable card.
     ```
     The conditional `WHERE` discards out-of-order scorer responses: if a later round was scored first (because its scorer finished sooner), `last_scored_round_id` already points to a round_number ≥ this one's, and the UPDATE matches zero rows. The freshest accepted-round score always wins.
 9. If scorer fails: log at WARN with `{debate_id, round_id, provider, error}`; leave previous effort_* values untouched; accept still succeeded.
-10. Return `debate_round.html` (accepted state) + OOB `debate_sidebar.html`.
+10. **Increment `project_costs` (category=`debate`)** for the scorer's `cost_micros` outside the tx (non-fatal). Both refiner and scorer cost increments are tracked under the same category — this matters because the previous spec only tracked the refiner cost in §4.2 step 9, leaving scorer spend invisible in the project rollup. Underestimating spend by ~25% (the typical refiner-vs-scorer ratio) would have been a real budget blind spot.
+11. Return `debate_round.html` (accepted state) + OOB `debate_sidebar.html`.
 
 **Rationale for step 6 commit before scoring:** scoring takes 2–10 seconds. Holding `FOR UPDATE` on the debate row across an AI call would serialize all parallel clicks on the page and could deadlock with reject/undo requests. Releasing the lock before the scorer call is the right tradeoff — the score is informational, not transactional.
 
@@ -425,6 +478,14 @@ Description untouched. Ticket becomes editable again. Approve and Abandon are mu
 - `TestRefine_RejectsEmptyOutput` — fake refiner returns `""` → 502, no round inserted.
 - `TestRefine_RejectsTruncatedOutput` — fake refiner returns text with `FinishReason="length"` → 502, no round inserted.
 - `TestRefine_RejectsTinyOutput` — fake refiner returns `"ok"` (below `MinOutputLen`) → 502.
+
+**Single-write-path enforcement:**
+- `TestUpdateTicketDescription_RejectsWhileDebateActive` — call `db.UpdateTicketDescription` directly (no HTTP layer); returns `ErrDescriptionLocked` if a debate is active. Verifies the guard is at the model layer, not just the handler.
+- `TestAssistantUpdateTicketTool_RespectsDebateLockout` — Gemini assistant `update_ticket` tool is invoked while a debate is active on the target feature → tool returns the `ErrDescriptionLocked` error to the model, which surfaces it in the chat. No silent overwrite.
+- `TestUpdateTicketMetadata_AllowedDuringDebate` — updating priority/dates/title on a feature with an active debate succeeds (only `description_markdown` is locked).
+
+**Cost rollup completeness:**
+- `TestCostRollup_IncludesScorerSpend` — accept a round with fake refiner (cost_micros=100) and fake scorer (cost_micros=50); assert `project_costs` row for category=`debate` increased by 150, not just 100.
 
 **Daily safety fuse:**
 - `TestClientDailyCap_EnforcedAt50` — client triggers 50 rounds in 24h across multiple debates; 51st returns 429.
