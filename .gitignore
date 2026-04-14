@@ -37,6 +37,7 @@ e2e/tests/.auth-state.json
 .playwright-mcp/
 .remember/
 .serena/
+.superpowers/
 
 # Working-tree scratch (root-only patterns so nested assets stay tracked)
 /*.png
