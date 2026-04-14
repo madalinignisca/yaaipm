@@ -1577,7 +1577,7 @@ gh pr create --base feature/debate-mode-v1 --title "feat(ai): OpenAIRefiner adap
 - Modify: `internal/models/queries.go` (add `InsertDebateRound`, `ReserveInFlight`, `ClearInFlight`, `GetTicketForOrg` if not present, `IncrementProjectCostCents` helper)
 - Modify: `go.mod` / `go.sum` (add `github.com/sergi/go-diff`)
 
-**Depends on:** Tasks 2, 3 merged.
+**Depends on:** Tasks 2, 3, 4, 5, 6 merged. The handler wiring in Step 7.6 (`cmd/server/main.go`) constructs all three refiner adapters (`NewAnthropicRefiner`, `NewGeminiRefiner`, `NewOpenAIRefiner`) and the scorer (`NewGeminiScorer`), so those adapter types must exist at compile time. Tasks 4/5/6 are mergeable in any order but all must land before Task 7's wiring compiles.
 
 - [ ] **Step 7.1: Branch**
 
@@ -2405,13 +2405,22 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
         http.Error(w, "internal error", 500); return
     }
 
-    // Score asynchronously (synchronously from the user's POV).
-    h.scoreAfterAccept(r.Context(), deb.ID, round.ID, dctx.ticket.ProjectID)
+    // Fire-and-forget the scorer — the user's Accept shouldn't wait on a 60s
+    // AI call, and the scorer result is informational (sidebar update only).
+    // Use context.WithoutCancel so closing the browser tab doesn't cancel the
+    // scorer tx halfway through; we still honor an explicit server-shutdown
+    // deadline via the adapter's own AICallTimeout.
+    go h.scoreAfterAccept(context.WithoutCancel(r.Context()), deb.ID, round.ID, dctx.ticket.ProjectID)
 
     h.engine.RenderPartial(w, "debate_round.html", round)
     // OOB sidebar swap is handled in task 10's template work; for now this
     // returns just the round partial — the sidebar will be added when
-    // debate_sidebar.html lands.
+    // debate_sidebar.html lands. Because scoreAfterAccept is async, the
+    // sidebar the user sees immediately reflects the PREVIOUS round's score
+    // (or 'Score appears after first round' on round 1); the client sees
+    // the fresh score only after a subsequent page load or HTMX refresh.
+    // If real-time update matters enough, add hx-trigger on the sidebar
+    // to poll once after Accept — deferred to phase-2.
 }
 
 // scoreAfterAccept runs the scorer outside any tx, then conditionally updates
@@ -3380,20 +3389,21 @@ Update the sidebar partial in Task 10.5 to use `derefInt .EffortScore` instead o
 ```html
 <div class="sidebar-inner">
   {{if .EffortScore}}
-    {{$bucket := "low"}}{{if gt (deref .EffortScore) 5}}{{$bucket = "mid"}}{{end}}{{if gt (deref .EffortScore) 8}}{{$bucket = "high"}}{{end}}
+    {{$score := derefInt .EffortScore}}
+    {{$bucket := "low"}}{{if gt $score 5}}{{$bucket = "mid"}}{{end}}{{if gt $score 8}}{{$bucket = "high"}}{{end}}
     <div class="label text-center">Effort score</div>
-    <div class="effort-score effort-{{$bucket}}">{{deref .EffortScore}}</div>
+    <div class="effort-score effort-{{$bucket}}">{{$score}}</div>
     <div class="subtitle text-center">
       {{if eq $bucket "low"}}Feature task only{{end}}
       {{if eq $bucket "mid"}}Needs sub-tasks from start{{end}}
       {{if eq $bucket "high"}}Consider splitting into multiple features{{end}}
     </div>
-    <div class="effort-bar-vertical" title="{{deref .EffortReasoning}}">
-      <div class="effort-pointer" style="bottom: calc({{mul (deref .EffortScore) 10}}% - 2px)"></div>
+    <div class="effort-bar-vertical" title="{{derefString .EffortReasoning}}">
+      <div class="effort-pointer" style="bottom: calc({{mul $score 10}}% - 2px)"></div>
     </div>
     <div class="effort-hours">
       <div class="label">Est. human hours</div>
-      <div class="hours-number">~ {{deref .EffortHours}} h</div>
+      <div class="hours-number">~ {{derefInt .EffortHours}} h</div>
       <div class="subtitle">full-stack, mid-senior</div>
     </div>
     <div class="effort-updated">Updated {{relTime .EffortScoredAt}} · via Gemini</div>
@@ -3403,7 +3413,7 @@ Update the sidebar partial in Task 10.5 to use `derefInt .EffortScore` instead o
 </div>
 ```
 
-(Add a `deref` template helper that dereferences `*int` / `*string` for nullable display: `func deref[T any](p *T) T { var z T; if p == nil { return z }; return *p }` — adjust to non-generic if your template/render layer pre-dates generics; or pre-flatten in the handler.)
+The `derefInt` / `derefString` / `relTime` / `mul` helpers are all in the FuncMap per Step 10.3. Using `{{$score := derefInt .EffortScore}}` once at the top avoids repeating the deref inside the expression tree for the bucket / effort-pointer calc.
 
 `templates/components/debate_next_round.html`:
 
