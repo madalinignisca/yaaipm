@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	filippo.io/csrf v0.2.1
 	github.com/alecthomas/chroma/v2 v2.2.0
-	github.com/anthropics/anthropic-sdk-go v1.26.0
+	github.com/anthropics/anthropic-sdk-go v1.35.1
 	github.com/aws/aws-sdk-go-v2 v1.41.2
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.10
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.96.2
