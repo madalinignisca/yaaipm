@@ -208,8 +208,27 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Load the ticket's project so PageData.ActiveProject is set — the
+	// base layout uses {{.User}}/{{.Org}}/{{.Projects}}/{{.ActiveProject}}
+	// to render the authenticated sidebar/nav. Without these fields
+	// populated, the layout falls back to the auth-card shell (the one
+	// used for /login, /verify-2fa) and the user loses the app chrome
+	// entirely.
+	proj, err := h.db.GetProjectByID(r.Context(), dctx.ticket.ProjectID)
+	if err != nil {
+		h.engine.RenderError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
 	_ = h.engine.Render(w, r, "debate.html", render.PageData{
-		Title: "Debate — " + dctx.ticket.Title,
+		Title:         "Debate — " + dctx.ticket.Title,
+		User:          dctx.user,
+		Org:           dctx.org,
+		Orgs:          middleware.GetOrgs(r),
+		Projects:      middleware.GetProjects(r),
+		ActiveProject: proj,
+		ProjectID:     dctx.ticket.ProjectID,
+		CurrentPath:   r.URL.Path,
 		Data: map[string]any{
 			"Ticket":    dctx.ticket,
 			"Org":       dctx.org,
