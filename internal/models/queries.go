@@ -27,6 +27,8 @@ var (
 	ErrStaleAIInput        = errors.New("current_text changed during AI call")
 	ErrInReviewRoundExists = errors.New("an in-review round already exists")
 	ErrDescriptionLocked   = errors.New("ticket description locked: active debate exists")
+	ErrRoundNotInReview    = errors.New("round is not in review state")
+	ErrNoRoundsToUndo      = errors.New("undo matched no rounds")
 )
 
 type DB struct {
@@ -2349,6 +2351,204 @@ func (db *DB) InsertDebateRoundTx(
 
 	centsDelta := newTotalMicros/10000 - oldTotalMicros/10000
 	return r, centsDelta, nil
+}
+
+// getRoundWithTx re-fetches a round after mutation so the caller
+// receives the updated status/decided_at without a second round-trip.
+// Internal helper used by AcceptRoundTx below.
+func (db *DB) getRoundWithTx(ctx context.Context, tx pgx.Tx, roundID string) (*DebateRound, error) {
+	r := &DebateRound{}
+	err := tx.QueryRow(ctx, `
+		SELECT id, debate_id, round_number, provider, model, triggered_by,
+		       feedback, input_text, output_text, diff_unified, status,
+		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
+		       created_at, decided_at
+		  FROM feature_debate_rounds WHERE id = $1`, roundID,
+	).Scan(
+		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
+		&r.CreatedAt, &r.DecidedAt,
+	)
+	return r, err
+}
+
+// AcceptRoundTx transitions an in_review round to accepted under the
+// debate row's lock. Updates feature_debates.current_text to the
+// round's output_text so subsequent round-creation sees the new
+// baseline. Returns the refreshed round.
+//
+// Caller MUST have opened the tx and already locked the debate row
+// with FOR UPDATE. This method locks the specific round being
+// accepted (FOR UPDATE on feature_debate_rounds) to defend against
+// concurrent mutations of the same round, but relies on the caller's
+// debate-row lock for the broader state invariants.
+//
+// Returns pgx.ErrNoRows if the round doesn't exist under this debate,
+// ErrRoundNotInReview if the round is not in_review (already accepted
+// or rejected — stale client view).
+func (db *DB) AcceptRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID string) (*DebateRound, error) {
+	var status, outputText string
+	err := tx.QueryRow(ctx, `
+		SELECT status, output_text FROM feature_debate_rounds
+		 WHERE id = $1 AND debate_id = $2 FOR UPDATE`,
+		roundID, debateID,
+	).Scan(&status, &outputText)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, pgx.ErrNoRows
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status != "in_review" {
+		return nil, ErrRoundNotInReview
+	}
+
+	if _, err = tx.Exec(ctx, `
+		UPDATE feature_debate_rounds
+		   SET status = 'accepted', decided_at = now()
+		 WHERE id = $1`, roundID,
+	); err != nil {
+		return nil, err
+	}
+
+	if _, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET current_text = $1, updated_at = now()
+		 WHERE id = $2`, outputText, debateID,
+	); err != nil {
+		return nil, err
+	}
+
+	return db.getRoundWithTx(ctx, tx, roundID)
+}
+
+// RejectRoundTx transitions an in_review round to rejected. Does NOT
+// touch feature_debates.current_text — rejected rounds never
+// contributed to the accepted text chain.
+func (db *DB) RejectRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID string) error {
+	var status string
+	err := tx.QueryRow(ctx, `
+		SELECT status FROM feature_debate_rounds
+		 WHERE id = $1 AND debate_id = $2 FOR UPDATE`,
+		roundID, debateID,
+	).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgx.ErrNoRows
+	}
+	if err != nil {
+		return err
+	}
+	if status != "in_review" {
+		return ErrRoundNotInReview
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE feature_debate_rounds
+		   SET status = 'rejected', decided_at = now()
+		 WHERE id = $1`, roundID,
+	)
+	return err
+}
+
+// UndoRoundsFromTx deletes every round with round_number >=
+// fromRoundNumber (cascading undo per spec §4.4), recomputes
+// current_text from the largest remaining accepted round (or the
+// seed description if none remain), and resets the effort_* fields
+// so the next accept re-scores from scratch.
+//
+// Caller MUST have opened the tx and already locked the debate row
+// with FOR UPDATE. last_scored_round_id is cleared via ON DELETE SET
+// NULL on the cyclic FK when the targeted round is deleted; the
+// explicit nulling of effort_* in this UPDATE is belt-and-suspenders
+// for the case where the referenced round survives the delete
+// (fromRoundNumber > last_scored_round).
+func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, fromRoundNumber int) error {
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM feature_debate_rounds
+		  WHERE debate_id = $1 AND round_number >= $2`,
+		debateID, fromRoundNumber,
+	)
+	if err != nil {
+		return err
+	}
+	// Guard against "?from=999 on a 3-round debate" — a request that
+	// targets a non-existent round range should be rejected, not
+	// silently clear effort_* + current_text unchanged. Return a
+	// sentinel the handler maps to 404.
+	if tag.RowsAffected() == 0 {
+		return ErrNoRoundsToUndo
+	}
+
+	// Recompute current_text from the largest remaining accepted
+	// round, falling back to the debate's seed when no accepted rounds
+	// remain. Rejected rounds are explicitly excluded — they never
+	// modified current_text.
+	var newCurrentText string
+	if scanErr := tx.QueryRow(ctx, `
+		SELECT COALESCE(
+			(SELECT output_text FROM feature_debate_rounds
+			  WHERE debate_id = $1 AND status = 'accepted'
+			  ORDER BY round_number DESC LIMIT 1),
+			(SELECT seed_description FROM feature_debates WHERE id = $1)
+		)`, debateID,
+	).Scan(&newCurrentText); scanErr != nil {
+		return scanErr
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET current_text = $1,
+		       effort_score = NULL,
+		       effort_hours = NULL,
+		       effort_reasoning = NULL,
+		       effort_scored_at = NULL,
+		       last_scored_round_id = NULL,
+		       updated_at = now()
+		 WHERE id = $2`, newCurrentText, debateID,
+	)
+	return err
+}
+
+// UpdateEffortScoreCondTx writes a scorer result conditionally, only
+// if the debate is still active-or-approved AND the scored round is
+// fresher than whatever the last_scored_round_id already points to.
+// Out-of-order scorer responses (scorer for round N finishes after
+// scorer for round N+1) are silently discarded — the freshest
+// accepted round's score always wins. See spec §4.3 step 8.
+func (db *DB) UpdateEffortScoreCondTx(
+	ctx context.Context, tx pgx.Tx,
+	debateID, scoredRoundID string,
+	score, hours int, reasoning string,
+) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET effort_score = $1,
+		       effort_hours = $2,
+		       effort_reasoning = $3,
+		       effort_scored_at = now(),
+		       last_scored_round_id = $4,
+		       updated_at = now()
+		 WHERE id = $5
+		   AND status IN ('active','approved')
+		   AND (last_scored_round_id IS NULL
+		     OR (SELECT round_number FROM feature_debate_rounds WHERE id = last_scored_round_id)
+		      < (SELECT round_number FROM feature_debate_rounds WHERE id = $4))`,
+		score, hours, reasoning, scoredRoundID, debateID,
+	)
+	return err
+}
+
+// UpdateScorerCostMicros persists the scorer call's cost on the
+// round row, independent of whether the effort_* score update ran
+// (the score might be discarded as out-of-order but we still billed
+// for the call, and the canonical per-round audit trail must reflect
+// that).
+func (db *DB) UpdateScorerCostMicros(ctx context.Context, tx pgx.Tx, roundID string, cost int64) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE feature_debate_rounds SET scorer_cost_micros = $1 WHERE id = $2`,
+		cost, roundID,
+	)
+	return err
 }
 
 // IncrementProjectCostCents adds the given delta to the project_costs
