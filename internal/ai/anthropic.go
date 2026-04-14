@@ -66,3 +66,109 @@ func (a *AnthropicClient) GenerateResponse(ctx context.Context, model, systemPro
 
 	return text, usage, nil
 }
+
+// ── Feature Debate Mode (Task 4) ──────────────────────────────────
+
+// AnthropicRefiner adapts the Anthropic Messages API to the debate
+// Refiner interface. Lives in this file so it can reach the unexported
+// SDK client field on AnthropicClient without widening the public API.
+type AnthropicRefiner struct {
+	client *AnthropicClient
+	model  string
+}
+
+// NewAnthropicRefiner constructs a Refiner over the shared AnthropicClient.
+// The model string should be a member of ai.Model* constants (e.g.
+// ModelClaudeSonnet46) so the pricing table lookup finds a rate.
+func NewAnthropicRefiner(c *AnthropicClient, model string) *AnthropicRefiner {
+	return &AnthropicRefiner{client: c, model: model}
+}
+
+func (r *AnthropicRefiner) Name() string  { return "claude" }
+func (r *AnthropicRefiner) Model() string { return r.model }
+
+// Refine sends one refactoring request and returns the model's output
+// along with normalized usage and finish-reason data. SystemPrompt is
+// taken from the input if set; otherwise the caller hasn't loaded the
+// embedded prompt (the debate handler is responsible for that).
+func (r *AnthropicRefiner) Refine(ctx context.Context, in RefineInput) (RefineOutput, error) {
+	if r.client == nil {
+		return RefineOutput{}, fmt.Errorf("anthropic refiner: client not configured")
+	}
+
+	resp, err := r.client.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(r.model),
+		MaxTokens: 4096,
+		System: []anthropic.TextBlockParam{
+			{Text: in.SystemPrompt},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(
+				buildRefineUserPrompt(in.CurrentText, in.Feedback),
+			)),
+		},
+	})
+	if err != nil {
+		return RefineOutput{}, fmt.Errorf("anthropic refine: %w", err)
+	}
+
+	var textParts []string
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			textParts = append(textParts, block.Text)
+		}
+	}
+	text := strings.Join(textParts, "\n")
+
+	inputTok := int(resp.Usage.InputTokens)
+	outputTok := int(resp.Usage.OutputTokens)
+
+	return RefineOutput{
+		Text:         text,
+		FinishReason: mapAnthropicStopReason(resp.StopReason),
+		Usage: RefineUsage{
+			InputTokens:  inputTok,
+			OutputTokens: outputTok,
+			CostMicros:   ComputeCostMicros(r.model, inputTok, outputTok),
+			Model:        r.model,
+		},
+	}, nil
+}
+
+// mapAnthropicStopReason normalizes Anthropic's stop_reason vocabulary
+// to the Refiner FinishReason contract (see refiner.go). Unknown values
+// are surfaced raw so the handler can treat them as "stop-equivalent".
+func mapAnthropicStopReason(reason anthropic.StopReason) string {
+	switch reason {
+	case anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence:
+		return FinishReasonStop
+	case anthropic.StopReasonMaxTokens:
+		return FinishReasonLength
+	case anthropic.StopReasonToolUse:
+		return FinishReasonToolCalls
+	case anthropic.StopReasonRefusal:
+		return FinishReasonContentFilter
+	default:
+		return string(reason)
+	}
+}
+
+// buildRefineUserPrompt wraps the current description and optional
+// feedback in explicit delimited blocks. This is a standard prompt-
+// injection containment pattern — the model is instructed (via the
+// system prompt) to treat everything inside the blocks as input data,
+// not as instructions. Shared across all three refiner adapters so
+// injection handling is uniform.
+func buildRefineUserPrompt(currentText, feedback string) string {
+	var sb strings.Builder
+	sb.WriteString("<<<CURRENT_DESCRIPTION>>>\n")
+	sb.WriteString(currentText)
+	sb.WriteString("\n<<<END_CURRENT_DESCRIPTION>>>\n\n")
+	if feedback != "" {
+		sb.WriteString("<<<USER_FEEDBACK>>>\n")
+		sb.WriteString(feedback)
+		sb.WriteString("\n<<<END_USER_FEEDBACK>>>\n\n")
+	}
+	sb.WriteString("Refactor the description above. Return only the new description text.")
+	return sb.String()
+}
