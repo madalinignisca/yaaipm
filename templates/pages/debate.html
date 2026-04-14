@@ -1,0 +1,12 @@
+{{define "content"}}{{/* Skeleton page — real content lands in Task 10. */}}
+{{with .Data}}
+<div class="debate-page">
+  <h2>Debate — {{.Ticket.Title}}</h2>
+  {{if .Debate}}
+    <p>Active debate: {{.Debate.ID}}</p>
+  {{else}}
+    <p>No active debate. (Task 10 adds the Start button.)</p>
+  {{end}}
+</div>
+{{end}}
+{{end}}

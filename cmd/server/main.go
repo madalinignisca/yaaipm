@@ -125,6 +125,34 @@ func main() {
 	}
 	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient, chatHub, cfg)
 
+	// Feature Debate Mode (v0.2.0). Construct the refiner registry
+	// lazily from whichever provider keys are configured — missing
+	// keys mean the corresponding AI-picker button will return 400
+	// ("unknown provider") on click rather than silently falling back
+	// to another vendor (spec §3.2).
+	debateRefiners := map[string]ai.Refiner{}
+	if cfg.AnthropicAPIKey != "" {
+		anthropicClient := ai.NewAnthropicClient(cfg.AnthropicAPIKey, ai.AnthropicModels{
+			Default: cfg.AnthropicModel,
+			Content: cfg.AnthropicModelContent,
+		})
+		debateRefiners["claude"] = ai.NewAnthropicRefiner(anthropicClient, cfg.AnthropicModel)
+	}
+	if geminiClient != nil {
+		debateRefiners["gemini"] = ai.NewGeminiRefiner(geminiClient, cfg.GeminiModel)
+	}
+	if cfg.OpenAIAPIKey != "" {
+		debateRefiners["openai"] = ai.NewOpenAIRefiner(ai.NewOpenAIClient(cfg.OpenAIAPIKey, cfg.OpenAIModel))
+	}
+	var debateScorer ai.Scorer
+	if geminiClient != nil {
+		// v1 hardcodes Gemini as the scorer (spec §3.2); phase-2 issue
+		// #63 makes this configurable per project.
+		debateScorer = ai.NewGeminiScorer(geminiClient, cfg.GeminiModel)
+	}
+	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, handlers.DefaultDebateConfig())
+	log.Printf("Feature Debate Mode wired (%d refiners, scorer=%v)", len(debateRefiners), debateScorer != nil)
+
 	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
 	authLimiter := middleware.NewRateLimiter(0.5, 5)
 
@@ -234,6 +262,12 @@ func main() {
 		r.Post("/tickets/{ticketID}/restore", ticketH.RestoreTicket)
 		r.Put("/tickets/{ticketID}", ticketH.UpdateTicket)
 		r.Delete("/tickets/{ticketID}", ticketH.DeleteTicket)
+
+		// Feature Debate Mode (spec §4). Tasks 8-9 extend this block
+		// with accept/reject/undo/approve/abandon.
+		r.Get("/tickets/{ticketID}/debate", debateH.ShowDebate)
+		r.Post("/tickets/{ticketID}/debate/start", debateH.StartDebate)
+		r.Post("/tickets/{ticketID}/debate/rounds", debateH.CreateRound)
 
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
