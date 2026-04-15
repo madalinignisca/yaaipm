@@ -247,6 +247,24 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 			return diff.RenderHTML(raw)
 		},
+		// providerLabel maps an internal provider key (claude / gemini /
+		// openai) to its user-facing brand name. Computed server-side so
+		// the debate template doesn't have to put {{if}}{{end}} branches
+		// inside HTML attribute values — html/template's context-aware
+		// escaper silently emits partial output when an attribute value
+		// contains conditional pipelines.
+		"providerLabel": func(name string) string {
+			switch name {
+			case "claude":
+				return "Claude"
+			case "gemini":
+				return "Gemini"
+			case "openai":
+				return "ChatGPT"
+			default:
+				return name
+			}
+		},
 		// derefInt / derefString unwrap nullable *int and *string
 		// fields for safe template-side display; zero/empty values
 		// substitute for nil. Used by debate_sidebar.html for the
