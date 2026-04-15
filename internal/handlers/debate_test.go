@@ -175,6 +175,58 @@ func TestShowDebate_NoActiveReturnsEmptyState(t *testing.T) {
 	}
 }
 
+// TestShowDebate_ActiveRendersProviderPicker is a regression guard for
+// the html/template partial-render bug shipped in v0.2.1: a
+// {{$label := $p}} + {{$label = "Claude"}} reassignment inside the
+// provider range confused html/template's context-aware escaper and
+// silently truncated output mid-loop, leaving the chip empty and the
+// submit/approve buttons unrendered.
+//
+// We assert on the rendered markers (radio input, chip label text,
+// submit + approve buttons) rather than the raw template source so
+// the test stays valid across future UI tweaks.
+func TestShowDebate_ActiveRendersProviderPicker(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+
+	startReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(httptest.NewRecorder(), startReq)
+
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate", http.NoBody)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	for _, marker := range []string{
+		`type="radio"`,                // provider picker chip input
+		`class="provider-chip-label"`, // chip label span
+		`>Claude<`,                    // claude chip text (FakeRefiner is registered as claude)
+		`data-label="Claude"`,         // thinking-indicator attribute
+		`>Refactor<`,                  // refactor submit button
+		`>Approve final<`,             // approve-final form button
+	} {
+		if !strings.Contains(body, marker) {
+			// Dump the part of the body we care about: from the first
+			// occurrence of "next-round" (start of the provider-picker
+			// form) to end of body. CSS dump in <head> is noise.
+			idx := strings.Index(body, "next-round")
+			snippet := body
+			if idx >= 0 {
+				snippet = body[idx:min(idx+2000, len(body))]
+			}
+			t.Errorf("response body missing marker %q — partial-render regression?\nbody[next-round..+2000]:\n%s",
+				marker, snippet)
+		}
+	}
+}
+
 func TestDebate_RejectsNonFeatureTicket(t *testing.T) {
 	r, db, sessions := setupDebateTestEnv(t)
 	ctx := context.Background()

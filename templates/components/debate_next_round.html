@@ -24,21 +24,29 @@
     <textarea name="feedback" rows="2" class="form-textarea mt-sm" maxlength="2000"
               placeholder="e.g. 'Add a retention-override policy for specific event types'…"></textarea>
 
+    {{/* Provider labels resolved via the `providerLabel` FuncMap helper
+         rather than inline {{if}}{{end}} inside the attribute value:
+         html/template's context-aware escaper silently truncates
+         output when attribute values contain conditional pipelines.
+         Pre-selecting the first radio is likewise handled via a tiny
+         inline <script> rather than a conditional `checked` attribute
+         inside the range — same escaper limitation. */}}
     {{if .Providers}}
       <div class="provider-picker mt-sm" role="radiogroup" aria-label="Refiner AI">
         <span class="subtitle">Refactor with:</span>
-        {{range $i, $p := .Providers}}
-          {{$label := $p}}
-          {{if eq $p "claude"}}{{$label = "Claude"}}
-          {{else if eq $p "gemini"}}{{$label = "Gemini"}}
-          {{else if eq $p "openai"}}{{$label = "ChatGPT"}}
-          {{end}}
+        {{range $p := .Providers}}
           <label class="provider-chip" data-provider="{{$p}}">
-            <input type="radio" name="provider" value="{{$p}}" data-label="{{$label}}"{{if eq $i 0}} checked{{end}}>
-            <span class="provider-chip-label">{{$label}}</span>
+            <input type="radio" name="provider" value="{{$p}}" data-label="{{providerLabel $p}}">
+            <span class="provider-chip-label">{{providerLabel $p}}</span>
           </label>
         {{end}}
       </div>
+      <script>
+        (function () {
+          var first = document.querySelector('#next-round-form input[name="provider"]');
+          if (first) { first.checked = true; }
+        })();
+      </script>
 
       <div class="flex gap-sm mt-sm items-center">
         <button type="submit" class="btn btn-secondary btn-sm">Refactor</button>
