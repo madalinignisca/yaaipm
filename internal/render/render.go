@@ -234,6 +234,19 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		// HTML with diff-add/diff-del/diff-ctx class spans. Every
 		// line is HTMLEscaped in diff.RenderHTML; see that package
 		// for the safety audit.
+		"renderDiff": func(unified *string) template.HTML {
+			// Nil pointer (no cached diff) and empty string both route
+			// through diff.RenderHTML, which handles the empty case by
+			// returning just the outer <pre><code></code></pre> wrapper.
+			// Keeps the template.HTML construction confined to the
+			// already-audited helper rather than minting a new cast
+			// here.
+			var raw string
+			if unified != nil {
+				raw = *unified
+			}
+			return diff.RenderHTML(raw)
+		},
 		// providerLabel maps an internal provider key (claude / gemini /
 		// openai) to its user-facing brand name. Computed server-side so
 		// the debate template doesn't have to put {{if}}{{end}} branches
@@ -251,19 +264,6 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			default:
 				return name
 			}
-		},
-		"renderDiff": func(unified *string) template.HTML {
-			// Nil pointer (no cached diff) and empty string both route
-			// through diff.RenderHTML, which handles the empty case by
-			// returning just the outer <pre><code></code></pre> wrapper.
-			// Keeps the template.HTML construction confined to the
-			// already-audited helper rather than minting a new cast
-			// here.
-			var raw string
-			if unified != nil {
-				raw = *unified
-			}
-			return diff.RenderHTML(raw)
 		},
 		// derefInt / derefString unwrap nullable *int and *string
 		// fields for safe template-side display; zero/empty values
