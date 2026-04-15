@@ -2,28 +2,52 @@
 <div class="card next-round mt-md">
   <div class="label">Next round — optional feedback for the AI</div>
 
-  {{/* Two sibling forms rather than nesting: HTML5 disallows nested
-       <form> elements. The AI-picker form and the Approve-final form
-       both POST to different endpoints, so siblings is the natural
-       structure. Flexbox lays them out side-by-side. */}}
+  {{/* Sibling forms (not nested — HTML5 disallows nested <form>):
+       the refactor form and the approve-final form POST to different
+       endpoints. The refactor form uses a radio-chip picker so the
+       same feedback text can be sent to any provider; the chip the
+       user selects sets `provider=<name>` in the submitted payload,
+       matching the pre-chip wire format.
+
+       `hx-on::before-request` is attached to the <form> (not the
+       submit button): htmx:beforeRequest fires on the element that
+       owns the hx-post (the form), and events don't propagate DOWN
+       to child buttons — a button-scoped listener would never fire. */}}
   <form id="next-round-form"
         hx-post="/tickets/{{.TicketID}}/debate/rounds"
         hx-target="#next-round-form"
         hx-swap="outerHTML"
-        hx-indicator="#thinking">
+        hx-indicator="#thinking"
+        hx-on::before-request="const picked = this.querySelector('input[name=provider]:checked'); const target = document.getElementById('thinking-provider'); if (picked && target) { target.textContent = picked.dataset.label || picked.value; }">
     {{csrfField}}
 
     <textarea name="feedback" rows="2" class="form-textarea mt-sm" maxlength="2000"
               placeholder="e.g. 'Add a retention-override policy for specific event types'…"></textarea>
 
-    <div class="flex gap-sm mt-sm items-center">
-      <span class="subtitle">Refactor with:</span>
-      {{range .Providers}}
-        <button type="submit" name="provider" value="{{.}}" class="btn btn-secondary btn-sm">
-          {{if eq . "claude"}}Claude{{else if eq . "gemini"}}Gemini{{else if eq . "openai"}}ChatGPT{{else}}{{.}}{{end}}
-        </button>
-      {{end}}
-    </div>
+    {{if .Providers}}
+      <div class="provider-picker mt-sm" role="radiogroup" aria-label="Refiner AI">
+        <span class="subtitle">Refactor with:</span>
+        {{range $i, $p := .Providers}}
+          {{$label := $p}}
+          {{if eq $p "claude"}}{{$label = "Claude"}}
+          {{else if eq $p "gemini"}}{{$label = "Gemini"}}
+          {{else if eq $p "openai"}}{{$label = "ChatGPT"}}
+          {{end}}
+          <label class="provider-chip" data-provider="{{$p}}">
+            <input type="radio" name="provider" value="{{$p}}" data-label="{{$label}}"{{if eq $i 0}} checked{{end}}>
+            <span class="provider-chip-label">{{$label}}</span>
+          </label>
+        {{end}}
+      </div>
+
+      <div class="flex gap-sm mt-sm items-center">
+        <button type="submit" class="btn btn-secondary btn-sm">Refactor</button>
+      </div>
+    {{else}}
+      <div class="mt-sm subtitle">
+        No AI providers are configured on this server — debate refinement is unavailable.
+      </div>
+    {{end}}
   </form>
 
   <form method="POST"
@@ -34,4 +58,3 @@
   </form>
 </div>
 {{end}}
-
