@@ -1,0 +1,57 @@
+# .semgrepignore — paths Semgrep's default rules cannot evaluate meaningfully
+# for this stack (Go 1.25 + html/template + vanilla JS + HTMX + Alpine).
+#
+# We keep Semgrep scanning our Go code, shell scripts, CI YAML, and
+# Dockerfiles — those are where its generic rules produce real signal.
+# Paths below are muted because scanning them produces ~100 % noise.
+#
+# Day-job coverage we still rely on:
+#   - golangci-lint (Go correctness/style/vet/staticcheck) — CI + local
+#   - CodeQL (deep dataflow + taint analysis) — CI on every PR
+#   - go test ./internal/... -p 1 -count=1 — integration tests
+
+# --- Go templates -----------------------------------------------------------
+# Semgrep's registry ships a Django-template CSRF rule that 100 %
+# false-positives on our Go html/template forms: it looks for the literal
+# {{csrf_token}}, but our forms use {{csrfField}} — a FuncMap macro that
+# emits a CSRF input via filippo.io/csrf/gorilla. Go templates auto-escape
+# by default; any unsafe template.HTML casts are annotated inline with
+# // nosemgrep in the Go file that produces them.
+templates/
+
+# --- Third-party / generated JS --------------------------------------------
+# Minified vendor libraries (HTMX, Alpine, Marked, EasyMDE, Mermaid) and
+# the concatenated output bundle from scripts/bundle.sh. Not our code;
+# noise from minified sources dominates any real findings.
+static/js/vendor/
+static/js/bundle.js
+
+# --- E2E test scaffolding --------------------------------------------------
+e2e/node_modules/
+e2e/playwright-report/
+e2e/test-results/
+
+# --- Go test fixtures ------------------------------------------------------
+# `testdata/` is a Go convention: often contains deliberately-malformed
+# inputs used to exercise parsers/validators. Every such file is
+# guaranteed to look "insecure" to a generic scanner.
+testdata/
+
+# --- Build artefacts -------------------------------------------------------
+tmp/
+.go-build/
+bin/
+dist/
+
+# --- Secrets (defence in depth — also in .gitignore) -----------------------
+.secrets
+.secrets.*
+*.key
+*.crt
+*.pem
+
+# --- Docs ------------------------------------------------------------------
+# Spec markdown often contains illustrative code snippets with fake
+# tokens, example URLs, or intentionally-vulnerable samples used to
+# explain the fix. README.md at repo root is still scanned.
+docs/

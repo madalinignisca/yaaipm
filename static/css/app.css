@@ -1854,6 +1854,91 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
 .next-round { border: 1px dashed var(--border, #2a2a2a); padding: 0.75rem; }
 .approve-form { display: inline-block; }
 
+/* Provider picker: radio chips used to choose which refiner AI will
+   produce the next round. One chip per configured provider; the
+   selected chip's radio value is what posts as `provider=<name>`. */
+.provider-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.provider-picker .subtitle { margin-right: 0.25rem; }
+
+.provider-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: var(--surface, #151515);
+  color: var(--text, #ddd);
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  user-select: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.provider-chip input[type="radio"] {
+  appearance: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.provider-chip input[type="radio"]:checked {
+  background: currentColor;
+  box-shadow: inset 0 0 0 2px var(--surface, #151515);
+}
+.provider-chip:hover { border-color: #555; }
+.provider-chip:has(input[type="radio"]:checked) {
+  border-width: 2px;
+  padding: calc(0.25rem - 1px) calc(0.6rem - 1px);
+}
+
+/* Static chip variant used on round cards for attribution. Non-clickable. */
+.provider-chip-static {
+  cursor: default;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+/* Per-provider accent colours. Kept tinted (not saturated) so the chip
+   reads as a badge, not a call-to-action button. */
+.provider-chip[data-provider="claude"] {
+  color: #e49867;
+  border-color: rgba(228, 152, 103, 0.45);
+  background: rgba(228, 152, 103, 0.10);
+}
+.provider-chip[data-provider="claude"]:has(input[type="radio"]:checked) {
+  border-color: #e49867;
+  background: rgba(228, 152, 103, 0.20);
+}
+
+.provider-chip[data-provider="openai"] {
+  color: #5ec9a8;
+  border-color: rgba(94, 201, 168, 0.45);
+  background: rgba(94, 201, 168, 0.10);
+}
+.provider-chip[data-provider="openai"]:has(input[type="radio"]:checked) {
+  border-color: #5ec9a8;
+  background: rgba(94, 201, 168, 0.20);
+}
+
+.provider-chip[data-provider="gemini"] {
+  color: #7aa7f0;
+  border-color: rgba(122, 167, 240, 0.45);
+  background: rgba(122, 167, 240, 0.10);
+}
+.provider-chip[data-provider="gemini"]:has(input[type="radio"]:checked) {
+  border-color: #7aa7f0;
+  background: rgba(122, 167, 240, 0.20);
+}
+
 .sidebar-inner { display: flex; flex-direction: column; }
 
 .effort-score {
