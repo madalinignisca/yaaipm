@@ -1899,6 +1899,12 @@ h3 { font-size: var(--text-sm); font-weight: 600; color: var(--gray-900); }
   border-width: 2px;
   padding: calc(0.25rem - 1px) calc(0.6rem - 1px);
 }
+/* Keyboard-focus ring — the native radio is hidden via appearance:none,
+   so we re-surface focus-visible at the chip level for keyboard users. */
+.provider-chip:has(input[type="radio"]:focus-visible) {
+  outline: 2px solid #4a90e2;
+  outline-offset: 2px;
+}
 
 /* Static chip variant used on round cards for attribution. Non-clickable. */
 .provider-chip-static {

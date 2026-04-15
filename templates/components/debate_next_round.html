@@ -7,35 +7,47 @@
        endpoints. The refactor form uses a radio-chip picker so the
        same feedback text can be sent to any provider; the chip the
        user selects sets `provider=<name>` in the submitted payload,
-       matching the pre-chip wire format. */}}
+       matching the pre-chip wire format.
+
+       `hx-on::before-request` is attached to the <form> (not the
+       submit button): htmx:beforeRequest fires on the element that
+       owns the hx-post (the form), and events don't propagate DOWN
+       to child buttons — a button-scoped listener would never fire. */}}
   <form id="next-round-form"
         hx-post="/tickets/{{.TicketID}}/debate/rounds"
         hx-target="#next-round-form"
         hx-swap="outerHTML"
-        hx-indicator="#thinking">
+        hx-indicator="#thinking"
+        hx-on::before-request="const picked = this.querySelector('input[name=provider]:checked'); const target = document.getElementById('thinking-provider'); if (picked && target) { target.textContent = picked.dataset.label || picked.value; }">
     {{csrfField}}
 
     <textarea name="feedback" rows="2" class="form-textarea mt-sm" maxlength="2000"
               placeholder="e.g. 'Add a retention-override policy for specific event types'…"></textarea>
 
-    <div class="provider-picker mt-sm" role="radiogroup" aria-label="Refiner AI">
-      <span class="subtitle">Refactor with:</span>
-      {{range $i, $p := .Providers}}
-        <label class="provider-chip" data-provider="{{$p}}">
-          <input type="radio" name="provider" value="{{$p}}" data-label="{{if eq $p "claude"}}Claude{{else if eq $p "gemini"}}Gemini{{else if eq $p "openai"}}ChatGPT{{else}}{{$p}}{{end}}"{{if eq $i 0}} checked{{end}}>
-          <span class="provider-chip-label">
-            {{if eq $p "claude"}}Claude{{else if eq $p "gemini"}}Gemini{{else if eq $p "openai"}}ChatGPT{{else}}{{$p}}{{end}}
-          </span>
-        </label>
-      {{end}}
-    </div>
+    {{if .Providers}}
+      <div class="provider-picker mt-sm" role="radiogroup" aria-label="Refiner AI">
+        <span class="subtitle">Refactor with:</span>
+        {{range $i, $p := .Providers}}
+          {{$label := $p}}
+          {{if eq $p "claude"}}{{$label = "Claude"}}
+          {{else if eq $p "gemini"}}{{$label = "Gemini"}}
+          {{else if eq $p "openai"}}{{$label = "ChatGPT"}}
+          {{end}}
+          <label class="provider-chip" data-provider="{{$p}}">
+            <input type="radio" name="provider" value="{{$p}}" data-label="{{$label}}"{{if eq $i 0}} checked{{end}}>
+            <span class="provider-chip-label">{{$label}}</span>
+          </label>
+        {{end}}
+      </div>
 
-    <div class="flex gap-sm mt-sm items-center">
-      <button type="submit" class="btn btn-secondary btn-sm"
-              hx-on::before-request="const picked = this.form.querySelector('input[name=provider]:checked'); const target = document.getElementById('thinking-provider'); if (picked && target) { target.textContent = picked.dataset.label || picked.value; }">
-        Refactor
-      </button>
-    </div>
+      <div class="flex gap-sm mt-sm items-center">
+        <button type="submit" class="btn btn-secondary btn-sm">Refactor</button>
+      </div>
+    {{else}}
+      <div class="mt-sm subtitle">
+        No AI providers are configured on this server — debate refinement is unavailable.
+      </div>
+    {{end}}
   </form>
 
   <form method="POST"
