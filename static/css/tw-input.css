@@ -1,0 +1,110 @@
+/* tw-input.css — Tailwind v4 + DaisyUI v5 source, compiled by
+   scripts/css.sh into static/css/tw.css.
+
+   Currently scoped to the Feature Debate page as a migration spike.
+   Do not import this from any template other than pages/debate.html
+   until the full app migration (v0.3.0) lands. */
+
+@import "tailwindcss";
+
+/* Suppress Tailwind's content scan on our own tooling. The standalone
+   CLI autoscans the working directory for class names; without these
+   excludes it would also walk the compiled daisyui bundle. */
+@source not "../../bin";
+@source not "../../bin/*.mjs";
+
+/* DaisyUI via the bundled .mjs plugins — downloaded by scripts/css.sh
+   into bin/. Path is relative to this CSS file. */
+@plugin "../../bin/daisyui.mjs" {
+  /* Restrict themes to what we actually want to ship:
+       - "corporate" — neutral corporate blue, closest to Linear/Asana
+       - "business"  — darker variant, for dark-mode default
+     Users can flip the active theme via <html data-theme="..."> */
+  themes: corporate --default, business --prefersdark;
+}
+
+/* --- Custom design tokens ------------------------------------------------
+   DaisyUI's `corporate` theme is close to Linear/Notion but reads a
+   little more "banking". Gentle overrides to push it toward the
+   Vercel/Supabase neutral-grayscale look: tighter radii, softer borders. */
+@plugin "../../bin/daisyui-theme.mjs" {
+  name: "forgedesk";
+  default: true;
+  prefersdark: false;
+  color-scheme: light;
+
+  /* Neutral near-white base stack */
+  --color-base-100: oklch(99% 0 0);
+  --color-base-200: oklch(97% 0 0);
+  --color-base-300: oklch(94% 0 0);
+  --color-base-content: oklch(22% 0.02 265);
+
+  /* Primary: cool indigo, Linear/Notion adjacent */
+  --color-primary: oklch(52% 0.22 270);
+  --color-primary-content: oklch(98% 0 0);
+
+  --color-secondary: oklch(62% 0.18 210);
+  --color-secondary-content: oklch(98% 0 0);
+
+  --color-accent: oklch(65% 0.22 160);
+  --color-accent-content: oklch(22% 0.02 265);
+
+  --color-neutral: oklch(28% 0.02 265);
+  --color-neutral-content: oklch(98% 0 0);
+
+  --color-info:    oklch(70% 0.18 220);
+  --color-success: oklch(65% 0.20 150);
+  --color-warning: oklch(78% 0.22 80);
+  --color-error:   oklch(62% 0.25 30);
+  --color-info-content:    oklch(98% 0 0);
+  --color-success-content: oklch(98% 0 0);
+  --color-warning-content: oklch(22% 0.05 80);
+  --color-error-content:   oklch(98% 0 0);
+
+  /* Tighter radii for the Linear feel */
+  --radius-selector: 0.375rem;
+  --radius-field:    0.375rem;
+  --radius-box:      0.5rem;
+
+  --size-selector: 0.25rem;
+  --size-field:    0.25rem;
+
+  --border: 1px;
+  --depth:  1;
+  --noise:  0;
+}
+
+/* --- Overrides for shared helpers that app.css styles dark --------------
+   The renderDiff FuncMap emits HTML with .diff-block/.diff-add/.diff-del/
+   .diff-ctx classes whose default styling in app.css is dark-theme
+   (black background, bright green/red spans). The debate page is now
+   light-theme via DaisyUI, so we restyle those classes here. When the
+   full v0.3.0 migration ships, app.css goes away and these become the
+   primary definitions. */
+.diff-block {
+  background: oklch(97% 0 0);
+  color: oklch(28% 0.02 265);
+  border: 1px solid oklch(92% 0 0);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  overflow-x: auto;
+  white-space: pre;
+  margin: 0;
+}
+.diff-add {
+  display: block;
+  background: oklch(94% 0.06 145);
+  color: oklch(40% 0.15 145);
+}
+.diff-del {
+  display: block;
+  background: oklch(94% 0.08 25);
+  color: oklch(44% 0.18 25);
+}
+.diff-ctx {
+  display: block;
+  color: oklch(55% 0.01 265);
+}

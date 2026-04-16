@@ -2,23 +2,25 @@
 {{$canManage := .CanManage}}
 
 {{range .Invitations}}
-<div class="member-row" id="invitation-{{.Invitation.ID}}">
-    <div class="member-info">
-        <p>{{.Invitation.Email}}</p>
-        <p class="text-muted text-sm">Invited by {{.InviterName}} &middot; Role: {{.Invitation.OrgRole}}</p>
+<div class="flex items-center justify-between py-3 px-4 border-b border-base-300 last:border-b-0"
+     id="invitation-{{.Invitation.ID}}">
+    <div class="min-w-0">
+        <p class="font-medium text-sm truncate">{{.Invitation.Email}}</p>
+        <p class="text-xs text-base-content/60 truncate">
+            Invited by {{.InviterName}} · Role: {{.Invitation.OrgRole}}
+        </p>
     </div>
-    <div class="flex items-center gap-md">
-        <span class="badge badge-pill badge-yellow">pending</span>
+    <div class="flex items-center gap-2 shrink-0">
+        <span class="badge badge-warning badge-sm">pending</span>
         {{if $canManage}}
-        <button class="btn btn-ghost btn-sm"
+        <button class="btn btn-ghost btn-xs"
                 hx-post="/orgs/{{$orgSlug}}/invitations/{{.Invitation.ID}}/resend"
                 hx-target="#invitation-list"
                 hx-swap="innerHTML"
                 hx-confirm="Resend invitation to {{.Invitation.Email}}?">
             Resend
         </button>
-        <button class="btn btn-ghost btn-sm"
-                style="color:var(--red-600);"
+        <button class="btn btn-ghost btn-xs text-error"
                 hx-delete="/orgs/{{$orgSlug}}/invitations/{{.Invitation.ID}}"
                 hx-target="#invitation-list"
                 hx-swap="innerHTML"
@@ -29,5 +31,5 @@
     </div>
 </div>
 {{else}}
-<p class="text-muted text-sm" style="padding:.75rem 0;">No pending invitations</p>
+<p class="py-3 text-sm text-base-content/60">No pending invitations</p>
 {{end}}

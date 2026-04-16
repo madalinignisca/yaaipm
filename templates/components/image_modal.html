@@ -1,72 +1,124 @@
 {{define "image_modal"}}
-<div x-data="imageInsertModal()" x-show="open" x-cloak class="modal-overlay" @keydown.escape.window="open && closeModal()" @open-image-modal.window="openModal($event.detail.editor, $event.detail.projectID)" aria-modal="true">
-    <div class="modal-backdrop" @click="closeModal()"></div>
-    <div class="modal-card modal-card-wide" @click.stop>
+<div x-data="imageInsertModal()" x-show="open" x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center p-4"
+     @keydown.escape.window="open && closeModal()"
+     @open-image-modal.window="openModal($event.detail.editor, $event.detail.projectID)"
+     aria-modal="true" role="dialog">
+    <div class="absolute inset-0 bg-black/50" @click="closeModal()"></div>
+    <div class="relative bg-base-100 border border-base-300 rounded-lg shadow-xl
+                w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6"
+         @click.stop>
         <!-- Header -->
-        <div class="flex items-center justify-between mb-md">
-            <h3>Insert Image</h3>
-            <button @click="closeModal()" class="btn-close" aria-label="Close">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">Insert Image</h3>
+            <button @click="closeModal()" class="btn btn-ghost btn-xs btn-square" aria-label="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                     fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
             </button>
         </div>
 
         <!-- Tabs -->
-        <div class="modal-tabs">
-            <button class="modal-tab" :class="{ active: activeTab === 'upload' }" @click="switchTab('upload')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <div role="tablist" class="tabs tabs-bordered mb-4">
+            <button role="tab"
+                    class="tab gap-1.5"
+                    :class="{ 'tab-active': activeTab === 'upload' }"
+                    @click="switchTab('upload')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                     fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
                 Upload
             </button>
-            <button class="modal-tab" :class="{ active: activeTab === 'generate' }" @click="switchTab('generate')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <button role="tab"
+                    class="tab gap-1.5"
+                    :class="{ 'tab-active': activeTab === 'generate' }"
+                    @click="switchTab('generate')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                     fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                </svg>
                 AI Generate
             </button>
         </div>
 
         <!-- Upload panel -->
-        <div x-show="activeTab === 'upload'" style="min-height:12rem">
+        <div x-show="activeTab === 'upload'" class="min-h-48">
             <!-- Drop zone (before file selected) -->
             <div x-show="!file && !uploadedUrl"
-                 class="drop-zone"
+                 class="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors"
+                 :class="dragover ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/30'"
                  @dragover.prevent="dragover = true"
                  @dragleave.prevent="dragover = false"
                  @drop.prevent="onDrop($event)"
-                 :class="{ dragover: dragover }"
                  @click="$refs.fileInput.click()">
-                <input type="file" x-ref="fileInput" @change="onFileSelect($event)" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
-                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gray-400)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                <p class="text-muted mt-sm mb-xs">Drag &amp; drop an image here</p>
-                <p class="text-muted text-xs">or <span class="text-brand" style="cursor:pointer;text-decoration:underline">choose a file</span></p>
+                <input type="file" x-ref="fileInput" class="hidden"
+                       @change="onFileSelect($event)"
+                       accept="image/png,image/jpeg,image/gif,image/webp">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"
+                     class="mx-auto text-base-content/40"
+                     fill="none" stroke="currentColor" stroke-width="1.5"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <p class="text-sm text-base-content/70 mt-3 mb-1">Drag &amp; drop an image here</p>
+                <p class="text-xs text-base-content/50">
+                    or <span class="text-primary underline">choose a file</span>
+                </p>
             </div>
 
             <!-- Uploading / Preview -->
             <div x-show="file && !uploadedUrl" class="text-center">
-                <img x-show="preview" :src="preview" class="image-preview mb-sm" alt="Preview">
-                <p class="text-sm text-muted mb-xs" x-text="fileName"></p>
-                <p class="text-xs text-muted mb-sm" x-text="fileSize"></p>
-                <div x-show="uploading" class="text-sm text-muted">Uploading...</div>
+                <img x-show="preview" :src="preview"
+                     class="max-h-48 rounded-md mx-auto mb-3 border border-base-300" alt="Preview">
+                <p class="text-sm text-base-content/70" x-text="fileName"></p>
+                <p class="text-xs text-base-content/50 mb-3" x-text="fileSize"></p>
+                <div x-show="uploading" class="text-sm text-base-content/70 inline-flex items-center gap-2">
+                    <span class="loading loading-spinner loading-xs"></span>
+                    Uploading...
+                </div>
             </div>
 
             <!-- Upload complete -->
             <div x-show="uploadedUrl" class="text-center">
-                <img :src="uploadedUrl" class="image-preview mb-sm" alt="Uploaded">
-                <div class="flex gap-sm justify-center">
-                    <button @click="insert(uploadedUrl, 'image')" class="btn btn-primary">Insert</button>
-                    <button @click="resetUpload()" class="btn btn-secondary">Upload Another</button>
+                <img :src="uploadedUrl"
+                     class="max-h-48 rounded-md mx-auto mb-3 border border-base-300" alt="Uploaded">
+                <div class="flex gap-2 justify-center">
+                    <button @click="insert(uploadedUrl, 'image')" class="btn btn-primary btn-sm">Insert</button>
+                    <button @click="resetUpload()" class="btn btn-ghost btn-sm">Upload Another</button>
                 </div>
             </div>
         </div>
 
         <!-- Generate panel -->
-        <div x-show="activeTab === 'generate'" style="min-height:12rem">
+        <div x-show="activeTab === 'generate'" class="min-h-48">
             <!-- Prompt (before generation) -->
             <div x-show="!generatedUrl">
-                <div class="form-group mb-md">
-                    <label class="form-label">Describe the image you want</label>
-                    <textarea x-model="prompt" class="form-textarea" rows="3" placeholder="A clean diagram showing..."></textarea>
+                <div class="form-control mb-4">
+                    <label class="label pb-1">
+                        <span class="label-text text-sm">Describe the image you want</span>
+                    </label>
+                    <textarea x-model="prompt"
+                              class="textarea textarea-bordered w-full text-sm"
+                              rows="3"
+                              placeholder="A clean diagram showing..."></textarea>
                 </div>
-                <div x-show="generating" class="text-sm text-muted mb-sm">Generating image...</div>
+                <div x-show="generating" class="text-sm text-base-content/70 mb-3 inline-flex items-center gap-2">
+                    <span class="loading loading-spinner loading-xs"></span>
+                    Generating image...
+                </div>
                 <div class="flex justify-end">
-                    <button @click="generate()" class="btn btn-primary" :disabled="generating || !prompt.trim()">
+                    <button @click="generate()"
+                            class="btn btn-primary btn-sm"
+                            :disabled="generating || !prompt.trim()">
                         <span x-show="!generating">Generate</span>
                         <span x-show="generating">Generating...</span>
                     </button>
@@ -75,20 +127,24 @@
 
             <!-- Generation complete -->
             <div x-show="generatedUrl" class="text-center">
-                <img :src="generatedUrl" class="image-preview mb-sm" alt="Generated">
-                <div class="flex gap-sm justify-center">
-                    <button @click="insert(generatedUrl, prompt.substring(0, 40))" class="btn btn-primary">Insert</button>
-                    <button @click="generatedUrl = ''" class="btn btn-secondary">Generate Another</button>
+                <img :src="generatedUrl"
+                     class="max-h-48 rounded-md mx-auto mb-3 border border-base-300" alt="Generated">
+                <div class="flex gap-2 justify-center">
+                    <button @click="insert(generatedUrl, prompt.substring(0, 40))"
+                            class="btn btn-primary btn-sm">Insert</button>
+                    <button @click="generatedUrl = ''" class="btn btn-ghost btn-sm">Generate Another</button>
                 </div>
             </div>
         </div>
 
         <!-- Error -->
-        <div x-show="error" class="text-danger mt-sm text-sm" x-text="error"></div>
+        <div x-show="error" class="alert alert-error alert-sm mt-3">
+            <span x-text="error"></span>
+        </div>
 
         <!-- Footer -->
-        <div class="flex justify-end mt-md">
-            <button @click="closeModal()" class="btn btn-secondary">Cancel</button>
+        <div class="flex justify-end mt-4">
+            <button @click="closeModal()" class="btn btn-ghost btn-sm">Cancel</button>
         </div>
     </div>
 </div>
@@ -158,12 +214,10 @@ function imageInsertModal() {
             this.file = f;
             this.fileName = f.name;
             this.fileSize = this.formatSize(f.size);
-            // Show preview
             var reader = new FileReader();
             var self = this;
             reader.onload = function(e) { self.preview = e.target.result; };
             reader.readAsDataURL(f);
-            // Auto-upload
             this.upload();
         },
 
@@ -177,8 +231,6 @@ function imageInsertModal() {
             window.apiFetch('/api/upload-image', { method: 'POST', body: fd })
                 .then(function(j) {
                     self.uploading = false;
-                    // apiFetch rejects non-2xx responses, so we only get here
-                    // on success — j.error is for application-level errors.
                     if (j.error) { self.error = j.error; return; }
                     self.uploadedUrl = j.data.filePath;
                 })

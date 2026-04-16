@@ -1,14 +1,16 @@
-<div class="flash flash-success" style="margin-top:.75rem">
-    <p style="margin-bottom:.5rem">Invitation sent to <strong>{{.Email}}</strong>.</p>
+<div class="alert alert-success mt-3 flex-col items-start gap-2">
+    <p>Invitation sent to <strong>{{.Email}}</strong>.</p>
     {{if .EmailEnabled}}
-    <p class="text-sm text-muted" style="margin-bottom:.5rem">An email has been sent with the invite link.</p>
+    <p class="text-sm opacity-70">An email has been sent with the invite link.</p>
     {{else}}
-    <p class="text-sm text-muted" style="margin-bottom:.5rem">SMTP is not configured — share the link manually.</p>
+    <p class="text-sm opacity-70">SMTP is not configured — share the link manually.</p>
     {{end}}
-    <div class="flex items-center gap-sm" style="margin-top:.5rem">
-        <input type="text" class="form-input" value="{{.InviteURL}}" readonly id="invite-url-input"
-               style="font-size:var(--text-xs);">
-        <button type="button" class="btn btn-sm btn-primary" onclick="navigator.clipboard.writeText(document.getElementById('invite-url-input').value).then(() => this.textContent = 'Copied!')">
+    <div class="flex items-center gap-2 w-full mt-1">
+        <input type="text"
+               class="input input-bordered input-sm flex-1 text-xs font-mono"
+               value="{{.InviteURL}}" readonly id="invite-url-input">
+        <button type="button" class="btn btn-primary btn-sm"
+                onclick="navigator.clipboard.writeText(document.getElementById('invite-url-input').value).then(() => this.textContent = 'Copied!')">
             Copy Link
         </button>
     </div>
