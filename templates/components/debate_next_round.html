@@ -1,68 +1,74 @@
 {{define "debate_next_round.html"}}
-<div class="card next-round mt-md">
-  <div class="label">Next round — optional feedback for the AI</div>
+<div class="card bg-base-100 border-2 border-dashed border-base-300">
+  <div class="card-body p-5 gap-3">
+    <div class="text-xs uppercase tracking-wider text-base-content/60 font-medium">
+      Next round — optional feedback for the AI
+    </div>
 
-  {{/* Sibling forms (not nested — HTML5 disallows nested <form>):
-       the refactor form and the approve-final form POST to different
-       endpoints. The refactor form uses a radio-chip picker so the
-       same feedback text can be sent to any provider; the chip the
-       user selects sets `provider=<name>` in the submitted payload,
-       matching the pre-chip wire format.
+    {{/* Sibling forms (HTML5 disallows nested <form>). Refactor form
+         posts to /rounds, Approve form posts to /approve. The inline
+         script after the range pre-selects the first radio — a
+         conditional `checked` attribute silently truncates html/template's
+         output (see PR #80). */}}
+    <form id="next-round-form"
+          hx-post="/tickets/{{.TicketID}}/debate/rounds"
+          hx-target="#next-round-form"
+          hx-swap="outerHTML"
+          hx-indicator="#thinking"
+          hx-on::before-request="const picked = this.querySelector('input[name=provider]:checked'); const target = document.getElementById('thinking-provider'); if (picked && target) { target.textContent = picked.dataset.label || picked.value; }"
+          class="flex flex-col gap-3">
+      {{csrfField}}
 
-       `hx-on::before-request` is attached to the <form> (not the
-       submit button): htmx:beforeRequest fires on the element that
-       owns the hx-post (the form), and events don't propagate DOWN
-       to child buttons — a button-scoped listener would never fire. */}}
-  <form id="next-round-form"
-        hx-post="/tickets/{{.TicketID}}/debate/rounds"
-        hx-target="#next-round-form"
-        hx-swap="outerHTML"
-        hx-indicator="#thinking"
-        hx-on::before-request="const picked = this.querySelector('input[name=provider]:checked'); const target = document.getElementById('thinking-provider'); if (picked && target) { target.textContent = picked.dataset.label || picked.value; }">
-    {{csrfField}}
+      <textarea name="feedback" rows="2" maxlength="2000"
+                placeholder="e.g. 'Add a retention-override policy for specific event types'…"
+                class="textarea textarea-bordered w-full text-sm"></textarea>
 
-    <textarea name="feedback" rows="2" class="form-textarea mt-sm" maxlength="2000"
-              placeholder="e.g. 'Add a retention-override policy for specific event types'…"></textarea>
+      {{if .Providers}}
+        <div role="radiogroup" aria-label="Refiner AI" class="flex flex-wrap items-center gap-2">
+          <span class="text-sm text-base-content/70 mr-1">Refactor with:</span>
+          {{range $p := .Providers}}
+            <label class="cursor-pointer" data-provider="{{$p}}">
+              <input type="radio" name="provider" value="{{$p}}"
+                     data-label="{{providerLabel $p}}"
+                     class="peer sr-only">
+              <span class="badge badge-soft {{providerBadgeClass $p}}
+                           cursor-pointer select-none
+                           peer-checked:badge-outline
+                           peer-checked:ring-2 peer-checked:ring-offset-2
+                           peer-checked:ring-offset-base-100
+                           peer-focus-visible:ring-2 peer-focus-visible:ring-offset-2
+                           peer-focus-visible:ring-primary
+                           transition-all">
+                {{providerLabel $p}}
+              </span>
+            </label>
+          {{end}}
+        </div>
+        <script>
+          (function () {
+            var first = document.querySelector('#next-round-form input[name="provider"]');
+            if (first) { first.checked = true; }
+          })();
+        </script>
 
-    {{/* Provider labels resolved via the `providerLabel` FuncMap helper
-         rather than inline {{if}}{{end}} inside the attribute value:
-         html/template's context-aware escaper silently truncates
-         output when attribute values contain conditional pipelines.
-         Pre-selecting the first radio is likewise handled via a tiny
-         inline <script> rather than a conditional `checked` attribute
-         inside the range — same escaper limitation. */}}
-    {{if .Providers}}
-      <div class="provider-picker mt-sm" role="radiogroup" aria-label="Refiner AI">
-        <span class="subtitle">Refactor with:</span>
-        {{range $p := .Providers}}
-          <label class="provider-chip" data-provider="{{$p}}">
-            <input type="radio" name="provider" value="{{$p}}" data-label="{{providerLabel $p}}">
-            <span class="provider-chip-label">{{providerLabel $p}}</span>
-          </label>
-        {{end}}
-      </div>
-      <script>
-        (function () {
-          var first = document.querySelector('#next-round-form input[name="provider"]');
-          if (first) { first.checked = true; }
-        })();
-      </script>
+        <div>
+          <button type="submit" class="btn btn-primary btn-sm">Refactor</button>
+        </div>
+      {{else}}
+        <div class="text-sm text-base-content/60">
+          No AI providers are configured on this server — debate refinement is unavailable.
+        </div>
+      {{end}}
+    </form>
 
-      <div class="flex gap-sm mt-sm items-center">
-        <button type="submit" class="btn btn-secondary btn-sm">Refactor</button>
-      </div>
-    {{else}}
-      <div class="mt-sm subtitle">
-        No AI providers are configured on this server — debate refinement is unavailable.
-      </div>
-    {{end}}
-  </form>
+    <div class="divider my-1"></div>
 
-  <form method="POST"
-        action="/tickets/{{.TicketID}}/debate/approve"
-        class="approve-form mt-sm">
-    {{csrfField}}
-    <button type="submit" class="btn btn-primary btn-sm">Approve final</button>
-  </form>
+    <form method="POST"
+          action="/tickets/{{.TicketID}}/debate/approve"
+          class="inline">
+      {{csrfField}}
+      <button type="submit" class="btn btn-success btn-sm">Approve final</button>
+    </form>
+  </div>
 </div>
 {{end}}

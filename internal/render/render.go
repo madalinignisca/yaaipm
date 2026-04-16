@@ -194,12 +194,13 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				ghost   = "badge-ghost"
 				warning = "badge-warning"
 				primary = "badge-primary"
+				info    = "badge-info"
 			)
 			switch status {
 			case "backlog":
 				return ghost
 			case "ready":
-				return "badge-info"
+				return info
 			case "planning", "plan_review":
 				return primary
 			case "implementing":
@@ -221,14 +222,17 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			// > info > ghost) matching the legacy red/orange/yellow/
 			// gray palette; both high+medium mapping to warning would
 			// collapse two adjacent levels into one badge color.
-			const ghost = "badge-ghost"
+			const (
+				ghost = "badge-ghost"
+				info  = "badge-info"
+			)
 			switch p {
 			case "critical":
 				return "badge-error"
 			case "high":
 				return "badge-warning"
 			case "medium":
-				return "badge-info"
+				return info
 			case "low":
 				return ghost
 			default:
@@ -314,6 +318,23 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				return "ChatGPT"
 			default:
 				return name
+			}
+		},
+		// providerBadgeClass returns a DaisyUI badge variant name for
+		// the given provider, used by the debate page's provider-chip
+		// markup. Mapping is brand-adjacent (Claude warm, ChatGPT teal,
+		// Gemini blue) using DaisyUI's semantic color tokens so the
+		// chip reflects active theme colors rather than hard-coded hex.
+		"providerBadgeClass": func(name string) string {
+			switch name {
+			case "claude":
+				return "badge-warning"
+			case "openai":
+				return "badge-success"
+			case "gemini":
+				return "badge-info"
+			default:
+				return "badge-ghost"
 			}
 		},
 		// derefInt / derefString unwrap nullable *int and *string

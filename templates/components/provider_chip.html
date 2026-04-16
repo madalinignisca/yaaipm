@@ -1,1 +1,1 @@
-{{define "provider_chip.html"}}<span class="provider-chip provider-chip-static" data-provider="{{.}}">{{if eq . "claude"}}Claude{{else if eq . "gemini"}}Gemini{{else if eq . "openai"}}ChatGPT{{else}}{{.}}{{end}}</span>{{end}}
+{{define "provider_chip.html"}}<span class="badge badge-soft {{providerBadgeClass .}}" data-provider="{{.}}">{{providerLabel .}}</span>{{end}}

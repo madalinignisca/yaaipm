@@ -1,13 +1,16 @@
-<div class="comment">
-    <div class="comment-meta">
-        <span class="comment-author">{{.UserName}}</span>
-        <span class="comment-time">{{formatDateTime .Comment.CreatedAt}}</span>
+{{/* Render markdown + prose to match the full-page rendering in
+     pages/ticket_detail.html. Previously this partial emitted raw
+     BodyMarkdown, so a newly-posted comment showed escaped markdown
+     until reload when the full page re-rendered it properly. (#37) */}}
+<div class="border-l-2 border-base-300 pl-4">
+    <div class="flex items-center gap-2 text-xs mb-1">
+        <span class="font-medium">{{.UserName}}</span>
+        <span class="text-base-content/50">·</span>
+        <span class="text-base-content/60">{{formatDateTime .Comment.CreatedAt}}</span>
     </div>
-    <!-- Render markdown + prose to match the full-page rendering in
-         pages/ticket_detail.html. Previously this partial emitted
-         raw BodyMarkdown, so a newly-posted comment showed escaped
-         markdown until reload when the full page re-rendered it
-         properly. (#37) -->
-    <div class="comment-body prose">{{markdown .Comment.BodyMarkdown}}</div>
+    {{/* comment-body retained alongside prose so the HTMX-partial
+         regression test (#37) can match on a stable landmark class
+         independent of Tailwind refactors. */}}
+    <div class="comment-body prose prose-sm max-w-none">{{markdown .Comment.BodyMarkdown}}</div>
     {{template "reactions.html" dict "TargetType" "comment" "TargetID" .Comment.ID "Groups" .CommentReactions}}
 </div>

@@ -1,58 +1,80 @@
 {{define "debate_round.html"}}
 {{with .Round}}
-<div class="round round-{{.Status}}" data-round-id="{{.ID}}">
+<div class="card bg-base-100 border shadow-sm
+            {{if eq .Status "in_review"}}border-primary border-2{{else if eq .Status "rejected"}}border-base-300 opacity-50{{else}}border-base-300{{end}}"
+     data-round-id="{{.ID}}">
+
   {{if eq .Status "in_review"}}
-    <div class="round-header">
-      <span class="label">
-        Round {{.RoundNumber}} ·
+    <div class="card-body p-5 gap-3">
+      <div class="flex items-center gap-2 text-sm">
+        <span class="font-semibold">Round {{.RoundNumber}}</span>
+        <span class="text-base-content/40">·</span>
         {{template "provider_chip.html" .Provider}}
-        · awaiting your decision
-      </span>
-    </div>
-    {{renderDiff .DiffUnified}}
-    <div class="round-actions flex gap-sm mt-sm">
-      <button class="btn btn-success btn-sm"
-              hx-post="/tickets/{{$.TicketID}}/debate/rounds/{{.ID}}/accept"
-              hx-target="closest .round"
-              hx-swap="outerHTML">
-        Accept
-      </button>
-      <button class="btn btn-secondary btn-sm"
-              hx-post="/tickets/{{$.TicketID}}/debate/rounds/{{.ID}}/reject"
-              hx-target="closest .round"
-              hx-swap="outerHTML">
-        Reject
-      </button>
-    </div>
-  {{else if eq .Status "accepted"}}
-    <div class="round-header" x-data="{open: false}">
-      <button type="button" @click="open = !open" class="round-summary">
-        <span class="label">
-          Round {{.RoundNumber}} ·
-          {{template "provider_chip.html" .Provider}}
-          · accepted · {{relTime .DecidedAt}}
-        </span>
-        <span class="round-toggle" x-text="open ? '▾' : '▸'">▸</span>
-      </button>
-      <div x-show="open" x-cloak class="round-details">
-        {{renderDiff .DiffUnified}}
+        <span class="text-base-content/40">·</span>
+        <span class="text-base-content/70">awaiting your decision</span>
+      </div>
+
+      {{renderDiff .DiffUnified}}
+
+      <div class="flex gap-2 mt-1">
+        <button class="btn btn-success btn-sm"
+                hx-post="/tickets/{{$.TicketID}}/debate/rounds/{{.ID}}/accept"
+                hx-target="closest .card"
+                hx-swap="outerHTML">
+          Accept
+        </button>
+        <button class="btn btn-ghost btn-sm"
+                hx-post="/tickets/{{$.TicketID}}/debate/rounds/{{.ID}}/reject"
+                hx-target="closest .card"
+                hx-swap="outerHTML">
+          Reject
+        </button>
       </div>
     </div>
-    <div class="round-actions mt-sm">
+
+  {{else if eq .Status "accepted"}}
+    <div class="card-body p-4 gap-2" x-data="{open: false}">
+      <button type="button" @click="open = !open"
+              class="flex items-center justify-between w-full text-left text-sm group">
+        <div class="flex items-center gap-2">
+          <span class="font-semibold">Round {{.RoundNumber}}</span>
+          <span class="text-base-content/40">·</span>
+          {{template "provider_chip.html" .Provider}}
+          <span class="text-base-content/40">·</span>
+          <span class="text-success font-medium">accepted</span>
+          <span class="text-base-content/40">·</span>
+          <span class="text-base-content/60">{{relTime .DecidedAt}}</span>
+        </div>
+        <span class="text-base-content/50 group-hover:text-base-content transition-colors"
+              x-text="open ? '▾' : '▸'">▸</span>
+      </button>
+
+      <div x-show="open" x-cloak class="mt-2">
+        {{renderDiff .DiffUnified}}
+      </div>
+
       <form method="POST"
             action="/tickets/{{$.TicketID}}/debate/undo?from={{.RoundNumber}}"
-            hx-confirm="Undo this round? All later rounds will also be undone.">
+            hx-confirm="Undo this round? All later rounds will also be undone."
+            class="mt-1">
         {{csrfField}}
-        <button type="submit" class="btn btn-ghost btn-xs">Undo from here</button>
+        <button type="submit" class="btn btn-ghost btn-xs text-base-content/60">
+          Undo from here
+        </button>
       </form>
     </div>
+
   {{else}}{{/* rejected */}}
-    <div class="round-header round-rejected">
-      <span class="label">
-        Round {{.RoundNumber}} ·
+    <div class="card-body p-4">
+      <div class="flex items-center gap-2 text-sm">
+        <span class="font-semibold">Round {{.RoundNumber}}</span>
+        <span class="text-base-content/40">·</span>
         {{template "provider_chip.html" .Provider}}
-        · rejected · {{relTime .DecidedAt}}
-      </span>
+        <span class="text-base-content/40">·</span>
+        <span class="text-error/80 font-medium">rejected</span>
+        <span class="text-base-content/40">·</span>
+        <span class="text-base-content/60">{{relTime .DecidedAt}}</span>
+      </div>
     </div>
   {{end}}
 </div>

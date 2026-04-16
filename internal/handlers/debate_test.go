@@ -204,13 +204,18 @@ func TestShowDebate_ActiveRendersProviderPicker(t *testing.T) {
 	}
 	body := rec.Body.String()
 
+	// Markers chosen to survive presentational changes (Tailwind
+	// migration, class renames) while still catching real partial-
+	// render regressions. Each is a structural or data-attribute
+	// landmark that must exist regardless of visual styling choices.
 	for _, marker := range []string{
-		`type="radio"`,                // provider picker chip input
-		`class="provider-chip-label"`, // chip label span
-		`>Claude<`,                    // claude chip text (FakeRefiner is registered as claude)
-		`data-label="Claude"`,         // thinking-indicator attribute
-		`>Refactor<`,                  // refactor submit button
-		`>Approve final<`,             // approve-final form button
+		`type="radio"`,           // provider picker radio input
+		`data-label="Claude"`,    // thinking-indicator source attribute
+		`data-provider="claude"`, // chip data attribute
+		`Claude`,                 // visible label text in body
+		`Refactor</button>`,      // refactor submit button
+		`Approve final</button>`, // approve-final button
+		`id="next-round-form"`,   // the refactor form itself
 	} {
 		if !strings.Contains(body, marker) {
 			// Dump the part of the body we care about: from the first

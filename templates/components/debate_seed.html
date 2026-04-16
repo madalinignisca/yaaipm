@@ -1,13 +1,25 @@
 {{define "debate_seed.html"}}
-<div class="card debate-seed {{if .RoundsExist}}seed-frozen{{end}}">
-  <div class="label">Seed description · {{if .RoundsExist}}frozen{{else}}starting point{{end}}</div>
-  <div class="prose mt-sm">{{markdown .Debate.SeedDescription}}</div>
-  {{if not .RoundsExist}}
-    <p class="subtitle mt-sm">
-      This is the description the first AI round will refactor. Once
-      a round is accepted, the seed freezes as the debate's audit-trail
-      starting point.
-    </p>
-  {{end}}
+<div class="card bg-base-200 border border-base-300 shadow-sm {{if .RoundsExist}}opacity-70{{end}}">
+  <div class="card-body p-5 gap-2">
+    <div class="flex items-center gap-2">
+      <span class="text-xs uppercase tracking-wider text-base-content/60 font-medium">Seed description</span>
+      <span class="text-xs text-base-content/50">·</span>
+      <span class="text-xs text-base-content/60">
+        {{if .RoundsExist}}frozen{{else}}starting point{{end}}
+      </span>
+    </div>
+
+    <div class="prose prose-sm max-w-none text-base-content">
+      {{markdown .Debate.SeedDescription}}
+    </div>
+
+    {{if not .RoundsExist}}
+      <p class="text-sm text-base-content/60 mt-1">
+        This is the description the first AI round will refactor. Once
+        a round is accepted, the seed freezes as the debate's audit-trail
+        starting point.
+      </p>
+    {{end}}
+  </div>
 </div>
 {{end}}
