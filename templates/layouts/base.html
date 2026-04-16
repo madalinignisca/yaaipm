@@ -5,10 +5,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}} — ForgeDesk</title>
-    {{/* Legacy hand-written app.css loaded first — pages not yet
-         migrated to Tailwind still depend on it. Removed in PR-6
-         when every template has been migrated. */}}
-    <link rel="stylesheet" href="{{asset "css/app.css"}}">
     <link rel="stylesheet" href="{{asset "css/tw.css"}}">
     {{highlightCSS}}
     <script src="{{asset "js/bundle.js"}}" defer></script>

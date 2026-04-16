@@ -108,3 +108,61 @@
   display: block;
   color: oklch(55% 0.01 265);
 }
+
+/* --- Gantt chart ----------------------------------------------------------
+   Ported verbatim from the pre-migration app.css when it was deleted in
+   PR-6. static/js/app/gantt.js injects raw HTML with these class names at
+   runtime — rewriting it to use Tailwind utilities would be a separate
+   JS refactor. The block depends on legacy CSS variables (--gray-*,
+   --brand-*, --radius-lg) which are redefined at the top of this block
+   so the chart stays self-contained.
+
+   If you adjust the forgedesk theme colors, also verify the Gantt still
+   reads correctly — its today-line / today-cell use the brand accent. */
+:root {
+  --gantt-gray-50:  #f9fafb;
+  --gantt-gray-100: #f3f4f6;
+  --gantt-gray-200: #e5e7eb;
+  --gantt-gray-300: #d1d5db;
+  --gantt-gray-400: #9ca3af;
+  --gantt-gray-500: #6b7280;
+  --gantt-gray-600: #4b5563;
+  --gantt-gray-700: #374151;
+  --gantt-brand-500: #6366f1;
+  --gantt-brand-600: #4f46e5;
+  --gantt-radius-lg: 12px;
+}
+
+.gantt-container { border: 1px solid var(--gantt-gray-200); border-radius: var(--gantt-radius-lg); overflow: hidden; background: #fff; }
+.gantt-wrapper { display: flex; height: 500px; }
+
+.gantt-left { flex-shrink: 0; border-right: 1px solid var(--gantt-gray-200); background: var(--gantt-gray-50); overflow: hidden; }
+.gantt-left-header { display: flex; align-items: flex-end; padding: 0 .75rem .375rem; font-size: 0.75rem; font-weight: 600; color: var(--gantt-gray-500); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--gantt-gray-200); background: var(--gantt-gray-50); }
+.gantt-left-body { overflow: hidden; }
+.gantt-left-row { display: flex; align-items: center; gap: .375rem; padding: 0 .75rem; border-bottom: 1px solid var(--gantt-gray-100); font-size: 0.875rem; color: var(--gantt-gray-700); }
+.gantt-left-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.gantt-type-icon { font-size: .625rem; flex-shrink: 0; width: 1rem; text-align: center; }
+
+.gantt-right { flex: 1; overflow: auto; position: relative; }
+.gantt-right-inner { position: relative; }
+
+.gantt-header { position: sticky; top: 0; z-index: 3; background: var(--gantt-gray-50); border-bottom: 1px solid var(--gantt-gray-200); }
+.gantt-month-row { position: relative; height: 22px; }
+.gantt-month-span { position: absolute; top: 0; height: 22px; display: flex; align-items: center; padding-left: .5rem; font-size: 0.75rem; font-weight: 600; color: var(--gantt-gray-600); border-left: 1px solid var(--gantt-gray-200); white-space: nowrap; overflow: hidden; }
+.gantt-day-row { position: relative; height: 26px; }
+.gantt-day-cell { position: absolute; top: 0; height: 26px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--gantt-gray-400); border-left: 1px solid var(--gantt-gray-100); }
+.gantt-day-cell.gantt-weekend { color: var(--gantt-gray-300); background: rgba(0,0,0,.02); }
+.gantt-day-cell.gantt-today-cell { font-weight: 700; color: var(--gantt-brand-600); background: rgba(99,102,241,.08); }
+
+.gantt-body { position: relative; }
+.gantt-row-bg { position: absolute; left: 0; border-bottom: 1px solid var(--gantt-gray-100); }
+.gantt-row-alt { background: rgba(0,0,0,.015); }
+
+.gantt-weekend-col { position: absolute; top: 0; background: rgba(0,0,0,.025); pointer-events: none; }
+
+.gantt-today-line { position: absolute; top: 0; width: 2px; background: var(--gantt-brand-500); z-index: 2; opacity: .6; }
+
+.gantt-bar { position: absolute; border-radius: 4px; z-index: 1; display: flex; align-items: center; overflow: hidden; transition: opacity .15s; box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+.gantt-bar:hover { opacity: .85; box-shadow: 0 2px 6px rgba(0,0,0,.18); }
+.gantt-bar-feature { border-radius: 6px; }
+.gantt-bar-label { padding: 0 .5rem; font-size: 10px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

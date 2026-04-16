@@ -7,10 +7,10 @@
         <h2 class="text-xl font-semibold">Timeline</h2>
 
         {{if .Tickets}}
-        {{/* The Gantt chart's own CSS (.gantt-*) is preserved in app.css
-             until the full-migration cleanup in PR-6. static/js/app/gantt.js
-             reads the ticket JSON and injects time-scaled bars into
-             #gantt-chart — nothing here changes its behaviour. */}}
+        {{/* static/js/app/gantt.js reads the ticket JSON and injects
+             time-scaled bars into #gantt-chart. Gantt-specific CSS
+             (.gantt-*) lives at the bottom of static/css/tw-input.css
+             — ported verbatim from app.css in PR-6. */}}
         <div id="gantt-chart" class="gantt-container"></div>
         <script>
             document.addEventListener('DOMContentLoaded', function() {
