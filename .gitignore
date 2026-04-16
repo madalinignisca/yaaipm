@@ -9,8 +9,12 @@
 /server
 /vendor/
 
-# Tailwind
+# Tailwind / DaisyUI standalone tooling (downloaded on demand by scripts/css.sh)
 node_modules/
+/bin/tailwindcss
+/bin/daisyui.mjs
+/bin/daisyui-theme.mjs
+/static/css/tw.css
 
 # IDE
 .idea/
