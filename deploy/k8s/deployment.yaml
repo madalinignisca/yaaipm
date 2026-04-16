@@ -22,7 +22,7 @@ spec:
         - name: registry-credentials
       containers:
         - name: server
-          image: registry.k3s.vlah.sh/smartpm:v0.3.0
+          image: registry.k3s.vlah.sh/smartpm:v0.3.1
           imagePullPolicy: IfNotPresent
           command: ["forgedesk"]
           ports:
