@@ -115,7 +115,7 @@
                         class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-base-200 transition-colors">
                     <span class="w-7 h-7 rounded-full bg-primary text-primary-content
                                  flex items-center justify-center text-xs font-semibold shrink-0">
-                        {{slice .User.Name 0 1}}
+                        {{if .User.Name}}{{slice .User.Name 0 1}}{{else}}?{{end}}
                     </span>
                     <span class="truncate text-sm">{{.User.Name}}</span>
                 </button>

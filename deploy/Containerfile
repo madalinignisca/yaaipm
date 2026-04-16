@@ -19,7 +19,12 @@ RUN go mod download
 COPY . .
 RUN sh scripts/bundle.sh
 ## Pull the compiled Tailwind/DaisyUI stylesheet from the CSS builder
-## stage into static/css/ before the manifest walks the tree.
+## stage into static/css/. The asset manifest is computed at runtime
+## by internal/static.NewManifest() on server startup (walks /app/static)
+## — not during the Go build — so as long as tw.css is present in the
+## final image at /app/static/css/tw.css, hashing works correctly.
+## This COPY happens AFTER bundle.sh (which only writes bundle.js);
+## their outputs are independent.
 COPY --from=css-builder /src/static/css/tw.css ./static/css/tw.css
 RUN CGO_ENABLED=0 go build -o forgedesk ./cmd/server
 RUN CGO_ENABLED=0 go build -o orchestrator ./cmd/orchestrator
