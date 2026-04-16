@@ -148,7 +148,9 @@ Add a new stage to `deploy/Containerfile`:
 
 ```dockerfile
 # --- CSS build stage --------------------------------------------
-FROM alpine:3.20 AS css-builder
+# Align with the existing deploy/Containerfile base-image pins —
+# specific patch versions, not floating tags, for reproducible builds.
+FROM alpine:3.21 AS css-builder
 RUN apk add --no-cache bash curl
 WORKDIR /src
 COPY scripts/css.sh ./scripts/
@@ -157,7 +159,7 @@ COPY templates/ ./templates/
 RUN bash scripts/css.sh
 
 # --- Existing go builder ----------------------------------------
-FROM golang:1.24-alpine AS go-builder
+FROM golang:1.24.4-alpine3.21 AS go-builder
 # ... existing steps ...
 COPY --from=css-builder /src/static/css/tw.css ./static/css/tw.css
 # ... continue existing build ...
@@ -277,7 +279,7 @@ Before PR merge:
 After PR-6 merges to main:
 
 1. `git tag -a v0.3.0 -m "..."` with release notes summarizing the UI refresh
-2. `docker build -t registry.k3s.vlah.sh/smartpm:v0.3.0 -t :latest .` (Containerfile now runs `scripts/css.sh` during build)
+2. `docker build -t registry.k3s.vlah.sh/smartpm:v0.3.0 -t registry.k3s.vlah.sh/smartpm:latest -f deploy/Containerfile .` (Containerfile now runs `scripts/css.sh` during the CSS-builder stage)
 3. `docker push` both tags
 4. Update `deploy/k8s/deployment.yaml` + `orchestrator-deployment.yaml` image pin to `:v0.3.0`, commit direct to main (per v0.2.0 pattern)
 5. `kubectl apply -f deploy/k8s/`
@@ -301,7 +303,7 @@ Since v0.3.0 is CSS/template-only (no schema, no config), rolling back is statel
 
 If v0.3.0 is merged to main but we want it out of main history:
 - **Preferred:** revert the 6 migration PRs in reverse order (6 → 5 → 4 → 3 → 2 → 1), each in its own revert PR. Preserves historical integrity.
-- **Emergency:** `git revert --no-commit <PR-6-squash-SHA>..<PR-1-squash-SHA>` + commit, if time-critical.
+- **Emergency:** `git revert --no-commit <PR-1-squash-SHA>^..<PR-6-squash-SHA>` + commit, if time-critical. Note the order: Git's `A..B` range is "commits reachable from B not A", so oldest-on-left + newest-on-right + the `^` suffix (to include PR-1 itself) is required. A newest-on-left range silently reverts zero commits.
 
 ## 11. Open Risks
 
@@ -309,7 +311,7 @@ If v0.3.0 is merged to main but we want it out of main history:
 
 2. **DaisyUI `.btn` / `.card` class name collisions with existing `app.css`** — both stylesheets define these. DaisyUI wins tiebreakers if loaded after, but specificity battles could produce weird rendering on half-migrated pages. Mitigation: PR-1 removes the collision-prone rules from `app.css` (just those specific selectors), keeps the rest for pages not yet migrated.
 
-3. **Manifest hash drift between CSS compile and Go build** — if the Containerfile's CSS stage runs before Go build but the manifest is computed during Go's embed step, we could ship a template that references a hash the build doesn't know about. Mitigation: extend `internal/static` manifest computation to include `tw.css`, verified by a build-time check in `cmd/server/main.go`.
+3. **Manifest hash drift between CSS compile and Go build** — if the Containerfile's CSS stage runs before Go build but the manifest is computed during Go's embed step, we could ship a template that references a hash the build doesn't know about. Mitigation: extend `internal/static` manifest computation to include `tw.css`, verified by a **startup check** in `cmd/server/main.go` that fails the process fast (log.Fatalf before `http.ListenAndServe`) if any expected asset is missing from the manifest. This is a runtime check at boot, not a compile-time check — CI deployment should health-check the `/health` endpoint after rollout to catch startup failures before traffic hits the pod.
 
 4. **Dark-mode regressions in pages with heavy color usage** — charts, Gantt, cost tables with inline styles. Mitigation: PR-4 (project pages) is the riskiest; allocate extra review time. Dark-mode edge cases documented as follow-up issues, not blockers.
 
