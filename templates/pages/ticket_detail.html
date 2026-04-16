@@ -215,6 +215,8 @@
                     </a>
                     <button hx-delete="/api/attachments/{{.ID}}"
                             hx-confirm="Remove this attachment?"
+                            hx-target="closest .flex"
+                            hx-swap="outerHTML"
                             class="btn btn-ghost btn-xs btn-square text-error opacity-60 hover:opacity-100">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
                              fill="none" stroke="currentColor" stroke-width="2"
@@ -313,7 +315,12 @@
                         <span class="text-base-content/50">·</span>
                         <span class="text-base-content/60">{{formatDateTime .CreatedAt}}</span>
                     </div>
-                    <div class="prose prose-sm max-w-none">{{markdown .BodyMarkdown}}</div>
+                    {{/* comment-body class retained alongside prose so the
+                         #37 partial-render regression test has a stable
+                         landmark independent of Tailwind refactors. Also
+                         matches the comment.html partial used for HTMX-
+                         posted comments after initial load. */}}
+                    <div class="comment-body prose prose-sm max-w-none">{{markdown .BodyMarkdown}}</div>
                     {{template "reactions.html" dict "TargetType" "comment" "TargetID" .ID "Groups" (index $cr .ID)}}
                 </div>
                 {{end}}

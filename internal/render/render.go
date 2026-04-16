@@ -26,6 +26,18 @@ import (
 	"golang.org/x/text/language"
 )
 
+// DaisyUI badge variant names. Package-level constants so the three
+// {status,priority,provider}BadgeClass FuncMap helpers share one
+// canonical literal each (satisfies goconst + keeps refactors cheap).
+const (
+	badgeGhost   = "badge-ghost"
+	badgeInfo    = "badge-info"
+	badgeSuccess = "badge-success"
+	badgeWarning = "badge-warning"
+	badgePrimary = "badge-primary"
+	badgeError   = "badge-error"
+)
+
 type Engine struct {
 	templates        map[string]*template.Template
 	AssistantEnabled bool
@@ -190,31 +202,25 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		// (above) returns hand-CSS color names and is retained for
 		// still-unmigrated templates until PR-6.
 		"statusBadgeClass": func(status string) string {
-			const (
-				ghost   = "badge-ghost"
-				warning = "badge-warning"
-				primary = "badge-primary"
-				info    = "badge-info"
-			)
 			switch status {
 			case "backlog":
-				return ghost
+				return badgeGhost
 			case "ready":
-				return info
+				return badgeInfo
 			case "planning", "plan_review":
-				return primary
+				return badgePrimary
 			case "implementing":
-				return warning
+				return badgeWarning
 			case "testing":
-				return warning
+				return badgeWarning
 			case "review":
-				return primary
+				return badgePrimary
 			case "done":
-				return "badge-success"
+				return badgeSuccess
 			case "cancelled":
-				return "badge-error"
+				return badgeError
 			default:
-				return ghost
+				return badgeGhost
 			}
 		},
 		"priorityBadgeClass": func(p string) string {
@@ -222,21 +228,17 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			// > info > ghost) matching the legacy red/orange/yellow/
 			// gray palette; both high+medium mapping to warning would
 			// collapse two adjacent levels into one badge color.
-			const (
-				ghost = "badge-ghost"
-				info  = "badge-info"
-			)
 			switch p {
 			case "critical":
-				return "badge-error"
+				return badgeError
 			case "high":
-				return "badge-warning"
+				return badgeWarning
 			case "medium":
-				return info
+				return badgeInfo
 			case "low":
-				return ghost
+				return badgeGhost
 			default:
-				return ghost
+				return badgeGhost
 			}
 		},
 		"derefStr": func(s *string) string {
@@ -328,13 +330,13 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		"providerBadgeClass": func(name string) string {
 			switch name {
 			case "claude":
-				return "badge-warning"
+				return badgeWarning
 			case "openai":
-				return "badge-success"
+				return badgeSuccess
 			case "gemini":
-				return "badge-info"
+				return badgeInfo
 			default:
-				return "badge-ghost"
+				return badgeGhost
 			}
 		},
 		// derefInt / derefString unwrap nullable *int and *string
