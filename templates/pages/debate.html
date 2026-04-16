@@ -1,24 +1,29 @@
 {{define "content"}}
 {{with .Data}}
-<div class="debate-page">
-  <header class="debate-header flex items-center justify-between mb-md">
-    <div>
-      <a href="/tickets/{{.Ticket.ID}}" class="btn btn-ghost btn-sm">← Back to ticket</a>
-      <h2 class="mt-sm">Debate — {{.Ticket.Title}}</h2>
+<div class="max-w-6xl mx-auto p-6" data-theme="forgedesk">
+  <header class="flex items-center justify-between mb-6 pb-4 border-b border-base-300">
+    <div class="flex flex-col gap-1">
+      <a href="/tickets/{{.Ticket.ID}}"
+         class="text-sm text-base-content/60 hover:text-base-content inline-flex items-center gap-1 w-fit">
+        <span aria-hidden="true">←</span> Back to ticket
+      </a>
+      <h2 class="text-2xl font-semibold tracking-tight">
+        Debate — {{.Ticket.Title}}
+      </h2>
     </div>
     {{if .Debate}}
       <form method="POST"
             action="/tickets/{{.Ticket.ID}}/debate/abandon"
             hx-confirm="Abandon this debate? The ticket description will not change and the debate will be archived.">
         {{csrfField}}
-        <button type="submit" class="btn btn-danger btn-sm">Abandon</button>
+        <button type="submit" class="btn btn-error btn-outline btn-sm">Abandon</button>
       </form>
     {{end}}
   </header>
 
   {{if .Debate}}
-    <div class="debate-body">
-      <div class="debate-timeline" id="rounds">
+    <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
+      <div class="flex flex-col gap-4 min-w-0" id="rounds">
         {{template "debate_seed.html" dict
             "Debate" .Debate
             "RoundsExist" (gt (len .Rounds) 0)}}
@@ -38,28 +43,34 @@
               "TicketID" .Ticket.ID}}
         {{end}}
 
-        <div id="thinking" class="htmx-indicator" aria-live="polite">
-          <span id="thinking-provider">The AI</span> is refining…
+        <div id="thinking" class="htmx-indicator inline-flex items-center gap-2 text-sm text-base-content/70"
+             aria-live="polite">
+          <span class="loading loading-spinner loading-sm text-primary"></span>
+          <span><span id="thinking-provider">The AI</span> is refining…</span>
         </div>
       </div>
 
-      <aside id="sidebar" class="debate-sidebar">
+      <aside id="sidebar">
         {{template "debate_sidebar.html" .Debate}}
       </aside>
     </div>
   {{else}}
-    <div class="debate-empty card mt-lg">
-      <h3>No active debate for this feature</h3>
-      <p class="subtitle">
-        Starting a debate locks the ticket description until the debate is
-        approved or abandoned. Until then, the current description shown
-        below is what the AI will refactor in round 1.
-      </p>
-      <div class="prose card mt-md">{{markdown .Ticket.DescriptionMarkdown}}</div>
-      <form method="POST" action="/tickets/{{.Ticket.ID}}/debate/start" class="mt-md">
-        {{csrfField}}
-        <button type="submit" class="btn btn-primary">Start debate</button>
-      </form>
+    <div class="card bg-base-100 border border-base-300 shadow-sm mt-6">
+      <div class="card-body gap-4">
+        <h3 class="text-xl font-semibold">No active debate for this feature</h3>
+        <p class="text-sm text-base-content/70">
+          Starting a debate locks the ticket description until the debate is
+          approved or abandoned. Until then, the current description shown
+          below is what the AI will refactor in round 1.
+        </p>
+        <div class="card bg-base-200 border border-base-300 p-4 prose prose-sm max-w-none">
+          {{markdown .Ticket.DescriptionMarkdown}}
+        </div>
+        <form method="POST" action="/tickets/{{.Ticket.ID}}/debate/start">
+          {{csrfField}}
+          <button type="submit" class="btn btn-primary">Start debate</button>
+        </form>
+      </div>
     </div>
   {{end}}
 </div>

@@ -4,277 +4,342 @@
 
 {{define "content"}}
 {{with .Data}}
-<div class="container-medium">
-    <div class="mb-md">
-        <a href="javascript:history.back()" class="back-link">&larr; Back</a>
-    </div>
+<div class="max-w-5xl mx-auto p-6 flex flex-col gap-6">
+    <a href="javascript:history.back()"
+       class="text-sm text-base-content/60 hover:text-base-content inline-flex items-center gap-1 w-fit">
+        <span aria-hidden="true">←</span> Back
+    </a>
 
-    <!-- Ticket header + description -->
-    <div id="ticket-header" class="card mb-lg" x-data="ticketEditor()">
-        <div class="ticket-header">
-            <div>
-                <div class="ticket-badges">
-                    <span class="badge badge-gray badge-uppercase">{{.Ticket.Type}}</span>
-                    <span class="badge badge-{{statusColor .Ticket.Status}}">{{.Ticket.Status}}</span>
-                    <span class="badge badge-{{priorityColor .Ticket.Priority}}">{{.Ticket.Priority}}</span>
-                    {{if .Ticket.ArchivedAt}}<span class="badge badge-red">archived</span>{{end}}
+    {{/* Ticket header + description */}}
+    <div id="ticket-header"
+         class="card bg-base-100 border border-base-300 shadow-sm"
+         x-data="ticketEditor()">
+        <div class="card-body p-6 gap-4">
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-1.5 flex-wrap mb-2">
+                        <span class="badge badge-sm badge-ghost uppercase">{{.Ticket.Type}}</span>
+                        <span class="badge badge-sm {{statusBadgeClass .Ticket.Status}}">{{.Ticket.Status}}</span>
+                        <span class="badge badge-sm {{priorityBadgeClass .Ticket.Priority}}">{{.Ticket.Priority}}</span>
+                        {{if .Ticket.ArchivedAt}}<span class="badge badge-sm badge-error">archived</span>{{end}}
+                    </div>
+                    <h1 x-show="!editing" class="text-2xl font-semibold tracking-tight">{{.Ticket.Title}}</h1>
                 </div>
-                <div x-show="!editing" class="ticket-title">{{.Ticket.Title}}</div>
+
+                <div class="flex gap-2 items-center shrink-0">
+                    {{if eq .Ticket.Type "feature"}}
+                    <a x-show="!editing" href="/tickets/{{.Ticket.ID}}/debate"
+                       class="btn btn-ghost btn-sm gap-1.5">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                        </svg>
+                        Debate
+                    </a>
+                    {{end}}
+                    <button x-show="!editing" @click="startEditing()"
+                            class="btn btn-ghost btn-sm gap-1.5">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                        </svg>
+                        Edit
+                    </button>
+                    {{if .IsStaff}}
+                    <div class="relative" x-data="{ open: false }">
+                        <button @click="open = !open"
+                                class="btn btn-ghost btn-sm btn-square"
+                                aria-label="More actions">
+                            <svg width="16" height="16" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM16 12a2 2 0 100-4 2 2 0 000 4z"/>
+                            </svg>
+                        </button>
+                        <div x-show="open" x-transition x-cloak
+                             @click.outside="open = false"
+                             class="absolute right-0 mt-2 w-64 bg-base-100 border border-base-300
+                                    rounded-lg shadow-xl z-40 overflow-hidden">
+                            {{$ticketID := .Ticket.ID}}
+                            <div class="p-2 border-b border-base-300">
+                                <div class="px-2 py-1 text-xs uppercase tracking-wider text-base-content/60 font-medium">Status</div>
+                                <div class="flex flex-col">
+                                    {{range $s := strList "backlog" "ready" "planning" "plan_review" "implementing" "testing" "review" "done" "cancelled"}}
+                                    <button hx-patch="/tickets/{{$ticketID}}/status"
+                                            hx-vals='{"status":"{{$s}}"}'
+                                            hx-target="#ticket-header"
+                                            hx-swap="outerHTML"
+                                            class="text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">
+                                        {{$s}}
+                                    </button>
+                                    {{end}}
+                                </div>
+                            </div>
+                            <div class="p-2 border-b border-base-300">
+                                <div class="px-2 py-1 text-xs uppercase tracking-wider text-base-content/60 font-medium">Agent</div>
+                                <form hx-patch="/tickets/{{.Ticket.ID}}/agent"
+                                      hx-target="#ticket-header" hx-swap="outerHTML"
+                                      class="flex flex-col gap-2 p-2">
+                                    <select name="agent_mode" class="select select-bordered select-xs w-full">
+                                        <option value="">None</option>
+                                        <option value="plan">Plan</option>
+                                        <option value="implement">Implement</option>
+                                    </select>
+                                    <select name="agent_name" class="select select-bordered select-xs w-full">
+                                        <option value="claude">Claude</option>
+                                        <option value="gemini">Gemini</option>
+                                        <option value="codex">Codex</option>
+                                        <option value="mistral">Mistral</option>
+                                    </select>
+                                    <button type="submit" class="btn btn-primary btn-xs btn-block">Set Agent</button>
+                                </form>
+                            </div>
+                            <div class="p-2">
+                                <div class="px-2 py-1 text-xs uppercase tracking-wider text-base-content/60 font-medium">Actions</div>
+                                <div class="flex flex-col">
+                                    {{if .Ticket.ArchivedAt}}
+                                    <button hx-post="/tickets/{{.Ticket.ID}}/restore"
+                                            hx-confirm="Restore this ticket and its children?"
+                                            class="text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">Restore</button>
+                                    {{else}}
+                                    <button hx-post="/tickets/{{.Ticket.ID}}/archive"
+                                            hx-confirm="Archive this ticket?"
+                                            class="text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">Archive</button>
+                                    {{end}}
+                                    <button hx-delete="/tickets/{{.Ticket.ID}}"
+                                            hx-confirm="Permanently delete this ticket? This cannot be undone."
+                                            class="text-left px-2 py-1.5 text-sm rounded hover:bg-base-200 text-error">Delete</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
             </div>
 
-            <div class="flex gap-sm items-center">
-                {{if eq .Ticket.Type "feature"}}
-                <a x-show="!editing" href="/tickets/{{.Ticket.ID}}/debate" class="btn btn-secondary btn-sm">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    Debate this feature
-                </a>
+            {{/* View mode */}}
+            <div x-show="!editing">
+                {{if .Ticket.DescriptionMarkdown}}
+                <div class="prose prose-sm max-w-none mt-2">{{markdown .Ticket.DescriptionMarkdown}}</div>
                 {{end}}
-                <button x-show="!editing" @click="startEditing()" class="btn btn-secondary btn-sm">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                    Edit
-                </button>
-                {{if .IsStaff}}
-                <div class="dropdown" x-data="{ open: false }">
-                    <button @click="open = !open" class="btn-dots">
-                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20">
-                            <path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM16 12a2 2 0 100-4 2 2 0 000 4z"/>
+            </div>
+
+            {{/* Edit mode */}}
+            <div x-show="editing" x-cloak>
+                <form @submit="syncEditor()"
+                      hx-put="/tickets/{{.Ticket.ID}}" hx-swap="none"
+                      class="flex flex-col gap-3">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text">Title</span></label>
+                        <input type="text" name="title" value="{{.Ticket.Title}}"
+                               class="input input-bordered w-full" required>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text">Description</span></label>
+                        <textarea x-ref="descTextarea" name="description" rows="12"
+                                  class="textarea textarea-bordered font-mono text-sm">{{.Ticket.DescriptionMarkdown}}</textarea>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div class="form-control">
+                            <label class="label pb-1"><span class="label-text">Start date</span></label>
+                            <input type="date" name="date_start"
+                                   value="{{formatDateInput .Ticket.DateStart}}"
+                                   class="input input-bordered w-full">
+                        </div>
+                        <div class="form-control">
+                            <label class="label pb-1"><span class="label-text">End date</span></label>
+                            <input type="date" name="date_end"
+                                   value="{{formatDateInput .Ticket.DateEnd}}"
+                                   class="input input-bordered w-full">
+                        </div>
+                    </div>
+                    <div class="flex gap-2">
+                        <button type="submit" class="btn btn-primary">Save</button>
+                        <button type="button" @click="cancelEditing()" class="btn btn-ghost">Cancel</button>
+                    </div>
+                </form>
+            </div>
+
+            {{if or .Ticket.DateStart .Ticket.DateEnd}}
+            <div class="flex items-center gap-1.5 text-xs text-base-content/70 border-t border-base-300 pt-3"
+                 x-show="!editing">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                     fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                    <line x1="16" y1="2" x2="16" y2="6"/>
+                    <line x1="8" y1="2" x2="8" y2="6"/>
+                    <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                {{if .Ticket.DateStart}}<span>{{formatDate .Ticket.DateStart}}</span>{{end}}
+                {{if and .Ticket.DateStart .Ticket.DateEnd}}<span>→</span>{{end}}
+                {{if .Ticket.DateEnd}}<span>{{formatDate .Ticket.DateEnd}}</span>{{end}}
+            </div>
+            {{end}}
+
+            {{template "reactions.html" dict "TargetType" "ticket" "TargetID" .Ticket.ID "Groups" .TicketReactions}}
+        </div>
+    </div>
+
+    {{/* Attachments */}}
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-3">
+            <div class="flex items-center justify-between flex-wrap gap-3">
+                <h3 class="text-base font-semibold">Attachments</h3>
+                <div x-data="fileUploader()" class="flex gap-2 items-center">
+                    <input type="file" x-ref="fileInput" @change="upload($event)" class="hidden" multiple>
+                    <button @click="$refs.fileInput.click()"
+                            class="btn btn-ghost btn-sm gap-1.5"
+                            :disabled="uploading">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <span x-text="uploading ? 'Uploading...' : 'Upload File'"></span>
+                    </button>
+                </div>
+            </div>
+            {{if .Attachments}}
+            <div class="flex flex-col gap-1">
+                {{range .Attachments}}
+                <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-md bg-base-200">
+                    <a href="{{.FilePath}}" target="_blank"
+                       class="flex items-center gap-2 text-base-content hover:text-primary flex-1 min-w-0">
+                        <span class="text-base shrink-0 w-5 text-center">{{fileIcon .ContentType}}</span>
+                        <span class="text-sm font-medium truncate">{{.FileName}}</span>
+                        <span class="text-xs text-base-content/50 shrink-0 ml-auto">{{formatBytes .SizeBytes}}</span>
+                    </a>
+                    <button hx-delete="/api/attachments/{{.ID}}"
+                            hx-confirm="Remove this attachment?"
+                            hx-target="closest .flex"
+                            hx-swap="outerHTML"
+                            class="btn btn-ghost btn-xs btn-square text-error opacity-60 hover:opacity-100">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                         </svg>
                     </button>
-                    <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:14rem">
-                        {{$ticketID := .Ticket.ID}}
-                        <div class="dropdown-section">
-                            <div class="dropdown-section-label">Status</div>
-                            {{range $s := strList "backlog" "ready" "planning" "plan_review" "implementing" "testing" "review" "done" "cancelled"}}
-                            <button hx-patch="/tickets/{{$ticketID}}/status"
-                                    hx-vals='{"status":"{{$s}}"}'
-                                    hx-target="#ticket-header"
-                                    hx-swap="outerHTML"
-                                    class="dropdown-item">
-                                {{$s}}
-                            </button>
-                            {{end}}
-                        </div>
-                        <div class="dropdown-section">
-                            <div class="dropdown-section-label">Agent</div>
-                            <form hx-patch="/tickets/{{.Ticket.ID}}/agent" hx-target="#ticket-header" hx-swap="outerHTML" class="dropdown-form stack-sm">
-                                <select name="agent_mode" class="form-select">
-                                    <option value="">None</option>
-                                    <option value="plan">Plan</option>
-                                    <option value="implement">Implement</option>
-                                </select>
-                                <select name="agent_name" class="form-select">
-                                    <option value="claude">Claude</option>
-                                    <option value="gemini">Gemini</option>
-                                    <option value="codex">Codex</option>
-                                    <option value="mistral">Mistral</option>
-                                </select>
-                                <button type="submit" class="btn btn-primary btn-sm btn-block">Set Agent</button>
-                            </form>
-                        </div>
-                        <div class="dropdown-section">
-                            <div class="dropdown-section-label">Actions</div>
-                            {{if .Ticket.ArchivedAt}}
-                            <button hx-post="/tickets/{{.Ticket.ID}}/restore"
-                                    hx-confirm="Restore this ticket and its children?"
-                                    class="dropdown-item">Restore</button>
-                            {{else}}
-                            <button hx-post="/tickets/{{.Ticket.ID}}/archive"
-                                    hx-confirm="Archive this ticket?"
-                                    class="dropdown-item">Archive</button>
-                            {{end}}
-                            <button hx-delete="/tickets/{{.Ticket.ID}}"
-                                    hx-confirm="Permanently delete this ticket? This cannot be undone."
-                                    class="dropdown-item text-danger">Delete</button>
-                        </div>
-                    </div>
                 </div>
                 {{end}}
             </div>
-        </div>
-
-        <!-- View mode -->
-        <div x-show="!editing">
-            {{if .Ticket.DescriptionMarkdown}}
-            <div class="ticket-description prose">{{markdown .Ticket.DescriptionMarkdown}}</div>
+            {{else}}
+            <p class="text-sm text-base-content/60">No attachments yet.</p>
             {{end}}
         </div>
-
-        <!-- Edit mode -->
-        <div x-show="editing" x-cloak>
-            <form @submit="syncEditor()" hx-put="/tickets/{{.Ticket.ID}}" hx-swap="none">
-                <div class="form-group mb-sm">
-                    <label class="form-label">Title</label>
-                    <input type="text" name="title" value="{{.Ticket.Title}}" class="form-input" required>
-                </div>
-                <div class="form-group mb-sm">
-                    <label class="form-label">Description</label>
-                    <textarea x-ref="descTextarea" name="description" rows="12" class="form-textarea font-mono">{{.Ticket.DescriptionMarkdown}}</textarea>
-                </div>
-                <div class="form-row mb-sm">
-                    <div class="form-group">
-                        <label class="form-label">Start date</label>
-                        <input type="date" name="date_start" value="{{formatDateInput .Ticket.DateStart}}" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">End date</label>
-                        <input type="date" name="date_end" value="{{formatDateInput .Ticket.DateEnd}}" class="form-input">
-                    </div>
-                </div>
-                <div class="flex gap-sm">
-                    <button type="submit" class="btn btn-primary">Save</button>
-                    <button type="button" @click="cancelEditing()" class="btn btn-secondary">Cancel</button>
-                </div>
-            </form>
-        </div>
-
-        {{if or .Ticket.DateStart .Ticket.DateEnd}}
-        <div class="ticket-dates" x-show="!editing">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-            {{if .Ticket.DateStart}}<span>{{formatDate .Ticket.DateStart}}</span>{{end}}
-            {{if and .Ticket.DateStart .Ticket.DateEnd}}<span>→</span>{{end}}
-            {{if .Ticket.DateEnd}}<span>{{formatDate .Ticket.DateEnd}}</span>{{end}}
-        </div>
-        {{end}}
-
-        {{template "reactions.html" dict "TargetType" "ticket" "TargetID" .Ticket.ID "Groups" .TicketReactions}}
     </div>
 
-    <!-- Attachments -->
-    <div class="card mb-lg">
-        <div class="flex items-center justify-between mb-sm">
-            <h3>Attachments</h3>
-            <div x-data="fileUploader()" class="flex gap-sm items-center">
-                <input type="file" x-ref="fileInput" @change="upload($event)" style="display:none" multiple>
-                <button @click="$refs.fileInput.click()" class="btn btn-secondary btn-sm" :disabled="uploading">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    <span x-text="uploading ? 'Uploading...' : 'Upload File'"></span>
-                </button>
-            </div>
-        </div>
-        {{if .Attachments}}
-        <div class="attachment-list">
-            {{range .Attachments}}
-            <div class="attachment-item">
-                <a href="{{.FilePath}}" target="_blank" class="attachment-link">
-                    <span class="attachment-icon">{{fileIcon .ContentType}}</span>
-                    <span class="attachment-name">{{.FileName}}</span>
-                    <span class="attachment-size">{{formatBytes .SizeBytes}}</span>
-                </a>
-                <button hx-delete="/api/attachments/{{.ID}}"
-                        hx-confirm="Remove this attachment?"
-                        class="btn-icon-sm text-danger">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                </button>
-            </div>
-            {{end}}
-        </div>
-        {{else}}
-        <p class="text-muted">No attachments yet.</p>
-        {{end}}
-    </div>
-
-    <!-- Child tickets -->
-    <div class="card mb-lg">
-        <div class="flex items-center justify-between mb-sm">
-            <h3>Sub-items</h3>
-            <div class="dropdown" x-data="{ open: false }">
-                <button @click="open = !open" class="btn btn-primary btn-sm">New Task</button>
-                <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:20rem" @click.stop>
-                    <form method="POST" action="/tickets" class="dropdown-form">
-                        {{csrfField}}
-                        <input type="hidden" name="project_id" value="{{.Ticket.ProjectID}}">
-                        <input type="hidden" name="parent_id" value="{{.Ticket.ID}}">
-                        <input type="hidden" name="type" value="task">
-                        <div class="stack">
-                            <div class="form-group">
-                                <label class="form-label">Description</label>
-                                <textarea name="description" rows="3" required placeholder="Describe the task..." class="form-textarea"></textarea>
+    {{/* Child tickets */}}
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-3">
+            <div class="flex items-center justify-between flex-wrap gap-3">
+                <h3 class="text-base font-semibold">Sub-items</h3>
+                <div class="relative" x-data="{ open: false }">
+                    <button @click="open = !open" class="btn btn-primary btn-sm">New Task</button>
+                    <div x-show="open" x-transition x-cloak
+                         @click.outside="open = false" @click.stop
+                         class="absolute right-0 mt-2 w-80 bg-base-100 border border-base-300
+                                rounded-lg shadow-xl z-40 p-4">
+                        <form method="POST" action="/tickets" class="flex flex-col gap-3">
+                            {{csrfField}}
+                            <input type="hidden" name="project_id" value="{{.Ticket.ProjectID}}">
+                            <input type="hidden" name="parent_id" value="{{.Ticket.ID}}">
+                            <input type="hidden" name="type" value="task">
+                            <div class="form-control">
+                                <label class="label pb-1"><span class="label-text">Description</span></label>
+                                <textarea name="description" rows="3" required
+                                          placeholder="Describe the task..."
+                                          class="textarea textarea-bordered w-full text-sm"></textarea>
                             </div>
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label class="form-label">Start</label>
-                                    <input type="date" name="date_start" class="form-input">
+                            <div class="grid grid-cols-2 gap-3">
+                                <div class="form-control">
+                                    <label class="label pb-1"><span class="label-text">Start</span></label>
+                                    <input type="date" name="date_start" class="input input-bordered input-sm w-full">
                                 </div>
-                                <div class="form-group">
-                                    <label class="form-label">End</label>
-                                    <input type="date" name="date_end" class="form-input">
+                                <div class="form-control">
+                                    <label class="label pb-1"><span class="label-text">End</span></label>
+                                    <input type="date" name="date_end" class="input input-bordered input-sm w-full">
                                 </div>
                             </div>
-                            <button type="submit" class="btn btn-primary btn-block">Create</button>
-                        </div>
-                    </form>
+                            <button type="submit" class="btn btn-primary btn-sm btn-block">Create</button>
+                        </form>
+                    </div>
                 </div>
             </div>
-        </div>
-        {{if .Children}}
-        <div class="stack-sm">
-            {{range .Children}}
-            <a href="/tickets/{{.ID}}" class="sub-item">
-                <div class="sub-item-content">
-                    <div class="sub-item-header">
-                        <span class="sub-item-title">{{.Title}}</span>
-                        <div class="sub-item-badges">
-                            <span class="badge badge-{{statusColor .Status}}">{{.Status}}</span>
-                            <span class="badge badge-{{priorityColor .Priority}}">{{.Priority}}</span>
+            {{if .Children}}
+            <div class="flex flex-col gap-2">
+                {{range .Children}}
+                <a href="/tickets/{{.ID}}"
+                   class="block p-3 rounded-md bg-base-200 hover:bg-base-300 transition-colors">
+                    <div class="flex items-center justify-between gap-3 flex-wrap">
+                        <span class="font-medium text-sm flex-1 min-w-0 truncate">{{.Title}}</span>
+                        <div class="flex items-center gap-1.5 shrink-0">
+                            <span class="badge badge-sm {{statusBadgeClass .Status}}">{{.Status}}</span>
+                            <span class="badge badge-sm {{priorityBadgeClass .Priority}}">{{.Priority}}</span>
                         </div>
                     </div>
                     {{if .DescriptionMarkdown}}
-                    <span class="sub-item-desc">{{truncate .DescriptionMarkdown 120}}</span>
+                    <div class="text-xs text-base-content/60 line-clamp-2 mt-1">
+                        {{truncate .DescriptionMarkdown 120}}
+                    </div>
                     {{end}}
                     {{if or .DateStart .DateEnd}}
-                    <span class="sub-item-dates">
+                    <div class="text-xs text-base-content/50 mt-1">
                         {{if .DateStart}}{{formatDate .DateStart}}{{end}}{{if and .DateStart .DateEnd}} → {{end}}{{if .DateEnd}}{{formatDate .DateEnd}}{{end}}
-                    </span>
+                    </div>
                     {{end}}
-                </div>
-            </a>
+                </a>
+                {{end}}
+            </div>
+            {{else}}
+            <p class="text-sm text-base-content/60">No sub-items yet.</p>
             {{end}}
         </div>
-        {{else}}
-        <p class="text-muted">No sub-items yet.</p>
-        {{end}}
     </div>
 
-    <!-- Comments -->
-    <div class="card">
-        <h3 class="mb-md">Comments</h3>
-        <div id="comments" class="stack-lg mb-lg">
-            {{$cr := .CommentReactions}}
-            {{range .Comments}}
-            <div class="comment">
-                <div class="comment-meta">
-                    <span class="comment-author">{{if .AgentName}}ForgeDesk Bot{{else}}User{{end}}</span>
-                    <span class="comment-time">{{formatDateTime .CreatedAt}}</span>
+    {{/* Comments */}}
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-4">
+            <h3 class="text-base font-semibold">Comments</h3>
+            <div id="comments" class="flex flex-col gap-4">
+                {{$cr := .CommentReactions}}
+                {{range .Comments}}
+                <div class="border-l-2 border-base-300 pl-4">
+                    <div class="flex items-center gap-2 text-xs mb-1">
+                        <span class="font-medium">{{if .AgentName}}ForgeDesk Bot{{else}}User{{end}}</span>
+                        <span class="text-base-content/50">·</span>
+                        <span class="text-base-content/60">{{formatDateTime .CreatedAt}}</span>
+                    </div>
+                    {{/* comment-body class retained alongside prose so the
+                         #37 partial-render regression test has a stable
+                         landmark independent of Tailwind refactors. Also
+                         matches the comment.html partial used for HTMX-
+                         posted comments after initial load. */}}
+                    <div class="comment-body prose prose-sm max-w-none">{{markdown .BodyMarkdown}}</div>
+                    {{template "reactions.html" dict "TargetType" "comment" "TargetID" .ID "Groups" (index $cr .ID)}}
                 </div>
-                <div class="comment-body prose">{{markdown .BodyMarkdown}}</div>
-                {{template "reactions.html" dict "TargetType" "comment" "TargetID" .ID "Groups" (index $cr .ID)}}
+                {{end}}
             </div>
-            {{end}}
-        </div>
 
-        <form hx-post="/tickets/{{.Ticket.ID}}/comments"
-              hx-target="#comments"
-              hx-swap="beforeend"
-              hx-on::after-request="this.reset()">
-            <textarea name="body" rows="3" required placeholder="Write a comment..."
-                      class="form-textarea mb-sm"></textarea>
-            <button type="submit" class="btn btn-primary">Comment</button>
-        </form>
+            <form hx-post="/tickets/{{.Ticket.ID}}/comments"
+                  hx-target="#comments"
+                  hx-swap="beforeend"
+                  hx-on::after-request="this.reset()"
+                  class="flex flex-col gap-3 border-t border-base-300 pt-4">
+                <textarea name="body" rows="3" required placeholder="Write a comment..."
+                          class="textarea textarea-bordered w-full text-sm"></textarea>
+                <div>
+                    <button type="submit" class="btn btn-primary btn-sm">Comment</button>
+                </div>
+            </form>
+        </div>
     </div>
 </div>
-
-<style>
-.attachment-list { display: flex; flex-direction: column; gap: .375rem; }
-.attachment-item { display: flex; align-items: center; justify-content: space-between; padding: .5rem .75rem; border-radius: var(--radius-md); background: var(--gray-50); }
-.attachment-link { display: flex; align-items: center; gap: .5rem; color: var(--gray-700); text-decoration: none; min-width: 0; flex: 1; }
-.attachment-link:hover { color: var(--brand-600); }
-.attachment-icon { font-size: 1.25rem; flex-shrink: 0; width: 1.5rem; text-align: center; }
-.attachment-name { font-size: var(--text-sm); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.attachment-size { font-size: var(--text-xs); color: var(--gray-400); flex-shrink: 0; margin-left: auto; padding-left: .5rem; }
-.btn-icon-sm { background: none; border: none; cursor: pointer; padding: .25rem; border-radius: var(--radius-sm); opacity: .5; }
-.btn-icon-sm:hover { opacity: 1; background: var(--gray-100); }
-
-</style>
 
 {{template "image_modal" .}}
 
@@ -352,11 +417,6 @@ function fileUploader() {
                     window.apiFetch('/api/upload-file', { method: 'POST', body: fd })
                 );
             }
-            // Promise.allSettled — wait for every upload to finish
-            // (succeed or fail) before flipping UI state, so a single
-            // failed file can't abort in-flight siblings or leave the
-            // user with "Uploading…" cleared while some are still
-            // running. (#33 review)
             var self = this;
             Promise.allSettled(promises).then(function(results) {
                 self.uploading = false;
@@ -372,8 +432,6 @@ function fileUploader() {
         }
     };
 }
-
 </script>
-
 {{end}}
 {{end}}
