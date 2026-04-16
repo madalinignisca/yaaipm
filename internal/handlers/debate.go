@@ -556,12 +556,15 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 			deb.ID, round.ID, dctx.ticket.ProjectID, round.OutputText)
 	}
 
-	// Wrap the round in {Round, TicketID} so the partial can build
-	// scoped action URLs (Undo button on the now-accepted card).
-	_ = h.engine.RenderPartial(w, "debate_round.html", map[string]any{
-		"Round":    round,
-		"TicketID": dctx.ticket.ID,
-	})
+	// Hx-Refresh triggers a full client-side reload after accept.
+	// We can't return just the round card via outerHTML swap because
+	// the next-round picker form is suppressed during in_review and
+	// only re-rendered by debate.html when no round is in_review.
+	// Without a reload the user sees the accepted card but no way to
+	// continue the debate (only Undo + Approve final remain). The
+	// reload re-renders debate.html which puts the picker back.
+	w.Header().Set("Hx-Refresh", "true")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // acceptRoundUnderLock runs the accept transaction: lock debate row,

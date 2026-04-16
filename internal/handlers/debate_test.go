@@ -400,13 +400,15 @@ func startAndCreateRounds(t *testing.T, r *chi.Mux, db *models.DB, cookie *http.
 		}
 
 		// Accept via the HTTP handler so we exercise the production
-		// tx path including the FOR UPDATE status check.
+		// tx path including the FOR UPDATE status check. Accept any
+		// 2xx — current handler returns 204 + Hx-Refresh, but the
+		// status itself isn't load-bearing for the test.
 		acceptRec := httptest.NewRecorder()
 		acceptReq := httptest.NewRequest(http.MethodPost,
 			"/tickets/"+ticketID+"/debate/rounds/"+round.ID+"/accept", http.NoBody)
 		acceptReq.AddCookie(cookie)
 		r.ServeHTTP(acceptRec, acceptReq)
-		if acceptRec.Code != http.StatusOK {
+		if acceptRec.Code < 200 || acceptRec.Code >= 300 {
 			t.Fatalf("/accept round %d: %d %s", i+1, acceptRec.Code, acceptRec.Body.String())
 		}
 		// Re-fetch the round to get its updated (accepted) state.
