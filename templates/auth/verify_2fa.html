@@ -1,18 +1,22 @@
 {{define "content"}}
-<div class="stack-xl text-center">
+<div class="flex flex-col gap-6 text-center">
     <div>
-        <h1 style="font-size:var(--text-3xl)">Two-Factor Verification</h1>
-        <p class="text-muted" style="margin-top:.5rem">Enter the 6-digit code from your authenticator app</p>
+        <h1 class="text-2xl font-semibold tracking-tight">Two-Factor Verification</h1>
+        <p class="text-sm text-base-content/60 mt-2">
+            Enter the 6-digit code from your authenticator app
+        </p>
     </div>
-    <form method="POST" action="/verify-2fa" class="stack-lg">
+    <form method="POST" action="/verify-2fa" class="flex flex-col gap-4">
         {{csrfField}}
         <div>
             <label for="code" class="sr-only">Verification code</label>
-            <input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9A-Z]{6,8}" maxlength="8" required autofocus
-                   class="form-input form-input-code" placeholder="000000" autocomplete="one-time-code">
+            <input id="code" name="code" type="text" inputmode="numeric"
+                   pattern="[0-9A-Z]{6,8}" maxlength="8" required autofocus
+                   class="input input-bordered w-full text-center text-xl tracking-[0.3em] font-mono"
+                   placeholder="000000" autocomplete="one-time-code">
         </div>
         <button type="submit" class="btn btn-primary btn-block">Verify</button>
-        <p class="text-muted text-sm">You can also enter a recovery code</p>
+        <p class="text-xs text-base-content/60">You can also enter a recovery code</p>
     </form>
 </div>
 {{end}}

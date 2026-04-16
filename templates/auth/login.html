@@ -1,20 +1,22 @@
 {{define "content"}}
-<div class="stack-xl text-center">
+<div class="flex flex-col gap-8 text-center">
     <div>
-        <h1 style="font-size:var(--text-3xl)">Sign in to ForgeDesk</h1>
-        <p class="text-muted" style="margin-top:.5rem">
-            Or <a href="/register" class="btn-link">create an account</a>
+        <h1 class="text-2xl font-semibold tracking-tight">Sign in to ForgeDesk</h1>
+        <p class="text-sm text-base-content/60 mt-2">
+            Or <a href="/register" class="link link-primary">create an account</a>
         </p>
     </div>
-    <form method="POST" action="/login" class="stack-lg">
+    <form method="POST" action="/login" class="flex flex-col gap-4">
         {{csrfField}}
-        <div class="form-stacked">
+        <div class="flex flex-col gap-2">
             <label for="email" class="sr-only">Email address</label>
             <input id="email" name="email" type="email" required
-                   class="form-input" placeholder="Email address" autocomplete="email">
+                   class="input input-bordered w-full"
+                   placeholder="Email address" autocomplete="email">
             <label for="password" class="sr-only">Password</label>
             <input id="password" name="password" type="password" required
-                   class="form-input" placeholder="Password" autocomplete="current-password">
+                   class="input input-bordered w-full"
+                   placeholder="Password" autocomplete="current-password">
         </div>
         <button type="submit" class="btn btn-primary btn-block">Sign in</button>
     </form>
