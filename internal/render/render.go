@@ -158,49 +158,11 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		"title":     cases.Title(language.Und).String,
 		"hasPrefix": strings.HasPrefix,
 		"contains":  strings.Contains,
-		"statusColor": func(status string) string {
-			const colorGray = "gray"
-			switch status {
-			case "backlog":
-				return colorGray
-			case "ready":
-				return "blue"
-			case "planning", "plan_review":
-				return "purple"
-			case "implementing":
-				return "yellow"
-			case "testing":
-				return "orange"
-			case "review":
-				return "indigo"
-			case "done":
-				return "green"
-			case "cancelled":
-				return "red"
-			default:
-				return colorGray
-			}
-		},
-		"priorityColor": func(p string) string {
-			const colorGray = "gray"
-			switch p {
-			case "critical":
-				return "red"
-			case "high":
-				return "orange"
-			case "medium":
-				return "yellow"
-			case "low":
-				return colorGray
-			default:
-				return colorGray
-			}
-		},
 		// statusBadgeClass maps a ticket status to a DaisyUI badge
-		// variant. Used by migrated templates (PR-4 onward) to get
-		// theme-aware badge colors. The older statusColor helper
-		// (above) returns hand-CSS color names and is retained for
-		// still-unmigrated templates until PR-6.
+		// variant. The legacy hand-CSS helper (statusColor returning
+		// "yellow"/"orange"/etc.) was removed in PR-6 when app.css
+		// went away; all templates now consume DaisyUI class names
+		// directly.
 		"statusBadgeClass": func(status string) string {
 			switch status {
 			case "backlog":

@@ -1,47 +1,78 @@
 {{define "content"}}
-<div class="container-medium">
-    <h1 class="mb-lg">Account Settings</h1>
+<div class="max-w-2xl mx-auto p-6 flex flex-col gap-6">
+    <h1 class="text-2xl font-semibold tracking-tight">Account Settings</h1>
 
-    <div class="card mb-lg">
-        <h2 class="mb-md">Change Password</h2>
-        <form method="POST" action="/account/password">
-            {{csrfField}}
-            <div class="mb-md">
-                <label class="form-label" for="current_password">Current Password</label>
-                <input type="password" name="current_password" id="current_password" class="form-input" required>
-            </div>
-            <div class="mb-md">
-                <label class="form-label" for="new_password">New Password</label>
-                <input type="password" name="new_password" id="new_password" class="form-input" minlength="12" required>
-                <small class="text-muted">Minimum 12 characters</small>
-            </div>
-            <div class="mb-md">
-                <label class="form-label" for="confirm_password">Confirm New Password</label>
-                <input type="password" name="confirm_password" id="confirm_password" class="form-input" minlength="12" required>
-            </div>
-            <button type="submit" class="btn btn-primary">Update Password</button>
-        </form>
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-4">
+            <h2 class="text-lg font-semibold">Change Password</h2>
+            <form method="POST" action="/account/password" class="flex flex-col gap-4">
+                {{csrfField}}
+                <div class="form-control">
+                    <label class="label pb-1" for="current_password">
+                        <span class="label-text">Current Password</span>
+                    </label>
+                    <input type="password" name="current_password" id="current_password"
+                           class="input input-bordered w-full" required
+                           autocomplete="current-password">
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="new_password">
+                        <span class="label-text">New Password</span>
+                        <span class="label-text-alt text-base-content/60">min 12 characters</span>
+                    </label>
+                    <input type="password" name="new_password" id="new_password"
+                           class="input input-bordered w-full" minlength="12" required
+                           autocomplete="new-password">
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="confirm_password">
+                        <span class="label-text">Confirm New Password</span>
+                    </label>
+                    <input type="password" name="confirm_password" id="confirm_password"
+                           class="input input-bordered w-full" minlength="12" required
+                           autocomplete="new-password">
+                </div>
+                <div>
+                    <button type="submit" class="btn btn-primary">Update Password</button>
+                </div>
+            </form>
+        </div>
     </div>
 
-    <div class="card">
-        <h2 class="mb-md">Change Email</h2>
-        <form method="POST" action="/account/email">
-            {{csrfField}}
-            <div class="mb-md">
-                <label class="form-label">Current Email</label>
-                <input type="email" class="form-input" value="{{.User.Email}}" disabled>
-            </div>
-            <div class="mb-md">
-                <label class="form-label" for="new_email">New Email</label>
-                <input type="email" name="new_email" id="new_email" class="form-input" required>
-            </div>
-            <div class="mb-md">
-                <label class="form-label" for="email_password">Password</label>
-                <input type="password" name="password" id="email_password" class="form-input" required>
-                <small class="text-muted">Confirm your identity to change email</small>
-            </div>
-            <button type="submit" class="btn btn-primary">Update Email</button>
-        </form>
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-4">
+            <h2 class="text-lg font-semibold">Change Email</h2>
+            <form method="POST" action="/account/email" class="flex flex-col gap-4">
+                {{csrfField}}
+                <div class="form-control">
+                    <label class="label pb-1">
+                        <span class="label-text">Current Email</span>
+                    </label>
+                    <input type="email" class="input input-bordered w-full bg-base-200"
+                           value="{{.User.Email}}" disabled>
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="new_email">
+                        <span class="label-text">New Email</span>
+                    </label>
+                    <input type="email" name="new_email" id="new_email"
+                           class="input input-bordered w-full" required
+                           autocomplete="email">
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="email_password">
+                        <span class="label-text">Password</span>
+                        <span class="label-text-alt text-base-content/60">confirm identity</span>
+                    </label>
+                    <input type="password" name="password" id="email_password"
+                           class="input input-bordered w-full" required
+                           autocomplete="current-password">
+                </div>
+                <div>
+                    <button type="submit" class="btn btn-primary">Update Email</button>
+                </div>
+            </form>
+        </div>
     </div>
 </div>
 {{end}}
