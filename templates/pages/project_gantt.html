@@ -1,24 +1,32 @@
 {{define "content"}}
 {{with .Data}}
-{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
+<div class="max-w-7xl mx-auto p-6">
+    {{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
 
-<div class="mt-lg">
-    <h2 class="mb-md">Timeline</h2>
+    <div class="flex flex-col gap-4">
+        <h2 class="text-xl font-semibold">Timeline</h2>
 
-    {{if .Tickets}}
-    <div id="gantt-chart" class="gantt-container"></div>
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            if (typeof renderGantt === 'function') {
-                renderGantt('#gantt-chart', {{toJSON .Tickets}});
-            }
-        });
-    </script>
-    {{else}}
-    <div class="empty-state">
-        <p>No tickets with dates set. Add start/end dates to tickets to see them on the timeline.</p>
+        {{if .Tickets}}
+        {{/* The Gantt chart's own CSS (.gantt-*) is preserved in app.css
+             until the full-migration cleanup in PR-6. static/js/app/gantt.js
+             reads the ticket JSON and injects time-scaled bars into
+             #gantt-chart — nothing here changes its behaviour. */}}
+        <div id="gantt-chart" class="gantt-container"></div>
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                if (typeof renderGantt === 'function') {
+                    renderGantt('#gantt-chart', {{toJSON .Tickets}});
+                }
+            });
+        </script>
+        {{else}}
+        <div class="card bg-base-100 border border-base-300">
+            <div class="card-body p-12 text-center text-sm text-base-content/60">
+                No tickets with dates set. Add start/end dates to tickets to see them on the timeline.
+            </div>
+        </div>
+        {{end}}
     </div>
-    {{end}}
 </div>
 {{end}}
 {{end}}

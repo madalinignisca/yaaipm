@@ -1,55 +1,94 @@
 {{define "content"}}
 {{with .Data}}
-{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
+<div class="max-w-3xl mx-auto p-6">
+    {{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
 
-<div class="mt-lg">
-    <h2 class="mb-lg">Project Settings</h2>
+    <div class="flex flex-col gap-6">
+        <h2 class="text-xl font-semibold">Project Settings</h2>
 
-    <div class="card mb-lg">
-        <h3 class="mb-sm">Repository</h3>
-        <p class="text-sm text-muted mb-md">Git repository URL for this project. Required for the orchestrator to clone code and create agent worktrees.</p>
-        <form method="POST" action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/settings/repo">
-            {{csrfField}}
-            <div class="form-group mb-md">
-                <label class="form-label" for="repo_url">Repository URL</label>
-                <input type="url" id="repo_url" name="repo_url" class="form-input"
-                       value="{{.Project.RepoURL}}"
-                       placeholder="https://github.com/org/repo.git or git@github.com:org/repo.git">
-                <span class="form-label-hint">SSH or HTTPS URL. The orchestrator VM must have access to clone this repo.</span>
-            </div>
-            <button type="submit" class="btn btn-primary">Save Repository URL</button>
-        </form>
-    </div>
-
-    {{if gt (len .AllOrgs) 1}}
-    <div class="card" x-data="{ confirm: false, targetName: '' }">
-        <h3 class="mb-sm" style="color: var(--red-600)">Transfer Project</h3>
-        <p class="text-sm text-muted mb-md">Move this project and all its tickets, comments, and costs to a different organization.</p>
-        <form method="POST" action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/transfer"
-              @submit.prevent="if (confirm) { $el.submit() } else { targetName = $refs.orgSelect.selectedOptions[0]?.text || ''; confirm = true; }">
-            {{csrfField}}
-            <div class="form-group mb-md">
-                <label class="form-label" for="target_org_id">Target Organization</label>
-                <select id="target_org_id" name="target_org_id" class="form-select" required x-ref="orgSelect" @change="confirm = false">
-                    <option value="">Select organization...</option>
-                    {{range .AllOrgs}}
-                    {{if ne .ID $.Org.ID}}
-                    <option value="{{.ID}}">{{.Name}}</option>
-                    {{end}}
-                    {{end}}
-                </select>
-            </div>
-            <template x-if="confirm">
-                <div class="mb-md" style="padding: .75rem; background: var(--red-50, #fef2f2); border: 1px solid var(--red-200, #fecaca); border-radius: var(--radius-md);">
-                    <p class="text-sm" style="color: var(--red-700, #b91c1c); margin: 0;">
-                        Transfer <strong>{{.Project.Name}}</strong> to <strong x-text="targetName"></strong>? All tickets, comments, and costs will move with it.
+        <div class="card bg-base-100 border border-base-300 shadow-sm">
+            <div class="card-body p-6 gap-3">
+                <div>
+                    <h3 class="text-lg font-semibold">Repository</h3>
+                    <p class="text-sm text-base-content/60 mt-1">
+                        Git repository URL for this project. Required for the orchestrator to clone code and create agent worktrees.
                     </p>
                 </div>
-            </template>
-            <button type="submit" class="btn btn-danger" x-text="confirm ? 'Confirm Transfer' : 'Transfer Project'"></button>
-        </form>
+                <form method="POST"
+                      action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/settings/repo"
+                      class="flex flex-col gap-3">
+                    {{csrfField}}
+                    <div class="form-control">
+                        <label class="label pb-1" for="repo_url">
+                            <span class="label-text">Repository URL</span>
+                        </label>
+                        {{/* type="text", not "url" — SSH Git URLs
+                             (git@github.com:org/repo.git) don't match
+                             the browser's url validation scheme. */}}
+                        <input type="text" id="repo_url" name="repo_url"
+                               class="input input-bordered w-full font-mono text-sm"
+                               value="{{.Project.RepoURL}}"
+                               placeholder="https://github.com/org/repo.git or git@github.com:org/repo.git">
+                        <label class="label pt-1">
+                            <span class="label-text-alt text-base-content/60">
+                                SSH or HTTPS URL. The orchestrator VM must have access to clone this repo.
+                            </span>
+                        </label>
+                    </div>
+                    <div>
+                        <button type="submit" class="btn btn-primary">Save Repository URL</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        {{if gt (len .AllOrgs) 1}}
+        <div class="card bg-base-100 border border-error/30 shadow-sm"
+             x-data="{ confirm: false, targetName: '' }">
+            <div class="card-body p-6 gap-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-error">Transfer Project</h3>
+                    <p class="text-sm text-base-content/60 mt-1">
+                        Move this project and all its tickets, comments, and costs to a different organization.
+                    </p>
+                </div>
+                <form method="POST"
+                      action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/transfer"
+                      class="flex flex-col gap-3"
+                      @submit.prevent="if (confirm) { $el.submit() } else { targetName = $refs.orgSelect.selectedOptions[0]?.text || ''; confirm = true; }">
+                    {{csrfField}}
+                    <div class="form-control">
+                        <label class="label pb-1" for="target_org_id">
+                            <span class="label-text">Target Organization</span>
+                        </label>
+                        <select id="target_org_id" name="target_org_id"
+                                class="select select-bordered w-full"
+                                required x-ref="orgSelect" @change="confirm = false">
+                            <option value="">Select organization...</option>
+                            {{range .AllOrgs}}
+                            {{if ne .ID $.Org.ID}}
+                            <option value="{{.ID}}">{{.Name}}</option>
+                            {{end}}
+                            {{end}}
+                        </select>
+                    </div>
+                    <template x-if="confirm">
+                        <div class="alert alert-warning">
+                            <span class="text-sm">
+                                Transfer <strong>{{.Project.Name}}</strong> to
+                                <strong x-text="targetName"></strong>? All tickets, comments, and costs will move with it.
+                            </span>
+                        </div>
+                    </template>
+                    <div>
+                        <button type="submit" class="btn btn-error"
+                                x-text="confirm ? 'Confirm Transfer' : 'Transfer Project'"></button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        {{end}}
     </div>
-    {{end}}
 </div>
 {{end}}
 {{end}}

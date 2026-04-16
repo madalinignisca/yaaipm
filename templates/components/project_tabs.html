@@ -1,20 +1,20 @@
 {{define "project_tabs"}}
-<nav class="tabs">
+<div role="tablist" class="tabs tabs-bordered border-b border-base-300 mb-6 -mx-6 px-6">
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/brief"
-       class="tab-link {{if eq .Tab "brief"}}active{{end}}">Brief</a>
+       role="tab" class="tab {{if eq .Tab "brief"}}tab-active{{end}}">Brief</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/features"
-       class="tab-link {{if eq .Tab "features"}}active{{end}}">Features</a>
+       role="tab" class="tab {{if eq .Tab "features"}}tab-active{{end}}">Features</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/bugs"
-       class="tab-link {{if eq .Tab "bugs"}}active{{end}}">Bugs</a>
+       role="tab" class="tab {{if eq .Tab "bugs"}}tab-active{{end}}">Bugs</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/gantt"
-       class="tab-link {{if eq .Tab "gantt"}}active{{end}}">Timeline</a>
+       role="tab" class="tab {{if eq .Tab "gantt"}}tab-active{{end}}">Timeline</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/costs"
-       class="tab-link {{if eq .Tab "costs"}}active{{end}}">Costs</a>
+       role="tab" class="tab {{if eq .Tab "costs"}}tab-active{{end}}">Costs</a>
     {{if .IsStaff}}
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/archived"
-       class="tab-link {{if eq .Tab "archived"}}active{{end}}">Archived</a>
+       role="tab" class="tab {{if eq .Tab "archived"}}tab-active{{end}}">Archived</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/settings"
-       class="tab-link {{if eq .Tab "settings"}}active{{end}}">Settings</a>
+       role="tab" class="tab {{if eq .Tab "settings"}}tab-active{{end}}">Settings</a>
     {{end}}
-</nav>
+</div>
 {{end}}

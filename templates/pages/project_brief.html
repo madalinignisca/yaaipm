@@ -4,84 +4,127 @@
 
 {{define "content"}}
 {{with .Data}}
-{{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
+<div class="max-w-4xl mx-auto p-6">
+    {{template "project_tabs" dict "Org" $.Org "Project" .Project "Tab" .Tab "IsStaff" .IsStaff}}
 
-<div class="mt-lg">
     <div x-data="briefEditor()" x-ref="briefRoot">
         <div x-show="!editing">
-            <div class="flex items-center justify-between mb-md">
-                <h2>Project Brief</h2>
-                <div class="flex gap-sm">
+            <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
+                <h2 class="text-xl font-semibold">Project Brief</h2>
+                <div class="flex gap-2">
                     {{if .Project.BriefMarkdown}}
                     <form hx-post="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/brief/reviewed" hx-swap="none"
                           hx-confirm="Confirm that you have reviewed this brief and have no changes?">
-                        <button type="submit" class="btn btn-secondary btn-sm">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                        <button type="submit" class="btn btn-ghost btn-sm gap-1.5">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                                 fill="none" stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="20 6 9 17 4 12"/>
+                            </svg>
                             Mark as reviewed
                         </button>
                     </form>
                     {{end}}
-                    <button @click="startEditing()" class="btn btn-secondary btn-sm">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    <button @click="startEditing()" class="btn btn-primary btn-sm gap-1.5">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                        </svg>
                         Edit
                     </button>
                 </div>
             </div>
             {{if .Project.BriefMarkdown}}
-            <div class="card">
-                <div class="prose">{{markdown .Project.BriefMarkdown}}</div>
+            <div class="card bg-base-100 border border-base-300 shadow-sm">
+                <div class="card-body p-6">
+                    <div class="prose prose-sm max-w-none">{{markdown .Project.BriefMarkdown}}</div>
+                </div>
             </div>
             {{else}}
-            <div class="brief-empty-state">
-                <div class="brief-empty-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-                </div>
-                <h3>No project brief yet</h3>
-                <p>Your project brief is the foundation for all work — it describes what you're building, who it's for, and the key requirements.</p>
-                <div class="brief-empty-hint">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                    <span>Open the <strong>Project Chat</strong> and describe your project — the AI will generate a detailed, structured brief that you can edit afterwards.</span>
+            <div class="card bg-base-200 border border-base-300">
+                <div class="card-body p-10 text-center gap-3">
+                    <div class="mx-auto text-base-content/40">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="1.5"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10 9 9 9 8 9"/>
+                        </svg>
+                    </div>
+                    <h3 class="font-semibold">No project brief yet</h3>
+                    <p class="text-sm text-base-content/70">
+                        Your project brief is the foundation for all work — it describes what you're building, who it's for, and the key requirements.
+                    </p>
+                    <div class="alert alert-info mt-2 text-sm">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                        </svg>
+                        <span>
+                            Open the <strong>Project Chat</strong> and describe your project — the AI will generate a detailed, structured brief that you can edit afterwards.
+                        </span>
+                    </div>
                 </div>
             </div>
             {{end}}
         </div>
         <div x-show="editing" x-cloak>
-            <div class="flex items-center justify-between mb-md">
-                <h2>Edit Brief</h2>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold">Edit Brief</h2>
             </div>
-            <form @submit="syncEditor()" hx-put="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/brief" hx-swap="none">
-                <div class="form-group">
-                    <textarea x-ref="briefTextarea" name="brief" rows="20" class="form-textarea font-mono">{{.Project.BriefMarkdown}}</textarea>
+            <form @submit="syncEditor()"
+                  hx-put="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/brief"
+                  hx-swap="none"
+                  class="flex flex-col gap-3">
+                <div class="form-control">
+                    <textarea x-ref="briefTextarea" name="brief" rows="20"
+                              class="textarea textarea-bordered font-mono text-sm">{{.Project.BriefMarkdown}}</textarea>
                 </div>
-                <div class="flex gap-sm">
+                <div class="flex gap-2">
                     <button type="submit" class="btn btn-primary">Save</button>
-                    <button type="button" @click="cancelEditing()" class="btn btn-secondary">Cancel</button>
+                    <button type="button" @click="cancelEditing()" class="btn btn-ghost">Cancel</button>
                 </div>
             </form>
         </div>
     </div>
 
     {{if .Revisions}}
-    <div class="mt-lg">
-        <h3 class="mb-md">Revision History</h3>
-        <div class="revision-list">
+    <div class="mt-8 flex flex-col gap-3">
+        <h3 class="text-base font-semibold">Revision History</h3>
+        <div class="flex flex-col gap-2">
             {{range .Revisions}}
-            <div class="revision-item">
-                <div class="revision-icon {{if eq .Action "edit"}}revision-icon-edit{{else}}revision-icon-reviewed{{end}}">
+            <div class="flex items-center gap-3 p-3 rounded-md bg-base-200 border border-base-300">
+                <div class="w-7 h-7 rounded-full flex items-center justify-center shrink-0
+                            {{if eq .Action "edit"}}bg-primary/10 text-primary{{else}}bg-success/10 text-success{{end}}">
                     {{if eq .Action "edit"}}
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                         fill="none" stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
                     {{else}}
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                         fill="none" stroke="currentColor" stroke-width="2"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
                     {{end}}
                 </div>
-                <div class="revision-content">
-                    <span class="revision-author">{{.UserName}}</span>
+                <div class="flex-1 text-sm min-w-0">
+                    <span class="font-medium">{{.UserName}}</span>
                     {{if eq .Action "edit"}}
-                    <span class="revision-action">edited the brief</span>
+                    <span class="text-base-content/70">edited the brief</span>
                     {{else}}
-                    <span class="revision-action">reviewed — no changes</span>
+                    <span class="text-base-content/70">reviewed — no changes</span>
                     {{end}}
-                    <span class="revision-time">{{formatDateTime .CreatedAt}}</span>
+                    <span class="text-xs text-base-content/50 ml-2">{{formatDateTime .CreatedAt}}</span>
                 </div>
             </div>
             {{end}}
@@ -148,8 +191,6 @@ function briefEditor() {
         }
     };
 }
-
 </script>
-
 {{end}}
 {{end}}

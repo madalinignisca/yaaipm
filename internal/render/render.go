@@ -184,6 +184,57 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				return colorGray
 			}
 		},
+		// statusBadgeClass maps a ticket status to a DaisyUI badge
+		// variant. Used by migrated templates (PR-4 onward) to get
+		// theme-aware badge colors. The older statusColor helper
+		// (above) returns hand-CSS color names and is retained for
+		// still-unmigrated templates until PR-6.
+		"statusBadgeClass": func(status string) string {
+			const (
+				ghost   = "badge-ghost"
+				warning = "badge-warning"
+				primary = "badge-primary"
+			)
+			switch status {
+			case "backlog":
+				return ghost
+			case "ready":
+				return "badge-info"
+			case "planning", "plan_review":
+				return primary
+			case "implementing":
+				return warning
+			case "testing":
+				return warning
+			case "review":
+				return primary
+			case "done":
+				return "badge-success"
+			case "cancelled":
+				return "badge-error"
+			default:
+				return ghost
+			}
+		},
+		"priorityBadgeClass": func(p string) string {
+			// Preserves a 4-level visual hierarchy (error > warning
+			// > info > ghost) matching the legacy red/orange/yellow/
+			// gray palette; both high+medium mapping to warning would
+			// collapse two adjacent levels into one badge color.
+			const ghost = "badge-ghost"
+			switch p {
+			case "critical":
+				return "badge-error"
+			case "high":
+				return "badge-warning"
+			case "medium":
+				return "badge-info"
+			case "low":
+				return ghost
+			default:
+				return ghost
+			}
+		},
 		"derefStr": func(s *string) string {
 			if s == nil {
 				return ""
