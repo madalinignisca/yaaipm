@@ -104,7 +104,8 @@
                                 <label class="label pb-1">
                                     <span class="label-text">Amount ({{$.Org.CurrencyCode}})</span>
                                 </label>
-                                <input type="text" name="amount"
+                                <input type="number" name="amount"
+                                       step="0.01" min="0"
                                        class="input input-bordered input-sm w-full"
                                        placeholder="12.50" required>
                             </div>

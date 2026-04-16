@@ -22,7 +22,10 @@
                         <label class="label pb-1" for="repo_url">
                             <span class="label-text">Repository URL</span>
                         </label>
-                        <input type="url" id="repo_url" name="repo_url"
+                        {{/* type="text", not "url" — SSH Git URLs
+                             (git@github.com:org/repo.git) don't match
+                             the browser's url validation scheme. */}}
+                        <input type="text" id="repo_url" name="repo_url"
                                class="input input-bordered w-full font-mono text-sm"
                                value="{{.Project.RepoURL}}"
                                placeholder="https://github.com/org/repo.git or git@github.com:org/repo.git">

@@ -217,17 +217,18 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 		},
 		"priorityBadgeClass": func(p string) string {
-			const (
-				ghost   = "badge-ghost"
-				warning = "badge-warning"
-			)
+			// Preserves a 4-level visual hierarchy (error > warning
+			// > info > ghost) matching the legacy red/orange/yellow/
+			// gray palette; both high+medium mapping to warning would
+			// collapse two adjacent levels into one badge color.
+			const ghost = "badge-ghost"
 			switch p {
 			case "critical":
 				return "badge-error"
 			case "high":
-				return warning
+				return "badge-warning"
 			case "medium":
-				return warning
+				return "badge-info"
 			case "low":
 				return ghost
 			default:
