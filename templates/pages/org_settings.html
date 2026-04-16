@@ -1,189 +1,255 @@
 {{define "content"}}
-<div class="container-medium">
-    <h1 class="mb-lg">{{.Org.Name}} — Settings</h1>
+<div class="max-w-4xl mx-auto p-6 flex flex-col gap-6">
+    <h1 class="text-2xl font-semibold tracking-tight">
+        {{.Org.Name}} — Settings
+    </h1>
 
     {{with .Data}}
 
     {{if or .IsStaff .CanManage}}
-    <div class="card mb-lg">
-        <h2 class="mb-md">Business Details</h2>
-        <p class="text-sm text-muted mb-md">Legal and contact information for this organization.</p>
-        <form method="POST" action="/orgs/{{.OrgSlug}}/settings/business">
-            {{csrfField}}
-            <div class="form-group mb-md">
-                <label class="form-label" for="business_name">Business Name</label>
-                <input type="text" id="business_name" name="business_name" class="form-input"
-                       value="{{$.Org.BusinessName}}" placeholder="Legal business name">
-            </div>
-            <div class="grid grid-2 mb-md">
-                <div class="form-group">
-                    <label class="form-label" for="vat_number">VAT Number</label>
-                    <input type="text" id="vat_number" name="vat_number" class="form-input"
-                           value="{{$.Org.VATNumber}}" placeholder="e.g. RO12345678">
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="registration_number">Registration Number</label>
-                    <input type="text" id="registration_number" name="registration_number" class="form-input"
-                           value="{{$.Org.RegistrationNumber}}" placeholder="e.g. J40/1234/2020">
-                </div>
-            </div>
-            <div class="form-group mb-md">
-                <label class="form-label" for="address_street">Street Address</label>
-                <input type="text" id="address_street" name="address_street" class="form-input"
-                       value="{{$.Org.AddressStreet}}" placeholder="Street name and number">
-            </div>
-            <div class="form-group mb-md">
-                <label class="form-label" for="address_extra">Address Line 2</label>
-                <span class="form-label-hint">Office number, floor, building, etc.</span>
-                <input type="text" id="address_extra" name="address_extra" class="form-input"
-                       value="{{$.Org.AddressExtra}}">
-            </div>
-            <div class="grid grid-2 mb-md">
-                <div class="form-group">
-                    <label class="form-label" for="postal_code">Postal Code</label>
-                    <input type="text" id="postal_code" name="postal_code" class="form-input"
-                           value="{{$.Org.PostalCode}}">
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="city">City</label>
-                    <input type="text" id="city" name="city" class="form-input"
-                           value="{{$.Org.City}}">
-                </div>
-            </div>
-            <div class="form-group mb-md">
-                <label class="form-label" for="country">Country</label>
-                <select id="country" name="country" class="form-select">
-                    {{$ctry := $.Org.Country}}
-                    <option value="" {{if eq $ctry ""}}selected{{end}}>— Select country —</option>
-                    <option value="AT" {{if eq $ctry "AT"}}selected{{end}}>Austria</option>
-                    <option value="BE" {{if eq $ctry "BE"}}selected{{end}}>Belgium</option>
-                    <option value="BG" {{if eq $ctry "BG"}}selected{{end}}>Bulgaria</option>
-                    <option value="HR" {{if eq $ctry "HR"}}selected{{end}}>Croatia</option>
-                    <option value="CY" {{if eq $ctry "CY"}}selected{{end}}>Cyprus</option>
-                    <option value="CZ" {{if eq $ctry "CZ"}}selected{{end}}>Czech Republic</option>
-                    <option value="DK" {{if eq $ctry "DK"}}selected{{end}}>Denmark</option>
-                    <option value="EE" {{if eq $ctry "EE"}}selected{{end}}>Estonia</option>
-                    <option value="FI" {{if eq $ctry "FI"}}selected{{end}}>Finland</option>
-                    <option value="FR" {{if eq $ctry "FR"}}selected{{end}}>France</option>
-                    <option value="DE" {{if eq $ctry "DE"}}selected{{end}}>Germany</option>
-                    <option value="GR" {{if eq $ctry "GR"}}selected{{end}}>Greece</option>
-                    <option value="HU" {{if eq $ctry "HU"}}selected{{end}}>Hungary</option>
-                    <option value="IE" {{if eq $ctry "IE"}}selected{{end}}>Ireland</option>
-                    <option value="IT" {{if eq $ctry "IT"}}selected{{end}}>Italy</option>
-                    <option value="LV" {{if eq $ctry "LV"}}selected{{end}}>Latvia</option>
-                    <option value="LT" {{if eq $ctry "LT"}}selected{{end}}>Lithuania</option>
-                    <option value="LU" {{if eq $ctry "LU"}}selected{{end}}>Luxembourg</option>
-                    <option value="MT" {{if eq $ctry "MT"}}selected{{end}}>Malta</option>
-                    <option value="MD" {{if eq $ctry "MD"}}selected{{end}}>Moldova</option>
-                    <option value="NL" {{if eq $ctry "NL"}}selected{{end}}>Netherlands</option>
-                    <option value="NO" {{if eq $ctry "NO"}}selected{{end}}>Norway</option>
-                    <option value="PL" {{if eq $ctry "PL"}}selected{{end}}>Poland</option>
-                    <option value="PT" {{if eq $ctry "PT"}}selected{{end}}>Portugal</option>
-                    <option value="RO" {{if eq $ctry "RO"}}selected{{end}}>Romania</option>
-                    <option value="SK" {{if eq $ctry "SK"}}selected{{end}}>Slovakia</option>
-                    <option value="SI" {{if eq $ctry "SI"}}selected{{end}}>Slovenia</option>
-                    <option value="ES" {{if eq $ctry "ES"}}selected{{end}}>Spain</option>
-                    <option value="SE" {{if eq $ctry "SE"}}selected{{end}}>Sweden</option>
-                    <option value="CH" {{if eq $ctry "CH"}}selected{{end}}>Switzerland</option>
-                    <option value="GB" {{if eq $ctry "GB"}}selected{{end}}>United Kingdom</option>
-                    <option value="US" {{if eq $ctry "US"}}selected{{end}}>United States</option>
-                    <option value="CA" {{if eq $ctry "CA"}}selected{{end}}>Canada</option>
-                    <option value="AU" {{if eq $ctry "AU"}}selected{{end}}>Australia</option>
-                    <option value="JP" {{if eq $ctry "JP"}}selected{{end}}>Japan</option>
-                </select>
-            </div>
-            <div class="form-group mb-md">
-                <label class="form-label" for="contact_phones">Contact Phone Numbers</label>
-                <span class="form-label-hint">Comma-separated if multiple</span>
-                <input type="text" id="contact_phones" name="contact_phones" class="form-input"
-                       value="{{$.Org.ContactPhones}}" placeholder="e.g. +40 21 123 4567, +40 722 123 456">
-            </div>
-            <div class="form-group mb-md">
-                <label class="form-label" for="contact_emails">Contact Email Addresses</label>
-                <span class="form-label-hint">Comma-separated if multiple</span>
-                <input type="text" id="contact_emails" name="contact_emails" class="form-input"
-                       value="{{$.Org.ContactEmails}}" placeholder="e.g. office@company.com, billing@company.com">
-            </div>
-            <button type="submit" class="btn btn-primary">Save Business Details</button>
-        </form>
-    </div>
-    {{end}}
-
-    {{if .IsStaff}}
-    <div class="card mb-lg">
-        <h2 class="mb-md">AI Cost Margin</h2>
-        <p class="text-sm text-muted mb-md">Percentage markup applied to AI usage costs for client billing.</p>
-        <form method="POST" action="/orgs/{{.OrgSlug}}/settings/margin" class="flex items-center gap-md">
-            {{csrfField}}
-            <input type="number" name="ai_margin_percent" value="{{$.Org.AIMarginPercent}}"
-                   min="0" max="500" class="form-input" style="width:6rem">
-            <span class="text-sm text-muted">%</span>
-            <button type="submit" class="btn btn-primary btn-sm">Save</button>
-        </form>
-    </div>
-    <div class="card mb-lg">
-        <h2 class="mb-md">Display Currency</h2>
-        <p class="text-sm text-muted mb-md">Currency used to display costs for this organization. Does not convert amounts.</p>
-        <form method="POST" action="/orgs/{{.OrgSlug}}/settings/currency" class="flex items-center gap-md">
-            {{csrfField}}
-            <select name="currency_code" class="form-select" style="width:auto">
-                {{$cur := $.Org.CurrencyCode}}
-                <option value="EUR" {{if eq $cur "EUR"}}selected{{end}}>EUR — €</option>
-                <option value="USD" {{if eq $cur "USD"}}selected{{end}}>USD — $</option>
-                <option value="GBP" {{if eq $cur "GBP"}}selected{{end}}>GBP — £</option>
-                <option value="CHF" {{if eq $cur "CHF"}}selected{{end}}>CHF</option>
-                <option value="SEK" {{if eq $cur "SEK"}}selected{{end}}>SEK</option>
-                <option value="NOK" {{if eq $cur "NOK"}}selected{{end}}>NOK</option>
-                <option value="DKK" {{if eq $cur "DKK"}}selected{{end}}>DKK</option>
-                <option value="PLN" {{if eq $cur "PLN"}}selected{{end}}>PLN</option>
-                <option value="CZK" {{if eq $cur "CZK"}}selected{{end}}>CZK</option>
-                <option value="RON" {{if eq $cur "RON"}}selected{{end}}>RON</option>
-                <option value="HUF" {{if eq $cur "HUF"}}selected{{end}}>HUF</option>
-                <option value="BGN" {{if eq $cur "BGN"}}selected{{end}}>BGN</option>
-                <option value="HRK" {{if eq $cur "HRK"}}selected{{end}}>HRK</option>
-                <option value="JPY" {{if eq $cur "JPY"}}selected{{end}}>JPY — ¥</option>
-                <option value="CAD" {{if eq $cur "CAD"}}selected{{end}}>CAD — $</option>
-                <option value="AUD" {{if eq $cur "AUD"}}selected{{end}}>AUD — $</option>
-            </select>
-            <button type="submit" class="btn btn-primary btn-sm">Save</button>
-        </form>
-    </div>
-    {{end}}
-
-    {{if .CanManage}}
-    <div class="card mb-lg">
-        <h2 class="mb-md">Invite Member</h2>
-        <form class="flex items-center gap-md"
-              hx-post="/orgs/{{.OrgSlug}}/invitations"
-              hx-target="#invite-result-area"
-              hx-swap="innerHTML"
-              hx-on::after-request="if(event.detail.successful) { this.reset(); htmx.trigger('#invitation-list', 'refresh'); }">
-            <div class="flex-1">
-                <input type="email" name="email" class="form-input" placeholder="user@example.com" required>
-            </div>
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-4">
             <div>
-                <select name="role" class="form-select" style="width:auto;">
-                    <option value="member">Member</option>
-                    <option value="admin">Admin</option>
-                </select>
+                <h2 class="text-lg font-semibold">Business Details</h2>
+                <p class="text-sm text-base-content/60 mt-1">
+                    Legal and contact information for this organization.
+                </p>
             </div>
-            <button type="submit" class="btn btn-primary btn-sm">Invite</button>
-        </form>
-        <div id="invite-result-area"></div>
-    </div>
-
-    <div class="card mb-lg">
-        <h2 class="mb-md">Pending Invitations</h2>
-        <div class="divide-y" id="invitation-list">
-            {{template "invitation_list.html" .}}
+            <form method="POST" action="/orgs/{{.OrgSlug}}/settings/business" class="flex flex-col gap-4">
+                {{csrfField}}
+                <div class="form-control">
+                    <label class="label pb-1" for="business_name">
+                        <span class="label-text">Business Name</span>
+                    </label>
+                    <input type="text" id="business_name" name="business_name"
+                           class="input input-bordered w-full"
+                           value="{{$.Org.BusinessName}}" placeholder="Legal business name">
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1" for="vat_number">
+                            <span class="label-text">VAT Number</span>
+                        </label>
+                        <input type="text" id="vat_number" name="vat_number"
+                               class="input input-bordered w-full"
+                               value="{{$.Org.VATNumber}}" placeholder="e.g. RO12345678">
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1" for="registration_number">
+                            <span class="label-text">Registration Number</span>
+                        </label>
+                        <input type="text" id="registration_number" name="registration_number"
+                               class="input input-bordered w-full"
+                               value="{{$.Org.RegistrationNumber}}" placeholder="e.g. J40/1234/2020">
+                    </div>
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="address_street">
+                        <span class="label-text">Street Address</span>
+                    </label>
+                    <input type="text" id="address_street" name="address_street"
+                           class="input input-bordered w-full"
+                           value="{{$.Org.AddressStreet}}" placeholder="Street name and number">
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="address_extra">
+                        <span class="label-text">Address Line 2</span>
+                        <span class="label-text-alt text-base-content/60">
+                            Office number, floor, building, etc.
+                        </span>
+                    </label>
+                    <input type="text" id="address_extra" name="address_extra"
+                           class="input input-bordered w-full"
+                           value="{{$.Org.AddressExtra}}">
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1" for="postal_code">
+                            <span class="label-text">Postal Code</span>
+                        </label>
+                        <input type="text" id="postal_code" name="postal_code"
+                               class="input input-bordered w-full"
+                               value="{{$.Org.PostalCode}}">
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1" for="city">
+                            <span class="label-text">City</span>
+                        </label>
+                        <input type="text" id="city" name="city"
+                               class="input input-bordered w-full"
+                               value="{{$.Org.City}}">
+                    </div>
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="country">
+                        <span class="label-text">Country</span>
+                    </label>
+                    <select id="country" name="country" class="select select-bordered w-full">
+                        {{$ctry := $.Org.Country}}
+                        <option value="" {{if eq $ctry ""}}selected{{end}}>— Select country —</option>
+                        <option value="AT" {{if eq $ctry "AT"}}selected{{end}}>Austria</option>
+                        <option value="BE" {{if eq $ctry "BE"}}selected{{end}}>Belgium</option>
+                        <option value="BG" {{if eq $ctry "BG"}}selected{{end}}>Bulgaria</option>
+                        <option value="HR" {{if eq $ctry "HR"}}selected{{end}}>Croatia</option>
+                        <option value="CY" {{if eq $ctry "CY"}}selected{{end}}>Cyprus</option>
+                        <option value="CZ" {{if eq $ctry "CZ"}}selected{{end}}>Czech Republic</option>
+                        <option value="DK" {{if eq $ctry "DK"}}selected{{end}}>Denmark</option>
+                        <option value="EE" {{if eq $ctry "EE"}}selected{{end}}>Estonia</option>
+                        <option value="FI" {{if eq $ctry "FI"}}selected{{end}}>Finland</option>
+                        <option value="FR" {{if eq $ctry "FR"}}selected{{end}}>France</option>
+                        <option value="DE" {{if eq $ctry "DE"}}selected{{end}}>Germany</option>
+                        <option value="GR" {{if eq $ctry "GR"}}selected{{end}}>Greece</option>
+                        <option value="HU" {{if eq $ctry "HU"}}selected{{end}}>Hungary</option>
+                        <option value="IE" {{if eq $ctry "IE"}}selected{{end}}>Ireland</option>
+                        <option value="IT" {{if eq $ctry "IT"}}selected{{end}}>Italy</option>
+                        <option value="LV" {{if eq $ctry "LV"}}selected{{end}}>Latvia</option>
+                        <option value="LT" {{if eq $ctry "LT"}}selected{{end}}>Lithuania</option>
+                        <option value="LU" {{if eq $ctry "LU"}}selected{{end}}>Luxembourg</option>
+                        <option value="MT" {{if eq $ctry "MT"}}selected{{end}}>Malta</option>
+                        <option value="MD" {{if eq $ctry "MD"}}selected{{end}}>Moldova</option>
+                        <option value="NL" {{if eq $ctry "NL"}}selected{{end}}>Netherlands</option>
+                        <option value="NO" {{if eq $ctry "NO"}}selected{{end}}>Norway</option>
+                        <option value="PL" {{if eq $ctry "PL"}}selected{{end}}>Poland</option>
+                        <option value="PT" {{if eq $ctry "PT"}}selected{{end}}>Portugal</option>
+                        <option value="RO" {{if eq $ctry "RO"}}selected{{end}}>Romania</option>
+                        <option value="SK" {{if eq $ctry "SK"}}selected{{end}}>Slovakia</option>
+                        <option value="SI" {{if eq $ctry "SI"}}selected{{end}}>Slovenia</option>
+                        <option value="ES" {{if eq $ctry "ES"}}selected{{end}}>Spain</option>
+                        <option value="SE" {{if eq $ctry "SE"}}selected{{end}}>Sweden</option>
+                        <option value="CH" {{if eq $ctry "CH"}}selected{{end}}>Switzerland</option>
+                        <option value="GB" {{if eq $ctry "GB"}}selected{{end}}>United Kingdom</option>
+                        <option value="US" {{if eq $ctry "US"}}selected{{end}}>United States</option>
+                        <option value="CA" {{if eq $ctry "CA"}}selected{{end}}>Canada</option>
+                        <option value="AU" {{if eq $ctry "AU"}}selected{{end}}>Australia</option>
+                        <option value="JP" {{if eq $ctry "JP"}}selected{{end}}>Japan</option>
+                    </select>
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="contact_phones">
+                        <span class="label-text">Contact Phone Numbers</span>
+                        <span class="label-text-alt text-base-content/60">Comma-separated if multiple</span>
+                    </label>
+                    <input type="text" id="contact_phones" name="contact_phones"
+                           class="input input-bordered w-full"
+                           value="{{$.Org.ContactPhones}}"
+                           placeholder="e.g. +40 21 123 4567, +40 722 123 456">
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1" for="contact_emails">
+                        <span class="label-text">Contact Email Addresses</span>
+                        <span class="label-text-alt text-base-content/60">Comma-separated if multiple</span>
+                    </label>
+                    <input type="text" id="contact_emails" name="contact_emails"
+                           class="input input-bordered w-full"
+                           value="{{$.Org.ContactEmails}}"
+                           placeholder="e.g. office@company.com, billing@company.com">
+                </div>
+                <div>
+                    <button type="submit" class="btn btn-primary">Save Business Details</button>
+                </div>
+            </form>
         </div>
     </div>
     {{end}}
 
-    <div class="card">
-        <h2 class="mb-md">Members</h2>
-        <div class="divide-y" id="member-list">
-            {{template "member_list.html" .}}
+    {{if .IsStaff}}
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-3">
+            <div>
+                <h2 class="text-lg font-semibold">AI Cost Margin</h2>
+                <p class="text-sm text-base-content/60 mt-1">
+                    Percentage markup applied to AI usage costs for client billing.
+                </p>
+            </div>
+            <form method="POST" action="/orgs/{{.OrgSlug}}/settings/margin"
+                  class="flex items-center gap-3">
+                {{csrfField}}
+                <input type="number" name="ai_margin_percent"
+                       value="{{$.Org.AIMarginPercent}}"
+                       min="0" max="500"
+                       class="input input-bordered input-sm w-24">
+                <span class="text-sm text-base-content/70">%</span>
+                <button type="submit" class="btn btn-primary btn-sm">Save</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-3">
+            <div>
+                <h2 class="text-lg font-semibold">Display Currency</h2>
+                <p class="text-sm text-base-content/60 mt-1">
+                    Currency used to display costs for this organization. Does not convert amounts.
+                </p>
+            </div>
+            <form method="POST" action="/orgs/{{.OrgSlug}}/settings/currency"
+                  class="flex items-center gap-3">
+                {{csrfField}}
+                <select name="currency_code" class="select select-bordered select-sm">
+                    {{$cur := $.Org.CurrencyCode}}
+                    <option value="EUR" {{if eq $cur "EUR"}}selected{{end}}>EUR — €</option>
+                    <option value="USD" {{if eq $cur "USD"}}selected{{end}}>USD — $</option>
+                    <option value="GBP" {{if eq $cur "GBP"}}selected{{end}}>GBP — £</option>
+                    <option value="CHF" {{if eq $cur "CHF"}}selected{{end}}>CHF</option>
+                    <option value="SEK" {{if eq $cur "SEK"}}selected{{end}}>SEK</option>
+                    <option value="NOK" {{if eq $cur "NOK"}}selected{{end}}>NOK</option>
+                    <option value="DKK" {{if eq $cur "DKK"}}selected{{end}}>DKK</option>
+                    <option value="PLN" {{if eq $cur "PLN"}}selected{{end}}>PLN</option>
+                    <option value="CZK" {{if eq $cur "CZK"}}selected{{end}}>CZK</option>
+                    <option value="RON" {{if eq $cur "RON"}}selected{{end}}>RON</option>
+                    <option value="HUF" {{if eq $cur "HUF"}}selected{{end}}>HUF</option>
+                    <option value="BGN" {{if eq $cur "BGN"}}selected{{end}}>BGN</option>
+                    <option value="HRK" {{if eq $cur "HRK"}}selected{{end}}>HRK</option>
+                    <option value="JPY" {{if eq $cur "JPY"}}selected{{end}}>JPY — ¥</option>
+                    <option value="CAD" {{if eq $cur "CAD"}}selected{{end}}>CAD — $</option>
+                    <option value="AUD" {{if eq $cur "AUD"}}selected{{end}}>AUD — $</option>
+                </select>
+                <button type="submit" class="btn btn-primary btn-sm">Save</button>
+            </form>
+        </div>
+    </div>
+    {{end}}
+
+    {{if .CanManage}}
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-3">
+            <h2 class="text-lg font-semibold">Invite Member</h2>
+            <form class="flex flex-wrap items-center gap-3"
+                  hx-post="/orgs/{{.OrgSlug}}/invitations"
+                  hx-target="#invite-result-area"
+                  hx-swap="innerHTML"
+                  hx-on::after-request="if(event.detail.successful) { this.reset(); htmx.trigger('#invitation-list', 'refresh'); }">
+                <div class="flex-1 min-w-52">
+                    <input type="email" name="email"
+                           class="input input-bordered w-full"
+                           placeholder="user@example.com" required>
+                </div>
+                <select name="role" class="select select-bordered">
+                    <option value="member">Member</option>
+                    <option value="admin">Admin</option>
+                </select>
+                <button type="submit" class="btn btn-primary btn-sm">Invite</button>
+            </form>
+            <div id="invite-result-area"></div>
+        </div>
+    </div>
+
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-3">
+            <h2 class="text-lg font-semibold">Pending Invitations</h2>
+            <div class="divide-y divide-base-300" id="invitation-list">
+                {{template "invitation_list.html" .}}
+            </div>
+        </div>
+    </div>
+    {{end}}
+
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-3">
+            <h2 class="text-lg font-semibold">Members</h2>
+            <div class="divide-y divide-base-300" id="member-list">
+                {{template "member_list.html" .}}
+            </div>
         </div>
     </div>
 
