@@ -10,8 +10,12 @@
         {{csrfField}}
         <div>
             <label for="code" class="sr-only">Verification code</label>
-            <input id="code" name="code" type="text" inputmode="numeric"
+            {{/* inputmode="text" — the pattern allows alphanumerics so recovery
+                 codes (ABCD-1234 format) work on mobile keyboards. A numeric
+                 inputmode would block mobile users from entering them. */}}
+            <input id="code" name="code" type="text" inputmode="text"
                    pattern="[0-9A-Z]{6,8}" maxlength="8" required autofocus
+                   autocapitalize="characters"
                    class="input input-bordered w-full text-center text-xl tracking-[0.3em] font-mono"
                    placeholder="000000" autocomplete="one-time-code">
         </div>
