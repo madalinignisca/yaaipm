@@ -3,8 +3,14 @@
 ## sandbox with just bash + curl, downloading binaries on first build.
 ## Output is copied into the Go build stage so the manifest hashing
 ## step sees tw.css alongside the hand-written assets.
-FROM alpine:3.21 AS css-builder
-RUN apk add --no-cache bash curl
+## debian:stable-slim rather than alpine because the Bun-compiled
+## tailwindcss-linux-x64 binary expects glibc. Alpine's musl + even
+## with libc6-compat produces subtle arg-parsing breakage. Image is
+## throwaway (output is just tw.css), so the extra ~50MB is fine.
+FROM debian:stable-slim AS css-builder
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends bash curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY scripts/css.sh ./scripts/
 COPY static/css/tw-input.css ./static/css/
