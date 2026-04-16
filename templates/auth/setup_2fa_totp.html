@@ -1,29 +1,37 @@
 {{define "content"}}
-<div class="container-narrow">
-    <h1 class="mb-sm">Set Up Authenticator App</h1>
-    <p class="text-muted mb-lg">Scan this QR code with your authenticator app, then enter the 6-digit code to verify.</p>
+<div class="flex flex-col gap-4">
+    <h1 class="text-2xl font-semibold tracking-tight">Set Up Authenticator App</h1>
+    <p class="text-sm text-base-content/70">
+        Scan this QR code with your authenticator app, then enter the 6-digit code to verify.
+    </p>
 
     {{with .Data}}
     {{if index . "QRCode"}}
-    <div class="qr-container">
-        <img src="data:image/png;base64,{{index . "QRCode"}}" alt="TOTP QR Code">
+    <div class="flex justify-center py-3">
+        <img src="data:image/png;base64,{{index . "QRCode"}}"
+             alt="TOTP QR Code"
+             class="rounded-md border border-base-300 p-2 bg-base-100 max-w-48">
     </div>
     {{end}}
 
     {{if index . "ManualKey"}}
-    <div class="manual-key">
-        <p class="manual-key-label">Manual entry key:</p>
-        <code class="select-all">{{index . "ManualKey"}}</code>
+    <div class="bg-base-200 rounded-md p-3 text-center">
+        <p class="text-xs text-base-content/60 mb-1">Manual entry key:</p>
+        <code class="select-all text-xs font-mono break-all">{{index . "ManualKey"}}</code>
     </div>
     {{end}}
     {{end}}
 
-    <form method="POST" action="/setup-2fa/totp/verify" class="stack-lg">
+    <form method="POST" action="/setup-2fa/totp/verify" class="flex flex-col gap-4 mt-2">
         {{csrfField}}
-        <div class="form-group">
-            <label for="code" class="form-label">Verification code</label>
-            <input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autofocus
-                   class="form-input form-input-code" placeholder="000000" autocomplete="one-time-code">
+        <div class="form-control">
+            <label for="code" class="label pb-1">
+                <span class="label-text">Verification code</span>
+            </label>
+            <input id="code" name="code" type="text" inputmode="numeric"
+                   pattern="[0-9]{6}" maxlength="6" required autofocus
+                   class="input input-bordered w-full text-center text-xl tracking-[0.3em] font-mono"
+                   placeholder="000000" autocomplete="one-time-code">
         </div>
         <button type="submit" class="btn btn-primary btn-block">Verify and continue</button>
     </form>
