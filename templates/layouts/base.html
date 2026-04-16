@@ -1,33 +1,43 @@
 {{define "base"}}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="forgedesk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}} — ForgeDesk</title>
+    {{/* Legacy hand-written app.css loaded first — pages not yet
+         migrated to Tailwind still depend on it. Removed in PR-6
+         when every template has been migrated. */}}
     <link rel="stylesheet" href="{{asset "css/app.css"}}">
+    <link rel="stylesheet" href="{{asset "css/tw.css"}}">
     {{highlightCSS}}
     <script src="{{asset "js/bundle.js"}}" defer></script>
     <meta name="htmx-config" content='{"historyCacheSize":0}'>
     {{if .CSRFToken}}<meta name="csrf-token" content="{{.CSRFToken}}">{{end}}
     {{block "page_head" .}}{{end}}
 </head>
-<body hx-boost="true">
+<body hx-boost="true" class="min-h-screen bg-base-100 text-base-content antialiased">
     {{if .User}}
-    <div class="app-shell">
-        <aside class="sidebar">
-            <div class="sidebar-brand">
-                <a href="/">ForgeDesk</a>
+    <div class="min-h-screen flex">
+        {{/* Sidebar: scoped to DaisyUI's `business` theme regardless of
+             the content-area theme, producing the Linear/Supabase dark-
+             chrome + light-content split. */}}
+        <aside class="w-60 shrink-0 flex flex-col border-r border-base-300"
+               data-theme="business">
+            <div class="p-4 border-b border-base-300">
+                <a href="/" class="text-lg font-semibold tracking-tight">ForgeDesk</a>
             </div>
 
-            <nav class="sidebar-nav">
+            <nav class="flex-1 overflow-y-auto px-3 py-4 flex flex-col gap-1 text-sm">
                 {{if .Orgs}}
                 {{if and .User (or (eq .User.Role "superadmin") (eq .User.Role "staff"))}}
                 {{if gt (len .Orgs) 1}}
-                <div class="sidebar-org-selector">
+                <div class="mb-3">
                     <form method="POST" action="/switch-org" hx-boost="false">
                         {{csrfField}}
-                        <select name="org_id" class="sidebar-org-select" onchange="this.form.submit()">
+                        <select name="org_id"
+                                class="select select-sm select-bordered w-full bg-base-200"
+                                onchange="this.form.submit()">
                             <option value="">Select organization...</option>
                             {{range .Orgs}}
                             <option value="{{.ID}}" {{if and $.Org (eq $.Org.ID .ID)}}selected{{end}}>{{.Name}}</option>
@@ -37,86 +47,102 @@
                 </div>
                 {{else}}
                 {{if .Org}}
-                <div class="sidebar-org-selector">
-                    <div class="sidebar-org-name">{{.Org.Name}}</div>
+                <div class="mb-3 px-2 py-1 text-xs uppercase tracking-wider text-base-content/60 font-medium">
+                    {{.Org.Name}}
                 </div>
                 {{end}}
                 {{end}}
                 {{else}}
-                {{/* Client user: show org name if selected */}}
                 {{if .Org}}
-                <div class="sidebar-org-selector">
-                    <div class="sidebar-org-name">{{.Org.Name}}</div>
+                <div class="mb-3 px-2 py-1 text-xs uppercase tracking-wider text-base-content/60 font-medium">
+                    {{.Org.Name}}
                 </div>
                 {{end}}
                 {{end}}
                 {{end}}
 
                 {{if and .Org .Projects}}
-                <div class="sidebar-section-label">Projects</div>
+                <div class="px-2 pt-2 text-xs uppercase tracking-wider text-base-content/50 font-medium">Projects</div>
                 {{range .Projects}}
                 <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/brief"
-                   class="sidebar-link {{if and $.ActiveProject (eq $.ActiveProject.ID .ID)}}active{{end}}">
+                   class="px-2 py-1.5 rounded-md hover:bg-base-200 transition-colors
+                          {{if and $.ActiveProject (eq $.ActiveProject.ID .ID)}}bg-base-200 font-medium{{end}}">
                     {{.Name}}
                 </a>
                 {{if and $.ActiveProject (eq $.ActiveProject.ID .ID)}}
-                <div class="sidebar-sub-links">
+                <div class="flex flex-col gap-0.5 ml-3 mb-2 border-l border-base-300 pl-2">
                     <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/brief"
-                       class="sidebar-sub-link {{if eq $.ActiveTab "brief"}}active{{end}}">Brief</a>
+                       class="px-2 py-1 text-xs rounded hover:bg-base-200 {{if eq $.ActiveTab "brief"}}text-primary font-medium{{end}}">Brief</a>
                     <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/features"
-                       class="sidebar-sub-link {{if eq $.ActiveTab "features"}}active{{end}}">Features</a>
+                       class="px-2 py-1 text-xs rounded hover:bg-base-200 {{if eq $.ActiveTab "features"}}text-primary font-medium{{end}}">Features</a>
                     <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/bugs"
-                       class="sidebar-sub-link {{if eq $.ActiveTab "bugs"}}active{{end}}">Bugs</a>
+                       class="px-2 py-1 text-xs rounded hover:bg-base-200 {{if eq $.ActiveTab "bugs"}}text-primary font-medium{{end}}">Bugs</a>
                     <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/gantt"
-                       class="sidebar-sub-link {{if eq $.ActiveTab "gantt"}}active{{end}}">Timeline</a>
+                       class="px-2 py-1 text-xs rounded hover:bg-base-200 {{if eq $.ActiveTab "gantt"}}text-primary font-medium{{end}}">Timeline</a>
                     <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/costs"
-                       class="sidebar-sub-link {{if eq $.ActiveTab "costs"}}active{{end}}">Costs</a>
+                       class="px-2 py-1 text-xs rounded hover:bg-base-200 {{if eq $.ActiveTab "costs"}}text-primary font-medium{{end}}">Costs</a>
                     {{if or (eq $.User.Role "superadmin") (eq $.User.Role "staff")}}
                     <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/archived"
-                       class="sidebar-sub-link {{if eq $.ActiveTab "archived"}}active{{end}}">Archived</a>
+                       class="px-2 py-1 text-xs rounded hover:bg-base-200 {{if eq $.ActiveTab "archived"}}text-primary font-medium{{end}}">Archived</a>
                     <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/settings"
-                       class="sidebar-sub-link {{if eq $.ActiveTab "settings"}}active{{end}}">Settings</a>
+                       class="px-2 py-1 text-xs rounded hover:bg-base-200 {{if eq $.ActiveTab "settings"}}text-primary font-medium{{end}}">Settings</a>
                     {{end}}
                 </div>
                 {{end}}
                 {{end}}
                 {{else if .Org}}
-                <div class="sidebar-section-label">Projects</div>
-                <div class="sidebar-empty-hint">No projects yet</div>
+                <div class="px-2 pt-2 text-xs uppercase tracking-wider text-base-content/50 font-medium">Projects</div>
+                <div class="px-2 py-1 text-xs text-base-content/60">No projects yet</div>
                 {{end}}
 
                 {{if .Org}}
-                <div class="sidebar-section-label" style="margin-top:1rem">Organization</div>
-                <a href="/orgs/{{.Org.Slug}}/costs" class="sidebar-link {{if hasPrefix .CurrentPath (printf "/orgs/%s/costs" .Org.Slug)}}active{{end}}">Costs</a>
-                <a href="/orgs/{{.Org.Slug}}/settings" class="sidebar-link {{if hasPrefix .CurrentPath (printf "/orgs/%s/settings" .Org.Slug)}}active{{end}}">Settings</a>
+                <div class="px-2 pt-4 text-xs uppercase tracking-wider text-base-content/50 font-medium">Organization</div>
+                <a href="/orgs/{{.Org.Slug}}/costs"
+                   class="px-2 py-1.5 rounded-md hover:bg-base-200 {{if hasPrefix .CurrentPath (printf "/orgs/%s/costs" .Org.Slug)}}bg-base-200 font-medium{{end}}">Costs</a>
+                <a href="/orgs/{{.Org.Slug}}/settings"
+                   class="px-2 py-1.5 rounded-md hover:bg-base-200 {{if hasPrefix .CurrentPath (printf "/orgs/%s/settings" .Org.Slug)}}bg-base-200 font-medium{{end}}">Settings</a>
                 {{end}}
 
                 {{if eq .User.Role "superadmin"}}
-                <div class="sidebar-section-label" style="margin-top:1rem">Admin</div>
-                <a href="/admin" class="sidebar-link {{if hasPrefix .CurrentPath "/admin"}}active{{end}}">Admin Panel</a>
+                <div class="px-2 pt-4 text-xs uppercase tracking-wider text-base-content/50 font-medium">Admin</div>
+                <a href="/admin"
+                   class="px-2 py-1.5 rounded-md hover:bg-base-200 {{if hasPrefix .CurrentPath "/admin"}}bg-base-200 font-medium{{end}}">Admin Panel</a>
                 {{end}}
             </nav>
 
-            <div class="sidebar-footer" x-data="{ open: false }">
-                <button @click="open = !open" class="user-trigger">
-                    <span class="user-avatar">{{slice .User.Name 0 1}}</span>
-                    <span class="truncate">{{.User.Name}}</span>
+            <div class="p-3 border-t border-base-300 relative" x-data="{ open: false }">
+                <button @click="open = !open"
+                        class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-base-200 transition-colors">
+                    <span class="w-7 h-7 rounded-full bg-primary text-primary-content
+                                 flex items-center justify-center text-xs font-semibold shrink-0">
+                        {{if .User.Name}}{{slice .User.Name 0 1}}{{else}}?{{end}}
+                    </span>
+                    <span class="truncate text-sm">{{.User.Name}}</span>
                 </button>
-                <div x-show="open" @click.outside="open = false" x-transition class="user-menu">
-                    <a href="/account/settings">Account Settings</a>
+                <div x-show="open" @click.outside="open = false" x-transition x-cloak
+                     class="absolute bottom-full left-3 right-3 mb-2 bg-base-100 border border-base-300
+                            rounded-md shadow-lg py-1 z-50">
+                    <a href="/account/settings"
+                       class="block px-3 py-2 text-sm hover:bg-base-200 text-base-content">Account Settings</a>
                     <form method="POST" action="/logout">
                         {{csrfField}}
-                        <button type="submit">Sign Out</button>
+                        <button type="submit"
+                                class="w-full text-left px-3 py-2 text-sm hover:bg-base-200 text-base-content">
+                            Sign Out
+                        </button>
                     </form>
                 </div>
             </div>
         </aside>
 
-        <main class="main-area">
+        <main class="flex-1 min-w-0 overflow-x-hidden">
             {{if .Flash}}
-            <div class="main-content" style="padding-bottom:0">
-                <div class="flash {{if eq .FlashType "error"}}flash-error{{else if eq .FlashType "warning"}}flash-warning{{else}}flash-success{{end}}">
-                    {{.Flash}}
+            <div class="px-6 pt-6">
+                <div class="alert
+                            {{if eq .FlashType "error"}}alert-error
+                            {{else if eq .FlashType "warning"}}alert-warning
+                            {{else}}alert-success{{end}}">
+                    <span>{{.Flash}}</span>
                 </div>
             </div>
             {{end}}
@@ -130,57 +156,91 @@
         {{$av := asset "img/simona-avatar.png"}}
         <div id="assistant-project-ctx" data-project-id="{{.ProjectID}}"></div>
         <div id="assistant-widget" hx-preserve="true" x-data="chatWidget()" x-init="init()" x-cloak
-             data-user-id="{{.User.ID}}" data-user-name="{{.User.Name}}">
+             data-user-id="{{.User.ID}}" data-user-name="{{.User.Name}}"
+             class="fixed bottom-6 right-6 z-40">
             <!-- FAB -->
-            <button @click="toggle()" class="chat-fab" :aria-label="open ? 'Close assistant' : 'Open assistant'">
-                <img x-show="!open" src="{{$av}}" alt="Simona" class="chat-fab-avatar">
-                <svg x-show="open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                <span x-show="!open && unreadCount > 0" x-text="unreadCount > 99 ? '99+' : unreadCount" x-transition class="chat-badge"></span>
+            <button @click="toggle()"
+                    :aria-label="open ? 'Close assistant' : 'Open assistant'"
+                    class="relative w-14 h-14 rounded-full bg-primary text-primary-content shadow-lg
+                           hover:scale-105 active:scale-95 transition-transform
+                           flex items-center justify-center">
+                <img x-show="!open" src="{{$av}}" alt="Simona" class="w-10 h-10 rounded-full object-cover">
+                <svg x-show="open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                     class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+                <span x-show="!open && unreadCount > 0" x-text="unreadCount > 99 ? '99+' : unreadCount"
+                      x-transition
+                      class="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-error
+                             text-error-content text-xs font-semibold
+                             flex items-center justify-center"></span>
             </button>
 
             <!-- Chat Panel -->
-            <div x-show="open" x-transition.opacity class="chat-panel" :class="{ 'chat-panel-enlarged': enlarged }">
-                <div class="chat-header">
-                    <div class="chat-header-identity">
-                        <img src="{{$av}}" alt="Simona" class="chat-header-avatar">
-                        <span class="chat-header-title">Simona</span>
+            <div x-show="open" x-transition.opacity x-cloak
+                 :class="enlarged ? 'w-[min(90vw,880px)] h-[min(85vh,720px)]' : 'w-96 h-[32rem]'"
+                 class="absolute bottom-16 right-0 bg-base-100 border border-base-300 rounded-lg shadow-xl
+                        flex flex-col overflow-hidden">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-base-300 bg-base-200">
+                    <div class="flex items-center gap-2">
+                        <img src="{{$av}}" alt="Simona" class="w-7 h-7 rounded-full object-cover">
+                        <span class="font-semibold text-sm">Simona</span>
                     </div>
-                    <div class="chat-header-actions">
-                        <button @click="toggleEnlarge()" class="chat-header-btn" :title="enlarged ? 'Shrink' : 'Enlarge'">
-                            <svg x-show="!enlarged" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-                            <svg x-show="enlarged" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                    <div class="flex items-center gap-1">
+                        <button @click="toggleEnlarge()"
+                                class="btn btn-ghost btn-xs btn-square"
+                                :title="enlarged ? 'Shrink' : 'Enlarge'">
+                            <svg x-show="!enlarged" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                                 class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
+                                <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+                            </svg>
+                            <svg x-show="enlarged" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                                 class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
+                                <line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>
+                            </svg>
                         </button>
-                        <button @click="toggle()" class="chat-header-btn" title="Close">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        <button @click="toggle()" class="btn btn-ghost btn-xs btn-square" title="Close">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                                 class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
                         </button>
                     </div>
                 </div>
 
-                <div class="chat-messages" x-ref="chatMessages">
+                <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-3" x-ref="chatMessages">
                     <template x-if="messages.length === 0 && !streamingText && !loading">
-                        <div class="chat-empty">
-                            <img src="{{$av}}" alt="Simona" class="chat-empty-avatar">
+                        <div class="flex flex-col items-center text-center text-sm text-base-content/60 py-8 gap-2">
+                            <img src="{{$av}}" alt="Simona" class="w-16 h-16 rounded-full object-cover">
                             <p>Hi, I'm <strong>Simona</strong>. Ask me anything about this project.</p>
                         </div>
                     </template>
                     <template x-for="(msg, i) in messages" :key="msg.id || i">
                         <div>
                             <template x-if="msg.role === 'assistant'">
-                                <div class="chat-msg-row chat-msg-row-assistant">
-                                    <img src="{{$av}}" alt="Simona" class="chat-msg-avatar">
-                                    <div class="chat-msg chat-msg-assistant">
+                                <div class="flex gap-2">
+                                    <img src="{{$av}}" alt="Simona" class="w-7 h-7 rounded-full object-cover shrink-0">
+                                    <div class="bg-base-200 rounded-lg px-3 py-2 text-sm max-w-[85%]">
                                         <div x-html="renderMd(msg.content, msg.role)"></div>
                                     </div>
                                 </div>
                             </template>
                             <template x-if="msg.role === 'user'">
-                                <div class="chat-msg chat-msg-user"
+                                <div class="rounded-lg px-3 py-2 text-sm max-w-[85%] ml-auto
+                                            bg-primary text-primary-content"
                                      :class="{
-                                        'chat-msg-self': msg.user_id === _currentUserID,
-                                        'chat-msg-other': msg.user_id && msg.user_id !== _currentUserID
+                                        'ml-auto': msg.user_id === _currentUserID || !msg.user_id,
+                                        'mr-auto bg-base-200 text-base-content':
+                                            msg.user_id && msg.user_id !== _currentUserID
                                      }">
                                     <template x-if="msg.user_name">
-                                        <div class="chat-msg-author" x-text="msg.user_name"></div>
+                                        <div class="text-xs font-medium opacity-70 mb-0.5" x-text="msg.user_name"></div>
                                     </template>
                                     <div x-html="renderMd(msg.content, msg.role)"></div>
                                 </div>
@@ -188,25 +248,24 @@
                         </div>
                     </template>
                     <template x-if="streamingText">
-                        <div class="chat-msg-row chat-msg-row-assistant">
-                            <img src="{{$av}}" alt="Simona" class="chat-msg-avatar">
-                            <div class="chat-msg chat-msg-streaming" x-html="renderMd(streamingText, 'assistant')"></div>
+                        <div class="flex gap-2">
+                            <img src="{{$av}}" alt="Simona" class="w-7 h-7 rounded-full object-cover shrink-0">
+                            <div class="bg-base-200 rounded-lg px-3 py-2 text-sm max-w-[85%]"
+                                 x-html="renderMd(streamingText, 'assistant')"></div>
                         </div>
                     </template>
                     <template x-if="loading && !streamingText">
-                        <div class="chat-msg-row chat-msg-row-assistant">
-                            <img src="{{$av}}" alt="Simona" class="chat-msg-avatar">
-                            <div class="chat-typing">
-                                <div class="chat-typing-dot"></div>
-                                <div class="chat-typing-dot"></div>
-                                <div class="chat-typing-dot"></div>
+                        <div class="flex gap-2">
+                            <img src="{{$av}}" alt="Simona" class="w-7 h-7 rounded-full object-cover shrink-0">
+                            <div class="flex items-center gap-1 bg-base-200 rounded-lg px-3 py-2">
+                                <span class="loading loading-dots loading-xs text-base-content/50"></span>
                             </div>
                         </div>
                     </template>
                 </div>
 
-                <div class="chat-input-area">
-                    <div class="chat-input-wrap">
+                <div class="border-t border-base-300 p-3">
+                    <div class="flex gap-2 items-end">
                         <textarea
                             x-ref="chatInput"
                             x-model="input"
@@ -214,9 +273,17 @@
                             placeholder="Ask something..."
                             rows="1"
                             :disabled="loading"
+                            class="textarea textarea-bordered textarea-sm flex-1 resize-none max-h-32"
                         ></textarea>
-                        <button @click="send()" class="chat-send-btn" :disabled="loading || !input.trim()">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                        <button @click="send()"
+                                class="btn btn-primary btn-sm btn-square"
+                                :disabled="loading || !input.trim()">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                                 class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="22" y1="2" x2="11" y2="13"/>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                            </svg>
                         </button>
                     </div>
                 </div>
@@ -225,14 +292,17 @@
         {{end}}
     </div>
     {{else}}
-    <div class="auth-page">
-        <div class="auth-card">
-            {{if .Flash}}
-            <div class="flash {{if eq .FlashType "error"}}flash-error{{else}}flash-success{{end}}">
-                {{.Flash}}
+    <div class="min-h-screen flex items-center justify-center p-4 bg-base-200">
+        <div class="card bg-base-100 shadow-lg w-full max-w-md">
+            <div class="card-body">
+                {{if .Flash}}
+                <div class="alert alert-sm
+                            {{if eq .FlashType "error"}}alert-error{{else}}alert-success{{end}}">
+                    <span>{{.Flash}}</span>
+                </div>
+                {{end}}
+                {{template "content" .}}
             </div>
-            {{end}}
-            {{template "content" .}}
         </div>
     </div>
     {{end}}

@@ -3,16 +3,17 @@
 {{$orgSlug := .OrgSlug}}
 
 {{range .Members}}
-<div class="member-row" id="member-{{.User.ID}}">
-    <div class="member-info">
-        <p>{{.User.Name}}</p>
-        <p>{{.User.Email}}</p>
+<div class="flex items-center justify-between py-3 px-4 border-b border-base-300 last:border-b-0"
+     id="member-{{.User.ID}}">
+    <div class="min-w-0">
+        <p class="font-medium text-sm truncate">{{.User.Name}}</p>
+        <p class="text-xs text-base-content/60 truncate">{{.User.Email}}</p>
     </div>
-    <div class="flex items-center gap-md">
+    <div class="flex items-center gap-3 shrink-0">
         {{if $canManage}}
             {{if ne .User.ID $currentUserID}}
-                <form class="flex items-center gap-xs">
-                    <select class="form-select" style="width:auto; padding:.325rem .5rem; font-size:var(--text-xs);"
+                <form class="flex items-center">
+                    <select class="select select-bordered select-xs"
                             name="role"
                             hx-patch="/orgs/{{$orgSlug}}/members/{{.User.ID}}/role"
                             hx-target="#member-list"
@@ -23,18 +24,17 @@
                     </select>
                 </form>
             {{else}}
-                <span class="badge badge-pill badge-gray">{{.Membership.Role}}</span>
+                <span class="badge badge-ghost badge-sm">{{.Membership.Role}}</span>
             {{end}}
         {{else}}
-            <span class="badge badge-pill badge-gray">{{.Membership.Role}}</span>
+            <span class="badge badge-ghost badge-sm">{{.Membership.Role}}</span>
         {{end}}
 
-        <span class="badge badge-pill badge-indigo">{{.User.Role}}</span>
+        <span class="badge badge-primary badge-sm">{{.User.Role}}</span>
 
         {{if $canManage}}
             {{if ne .User.ID $currentUserID}}
-                <button class="btn btn-ghost btn-sm"
-                        style="color:var(--red-600);"
+                <button class="btn btn-ghost btn-xs text-error"
                         hx-delete="/orgs/{{$orgSlug}}/members/{{.User.ID}}"
                         hx-target="#member-list"
                         hx-swap="innerHTML"
@@ -46,7 +46,7 @@
     </div>
 </div>
 {{else}}
-<div class="empty-state" style="padding:1.5rem;">
-    <p>No members yet</p>
+<div class="py-6 px-4 text-center text-sm text-base-content/60">
+    No members yet
 </div>
 {{end}}

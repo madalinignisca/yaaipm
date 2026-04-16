@@ -1,6 +1,11 @@
-<div x-show="open" x-transition class="modal-overlay" aria-modal="true">
-    <div class="modal-backdrop" @click="open = false"></div>
-    <div class="modal-card">
+{{/* Generic modal overlay. Consumers wrap their trigger with Alpine
+     x-data="{ open: false }" and override the modal_content block. */}}
+<div x-show="open" x-transition x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center p-4"
+     aria-modal="true" role="dialog">
+    <div class="absolute inset-0 bg-black/50" @click="open = false"></div>
+    <div class="relative bg-base-100 border border-base-300 rounded-lg shadow-xl
+                w-full max-w-lg max-h-[85vh] overflow-y-auto p-6">
         {{block "modal_content" .}}{{end}}
     </div>
 </div>
