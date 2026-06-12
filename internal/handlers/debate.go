@@ -221,8 +221,15 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var view DebateView
+	var chip EffortChipView
+	if deb != nil {
+		view = buildDebateView(deb, rounds, auth.IsStaffOrAbove(dctx.user.Role))
+		chip = buildEffortChipView(deb, rounds, dctx.ticket.ID, time.Now(), h.cfg.StaleReservationAge)
+	}
+
 	_ = h.engine.Render(w, r, "debate.html", render.PageData{
-		Title:         "Debate — " + dctx.ticket.Title,
+		Title:         "Refine — " + dctx.ticket.Title,
 		User:          dctx.user,
 		Org:           dctx.org,
 		Orgs:          middleware.GetOrgs(r),
@@ -236,6 +243,8 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 			"User":      dctx.user,
 			"Debate":    deb,
 			"Rounds":    rounds,
+			"View":      view,
+			"Chip":      chip,
 			"Providers": h.providerNames(),
 			"IsStaff":   auth.IsStaffOrAbove(dctx.user.Role),
 		},

@@ -1,74 +1,75 @@
 {{define "content"}}
 {{with .Data}}
-<div class="max-w-6xl mx-auto p-6" data-theme="forgedesk">
-  <header class="flex items-center justify-between mb-6 pb-4 border-b border-base-300">
+<div class="max-w-6xl mx-auto p-6" id="debate-workspace" data-theme="forgedesk">
+  <header class="flex items-center justify-between mb-6 pb-4 border-b border-base-300 flex-wrap gap-3">
     <div class="flex flex-col gap-1">
       <a href="/tickets/{{.Ticket.ID}}"
          class="text-sm text-base-content/60 hover:text-base-content inline-flex items-center gap-1 w-fit">
         <span aria-hidden="true">←</span> Back to ticket
       </a>
-      <h2 class="text-2xl font-semibold tracking-tight">
-        Debate — {{.Ticket.Title}}
-      </h2>
+      <h2 class="text-2xl font-semibold tracking-tight">Refine description — {{.Ticket.Title}}</h2>
     </div>
     {{if .Debate}}
-      <form method="POST"
-            action="/tickets/{{.Ticket.ID}}/debate/abandon"
-            hx-confirm="Abandon this debate? The ticket description will not change and the debate will be archived.">
-        {{csrfField}}
-        <button type="submit" class="btn btn-error btn-outline btn-sm">Abandon</button>
-      </form>
+      <div class="flex items-center gap-3 flex-wrap">
+        {{template "debate_effort_chip.html" .Chip}}
+        <form hx-post="/tickets/{{.Ticket.ID}}/debate/approve"
+              hx-confirm="Save this text to the ticket and finish refining?">
+          {{csrfField}}
+          {{if .View.Pending}}
+          <button type="submit" class="btn btn-success btn-sm" data-testid="debate-approve"
+                  title="Saves this text to the ticket and finishes refining"
+                  disabled>
+            ✓ Use this version
+          </button>
+          {{else}}
+          <button type="submit" class="btn btn-success btn-sm" data-testid="debate-approve"
+                  title="Saves this text to the ticket and finishes refining">
+            ✓ Use this version
+          </button>
+          {{end}}
+        </form>
+        {{if .View.Pending}}<span class="text-xs text-base-content/50">Accept or dismiss the pending suggestion first</span>{{end}}
+        <form hx-post="/tickets/{{.Ticket.ID}}/debate/abandon"
+              hx-confirm="Stop refining? The ticket description stays unchanged and this session is archived.">
+          {{csrfField}}
+          <button type="submit" class="btn btn-ghost btn-sm text-base-content/60" data-testid="debate-abandon">
+            Stop refining
+          </button>
+        </form>
+      </div>
     {{end}}
   </header>
 
   {{if .Debate}}
     <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
-      <div class="flex flex-col gap-4 min-w-0" id="rounds">
-        {{template "debate_seed.html" dict
-            "Debate" .Debate
-            "RoundsExist" (gt (len .Rounds) 0)}}
-
-        {{$inReview := false}}
-        {{range .Rounds}}
-          {{if eq .Status "in_review"}}{{$inReview = true}}{{end}}
-          {{template "debate_round.html" dict
-              "Round" .
-              "TicketID" $.Data.Ticket.ID}}
-        {{end}}
-
-        {{if not $inReview}}
-          {{template "debate_next_round.html" dict
-              "Debate" .Debate
-              "Providers" .Providers
-              "TicketID" .Ticket.ID}}
-        {{end}}
-
-        <div id="thinking" class="htmx-indicator inline-flex items-center gap-2 text-sm text-base-content/70"
-             aria-live="polite">
-          <span class="loading loading-spinner loading-sm text-primary"></span>
-          <span><span id="thinking-provider">The AI</span> is refining…</span>
+      <div class="flex flex-col gap-4 min-w-0">
+        {{template "debate_document.html" dict "OOB" false "TicketID" .Ticket.ID "View" .View "Debate" .Debate "Viewing" nil}}
+        <div id="debate-flash"></div>
+        <div id="debate-stage">
+          {{if .View.Pending}}
+            {{template "debate_suggestion.html" dict "TicketID" .Ticket.ID "Pending" .View.Pending}}
+          {{else}}
+            {{template "debate_composer.html" dict "TicketID" .Ticket.ID "Providers" .Providers "Feedback" ""}}
+          {{end}}
         </div>
       </div>
-
-      <aside id="sidebar">
-        {{template "debate_sidebar.html" .Debate}}
-      </aside>
+      {{template "debate_versions.html" dict "OOB" false "TicketID" .Ticket.ID "View" .View}}
     </div>
   {{else}}
     <div class="card bg-base-100 border border-base-300 shadow-sm mt-6">
       <div class="card-body gap-4">
-        <h3 class="text-xl font-semibold">No active debate for this feature</h3>
+        <h3 class="text-xl font-semibold">Refine this description with AI</h3>
         <p class="text-sm text-base-content/70">
-          Starting a debate locks the ticket description until the debate is
-          approved or abandoned. Until then, the current description shown
-          below is what the AI will refactor in round 1.
+          AI suggestions improve the description one version at a time — you accept or
+          dismiss each one. While refining, the ticket description is locked; finish
+          or stop refining to edit it directly.
         </p>
         <div class="card bg-base-200 border border-base-300 p-4 prose prose-sm max-w-none">
           {{markdown .Ticket.DescriptionMarkdown}}
         </div>
         <form method="POST" action="/tickets/{{.Ticket.ID}}/debate/start">
           {{csrfField}}
-          <button type="submit" class="btn btn-primary">Start debate</button>
+          <button type="submit" class="btn btn-primary" data-testid="debate-start">Refine with AI</button>
         </form>
       </div>
     </div>

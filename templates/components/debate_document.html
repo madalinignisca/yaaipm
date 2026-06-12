@@ -1,0 +1,54 @@
+{{define "debate_document.html"}}
+{{if .OOB}}<div id="debate-document" hx-swap-oob="true" class="card bg-base-100 border border-base-300 shadow-sm" data-testid="debate-document">{{else}}<div id="debate-document" class="card bg-base-100 border border-base-300 shadow-sm" data-testid="debate-document">{{end}}
+  <div class="card-body p-5 gap-2">
+    {{if .Viewing}}
+      <div class="alert alert-info py-2 px-3 text-sm flex items-center justify-between" data-testid="debate-viewing-banner">
+        <span>{{if .Viewing.Label}}Viewing version {{.Viewing.Label}} — read-only{{else}}Viewing the original starting text — read-only{{end}}</span>
+        <span class="flex gap-2 items-center">
+          <button class="btn btn-ghost btn-xs"
+                  hx-get="/tickets/{{.TicketID}}/debate/document"
+                  hx-target="#debate-document" hx-swap="outerHTML"
+                  data-testid="debate-back-to-current">Back to current</button>
+          <form hx-post="/tickets/{{.TicketID}}/debate/undo?from={{.Viewing.RestoreFrom}}"
+                hx-target="#debate-stage" hx-swap="innerHTML"
+                hx-confirm="Restore this version? Versions after it will be removed.">
+            {{csrfField}}
+            <button type="submit" class="btn btn-warning btn-xs">Restore</button>
+          </form>
+        </span>
+      </div>
+      <div class="prose prose-sm max-w-none">{{markdown .Viewing.Text}}</div>
+    {{else}}
+      <div class="flex items-center justify-between flex-wrap gap-1">
+        <span class="text-xs uppercase tracking-wider text-base-content/60 font-medium">
+          {{if .View.CurrentVersionLabel}}Current description · version {{.View.CurrentVersionLabel}}{{else}}Starting text{{end}}
+        </span>
+        {{if .View.CurrentProvider}}
+          <span class="text-xs text-base-content/50">last change by {{providerLabel .View.CurrentProvider}}{{if .View.CurrentDecidedAt}}, {{relTime .View.CurrentDecidedAt}}{{end}}</span>
+        {{end}}
+      </div>
+      <div class="prose prose-sm max-w-none" data-testid="debate-current-text">{{markdown .Debate.CurrentText}}</div>
+      {{if .View.CanEditSeed}}
+        <div x-data="{editing: false}" class="mt-1">
+          <button type="button" class="btn btn-ghost btn-xs text-base-content/60"
+                  x-show="!editing" @click="editing = true" data-testid="debate-edit-seed">
+            Edit starting text
+          </button>
+          <form x-show="editing" x-cloak
+                hx-post="/tickets/{{.TicketID}}/debate/seed"
+                hx-target="#debate-document" hx-swap="outerHTML"
+                class="flex flex-col gap-2">
+            {{csrfField}}
+            <textarea name="seed" rows="8" class="textarea textarea-bordered w-full text-sm"
+                      data-testid="debate-seed-input">{{.Debate.SeedDescription}}</textarea>
+            <div class="flex gap-2">
+              <button type="submit" class="btn btn-primary btn-xs">Save</button>
+              <button type="button" class="btn btn-ghost btn-xs" @click="editing = false">Cancel</button>
+            </div>
+          </form>
+        </div>
+      {{end}}
+    {{end}}
+  </div>
+</div>
+{{end}}

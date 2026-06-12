@@ -1,0 +1,29 @@
+{{define "debate_effort_chip.html"}}
+{{if .OOB}}<span id="debate-effort-chip" hx-swap-oob="true" data-testid="debate-effort-chip" {{if .Poll}}hx-get="/tickets/{{.TicketID}}/debate/effort" hx-trigger="load delay:3s" hx-swap="outerHTML"{{end}}>{{else}}<span id="debate-effort-chip" data-testid="debate-effort-chip" {{if .Poll}}hx-get="/tickets/{{.TicketID}}/debate/effort" hx-trigger="load delay:3s" hx-swap="outerHTML"{{end}}>{{end}}
+  {{if .Rescoring}}
+    <span class="badge badge-ghost gap-1">
+      <span class="loading loading-spinner loading-xs"></span> estimating effort…
+    </span>
+  {{else if .Debate.EffortScore}}
+    {{$score := derefInt .Debate.EffortScore}}
+    <div class="dropdown dropdown-end">
+      <button type="button" tabindex="0" class="badge gap-1 cursor-pointer
+        {{if le $score 5}}badge-success badge-soft{{else if le $score 8}}badge-warning badge-soft{{else}}badge-error badge-soft{{end}}">
+        Effort <strong>{{$score}}/10</strong>{{if .Debate.EffortHours}} · ~{{derefInt .Debate.EffortHours}}h{{end}} ⓘ
+      </button>
+      <div tabindex="0" class="dropdown-content card card-sm bg-base-100 border border-base-300 shadow-lg w-72 z-10">
+        <div class="card-body p-3 text-xs gap-1">
+          <p class="font-medium">
+            {{if le $score 5}}Fits in a single feature task.{{else if le $score 8}}Needs sub-tasks from the start.{{else}}Consider splitting into multiple features.{{end}}
+          </p>
+          {{if .Debate.EffortReasoning}}<p class="text-base-content/70">{{derefStr .Debate.EffortReasoning}}</p>{{end}}
+          <p class="text-base-content/50">Estimate assumes a full-stack, mid-senior developer.
+            {{if .Debate.EffortScoredAt}}Updated {{relTime .Debate.EffortScoredAt}} · via Gemini{{end}}</p>
+        </div>
+      </div>
+    </div>
+  {{else}}
+    <span class="badge badge-ghost text-base-content/50">Effort — appears after the first accepted suggestion</span>
+  {{end}}
+</span>
+{{end}}

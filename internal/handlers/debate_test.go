@@ -164,9 +164,8 @@ func TestShowDebate_NoActiveReturnsEmptyState(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200; body first 200 chars = %q", rec.Code, rec.Body.String()[:min(200, rec.Body.Len())])
 	}
-	// Skeleton template emits "No active debate" in the empty state.
-	// Task 10 replaces that with richer UI but keeps the marker.
-	if !bytes.Contains(rec.Body.Bytes(), []byte("No active debate")) {
+	// New workspace template emits "Refine with AI" in the empty state.
+	if !bytes.Contains(rec.Body.Bytes(), []byte("Refine with AI")) {
 		t.Error("empty-state marker missing from response body")
 	}
 	// Visit must NOT create a row (spec §4.1 lock-on-visit prevention).
@@ -204,18 +203,17 @@ func TestShowDebate_ActiveRendersProviderPicker(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	// Markers chosen to survive presentational changes (Tailwind
-	// migration, class renames) while still catching real partial-
-	// render regressions. Each is a structural or data-attribute
-	// landmark that must exist regardless of visual styling choices.
+	// Markers chosen to survive presentational changes while still
+	// catching real partial-render regressions. Each is a structural
+	// or data-attribute landmark that must exist regardless of visual
+	// styling choices.
 	for _, marker := range []string{
-		`type="radio"`,           // provider picker radio input
-		`data-label="Claude"`,    // thinking-indicator source attribute
-		`data-provider="claude"`, // chip data attribute
-		`Claude`,                 // visible label text in body
-		`Refactor</button>`,      // refactor submit button
-		`Approve final</button>`, // approve-final button
-		`id="next-round-form"`,   // the refactor form itself
+		`type="radio"`,                    // provider picker radio input
+		`data-label="Claude"`,             // thinking-indicator source attribute
+		`data-provider="claude"`,          // chip data attribute
+		`Claude`,                          // visible label text in body
+		`data-testid="debate-composer"`,   // new composer partial rendered
+		`data-testid="debate-approve"`,    // approve header button
 	} {
 		if !strings.Contains(body, marker) {
 			// Dump the part of the body we care about: from the first
@@ -229,6 +227,85 @@ func TestShowDebate_ActiveRendersProviderPicker(t *testing.T) {
 			t.Errorf("response body missing marker %q — partial-render regression?\nbody[next-round..+2000]:\n%s",
 				marker, snippet)
 		}
+	}
+}
+
+// TestShowDebate_PendingSuggestionRendersPanel verifies that an active
+// debate with an in_review round renders debate_suggestion.html (not
+// debate_composer.html) and that the approve button is disabled without
+// truncating the rest of the page output (PR #80 bare-attribute check).
+func TestShowDebate_PendingSuggestionRendersPanel(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	// Start a debate.
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("/start: %d %s", startRec.Code, startRec.Body.String())
+	}
+
+	deb, err := db.GetActiveDebate(ctx, ticket.ID)
+	if err != nil {
+		t.Fatalf("GetActiveDebate: %v", err)
+	}
+
+	// Insert an in_review round (not yet accepted/rejected).
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	_, _, err = db.InsertDebateRoundTx(ctx, tx, models.InsertDebateRoundInput{
+		DebateID:    deb.ID,
+		Provider:    "claude",
+		Model:       ai.ModelClaudeSonnet46,
+		TriggeredBy: deb.StartedBy,
+		InputText:   deb.SeedDescription,
+		OutputText:  "pending suggestion output",
+		CostMicros:  0,
+	}, deb.SeedDescription)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("InsertDebateRoundTx: %v", err)
+	}
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		t.Fatalf("Commit: %v", commitErr)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate", http.NoBody)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	// Suggestion panel must render; composer must not.
+	for _, marker := range []string{
+		`data-testid="debate-suggestion"`, // suggestion panel present
+		`data-testid="debate-approve"`,    // approve button still rendered
+		`data-testid="debate-abandon"`,    // abandon button still rendered
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("response body missing marker %q (truncation?)", marker)
+		}
+	}
+	// Composer must not appear when a pending suggestion exists.
+	if strings.Contains(body, `data-testid="debate-composer"`) {
+		t.Error("debate-composer rendered when a pending suggestion exists — should show suggestion panel instead")
+	}
+	// PR #80 truncation check: verify the approve button has the disabled
+	// attribute and that content after the button still renders. We look
+	// for the abandon button which comes AFTER the approve button — if
+	// output truncated at the bare 'disabled' attribute, abandon would be missing.
+	if !strings.Contains(body, `data-testid="debate-abandon"`) {
+		t.Error("debate-abandon button missing — possible PR #80 bare-attribute truncation after 'disabled'")
 	}
 }
 

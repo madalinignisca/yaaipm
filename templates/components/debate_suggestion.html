@@ -1,0 +1,35 @@
+{{define "debate_suggestion.html"}}
+<div class="card bg-base-100 border-2 border-primary overflow-hidden" data-testid="debate-suggestion"
+     x-data="{tab: 'preview'}">
+  <div class="flex items-center justify-between px-4 py-2 bg-primary/10">
+    <span class="text-sm"><strong>{{providerLabel .Pending.Provider}}</strong> suggests an improvement</span>
+    <span class="text-xs text-primary">would become version {{.Pending.NextVersion}}</span>
+  </div>
+  <div class="px-4">
+    <div role="tablist" class="tabs tabs-border">
+      <button type="button" role="tab" class="tab" :class="tab === 'preview' && 'tab-active'"
+              @click="tab = 'preview'" data-testid="debate-tab-preview">Preview</button>
+      <button type="button" role="tab" class="tab" :class="tab === 'changes' && 'tab-active'"
+              @click="tab = 'changes'" data-testid="debate-tab-changes">What changed</button>
+    </div>
+    <div x-show="tab === 'preview'" class="prose prose-sm max-w-none py-3" data-testid="debate-preview-pane">
+      {{markdown .Pending.OutputText}}
+    </div>
+    <div x-show="tab === 'changes'" x-cloak class="py-3 text-sm" data-testid="debate-changes-pane">
+      {{renderInlineDiff .Pending.InputText .Pending.OutputText}}
+    </div>
+  </div>
+  <div class="flex gap-2 px-4 py-3 border-t border-base-300 bg-base-100">
+    <button class="btn btn-success btn-sm" data-testid="debate-accept"
+            hx-post="/tickets/{{.TicketID}}/debate/rounds/{{.Pending.RoundID}}/accept"
+            hx-target="#debate-stage" hx-swap="innerHTML">
+      Accept — make this version {{.Pending.NextVersion}}
+    </button>
+    <button class="btn btn-ghost btn-sm" data-testid="debate-dismiss"
+            hx-post="/tickets/{{.TicketID}}/debate/rounds/{{.Pending.RoundID}}/reject"
+            hx-target="#debate-stage" hx-swap="innerHTML">
+      Dismiss
+    </button>
+  </div>
+</div>
+{{end}}
