@@ -57,6 +57,7 @@ func setupDebateTestEnv(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore)
 		r.Post("/tickets/{ticketID}/debate/undo", h.UndoRound)
 		r.Post("/tickets/{ticketID}/debate/approve", h.ApproveDebate)
 		r.Post("/tickets/{ticketID}/debate/abandon", h.AbandonDebate)
+		r.Post("/tickets/{ticketID}/debate/seed", h.EditSeed)
 		r.Get("/tickets/{ticketID}/debate/document", h.ShowDocument)
 		r.Get("/tickets/{ticketID}/debate/versions/{roundID}", h.ShowVersion)
 	})
@@ -1083,5 +1084,35 @@ func TestEffortChipPartial_NoPollingWhenDebateTerminal(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "hx-trigger") {
 		t.Fatalf("terminal debate must not poll: %s", w.Body.String())
+	}
+}
+
+func TestEditSeed_UpdatesAndFreezesAfterRound(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+
+	// Start the debate with no rounds (empty outputs slice).
+	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{})
+
+	post := func(seed string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost,
+			"/tickets/"+ticket.ID+"/debate/seed", strings.NewReader("seed="+seed))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
+		req.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := post("better+seed"); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), "better seed") {
+		t.Fatalf("seed edit: %d %s", w.Code, w.Body.String())
+	}
+
+	// Create (and auto-accept) one round — seed must now be frozen.
+	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"round one"})
+	if w := post("nope"); w.Code != http.StatusBadRequest {
+		t.Fatalf("frozen seed edit: got %d, want 400", w.Code)
 	}
 }

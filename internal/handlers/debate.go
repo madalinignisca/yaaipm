@@ -50,6 +50,7 @@ type DebateConfig struct {
 	ClientRoundCap      int           // per-feature cap for clients (staff/superadmin bypass)
 	ClientDailyRoundCap int           // per-user daily safety fuse for clients
 	MaxFeedbackLen      int           // max characters accepted in the feedback textarea
+	MaxTextLen          int           // max characters for seed/description text (spec §3.3)
 	MinOutputLen        int           // minimum AI output length to accept
 	StaleReservationAge time.Duration // orphan-recovery threshold for in_flight_request_id
 	AICallTimeout       time.Duration // context timeout wrapping every refiner.Refine call
@@ -61,6 +62,7 @@ func DefaultDebateConfig() DebateConfig {
 		ClientRoundCap:      10,
 		ClientDailyRoundCap: 50,
 		MaxFeedbackLen:      2000,
+		MaxTextLen:          20000,
 		MinOutputLen:        10,
 		StaleReservationAge: 90 * time.Second,
 		AICallTimeout:       60 * time.Second,
@@ -1120,6 +1122,54 @@ func (h *DebateHandler) loadActiveDebateAndRounds(w http.ResponseWriter, r *http
 		return nil, nil, false
 	}
 	return deb, rounds, true
+}
+
+// ── POST /tickets/{ticketID}/debate/seed ──────────────────────────
+
+// EditSeed updates the starting text before any round exists. Returns
+// the refreshed #debate-document partial (the edit form lives inside it).
+// Allowed only while status=active, no in-flight AI reservation, and
+// zero rounds of any status exist (debate spec §4.1/§4.2).
+func (h *DebateHandler) EditSeed(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+	seed := strings.TrimSpace(r.FormValue("seed"))
+	if seed == "" {
+		h.renderDebateError(w, r, http.StatusBadRequest, "The starting text can't be empty.")
+		return
+	}
+	if len(seed) > h.cfg.MaxTextLen {
+		h.renderDebateError(w, r, http.StatusRequestEntityTooLarge, "The starting text is too long.")
+		return
+	}
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.renderDebateError(w, r, http.StatusConflict, debateMsgStale)
+		return
+	}
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return
+	}
+	switch err := h.db.UpdateDebateSeed(r.Context(), deb.ID, seed); {
+	case err == nil:
+	case errors.Is(err, models.ErrSeedFrozen):
+		h.renderDebateError(w, r, http.StatusBadRequest, "The starting text is locked once a suggestion exists.")
+		return
+	case errors.Is(err, models.ErrInFlightAIRequest):
+		h.renderDebateError(w, r, http.StatusConflict, "A suggestion is being written — wait for it before editing.")
+		return
+	case errors.Is(err, models.ErrDebateNotActive):
+		h.renderDebateError(w, r, http.StatusConflict, debateMsgStale)
+		return
+	default:
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return
+	}
+	h.ShowDocument(w, r) // re-render the document partial with the new text
 }
 
 // ── GET /tickets/{ticketID}/debate/effort ─────────────────────────

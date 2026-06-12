@@ -24,6 +24,7 @@ const DebateStatusActive = "active"
 var (
 	ErrDebateNotActive     = errors.New("debate not active")
 	ErrInFlightAIRequest   = errors.New("AI request already in flight")
+	ErrSeedFrozen          = errors.New("seed frozen after first round")
 	ErrStaleAIInput        = errors.New("current_text changed during AI call")
 	ErrInReviewRoundExists = errors.New("an in-review round already exists")
 	ErrDescriptionLocked   = errors.New("ticket description locked: active debate exists")
@@ -2763,4 +2764,43 @@ func (db *DB) IncrementProjectCostCents(ctx context.Context, projectID string, d
 		projectID, month, deltaCents,
 	)
 	return err
+}
+
+// UpdateDebateSeed edits seed_description AND current_text together —
+// before round 1 they are by definition equal (debate spec §4.1/§4.2).
+// Guards, under the debate row lock: status active, no in-flight AI
+// reservation, zero rounds of any status.
+func (db *DB) UpdateDebateSeed(ctx context.Context, debateID, text string) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status string
+	var inFlight *string
+	var roundCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT d.status, d.in_flight_request_id,
+		       (SELECT count(*) FROM feature_debate_rounds WHERE debate_id = d.id)
+		FROM feature_debates d WHERE d.id = $1 FOR UPDATE`, debateID,
+	).Scan(&status, &inFlight, &roundCount); err != nil {
+		return err
+	}
+	if status != DebateStatusActive {
+		return ErrDebateNotActive
+	}
+	if inFlight != nil {
+		return ErrInFlightAIRequest
+	}
+	if roundCount > 0 {
+		return ErrSeedFrozen
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE feature_debates
+		SET seed_description = $1, current_text = $1, updated_at = now()
+		WHERE id = $2`, text, debateID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
