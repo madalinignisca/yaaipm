@@ -1005,7 +1005,8 @@ func TestVersionViewPartial_AcceptedDismissedForeignAndOriginal(t *testing.T) {
 	}
 	// Original sentinel → seed text + original banner copy.
 	if w := get("original"); w.Code != http.StatusOK ||
-		!strings.Contains(w.Body.String(), "Viewing the original") {
+		!strings.Contains(w.Body.String(), "Viewing the original") ||
+		!strings.Contains(w.Body.String(), "Initial description") {
 		t.Fatalf("original view wrong: %d %s", w.Code, w.Body.String())
 	}
 }

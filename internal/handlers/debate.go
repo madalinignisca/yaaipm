@@ -1139,6 +1139,7 @@ func (h *DebateHandler) EffortChip(w http.ResponseWriter, r *http.Request) {
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Approved/abandoned in another tab: static empty chip, no poll.
+		// Intentionally NOT loadActiveDebateAndRounds: the chip degrades gracefully instead of returning the 409 stale-tab banner.
 		_ = h.engine.RenderPartial(w, "debate_effort_chip.html",
 			EffortChipView{Debate: &models.FeatureDebate{}, TicketID: dctx.ticket.ID})
 		return
