@@ -1038,3 +1038,37 @@ func (h *DebateHandler) undoUnderLock(ctx context.Context, debateID string, from
 	}
 	return tx.Commit(ctx)
 }
+
+// ── GET /tickets/{ticketID}/debate/effort ─────────────────────────
+
+// EffortChip returns the effort-chip partial. The server decides the
+// polling behavior per response (UI refactor spec §5.2): hx-trigger is
+// included only while the debate is active and the latest accept is
+// younger than StaleReservationAge. Terminal or missing debates render
+// a static chip — never an error, the chip is informational.
+func (h *DebateHandler) EffortChip(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Approved/abandoned in another tab: static empty chip, no poll.
+		_ = h.engine.RenderPartial(w, "debate_effort_chip.html",
+			EffortChipView{Debate: &models.FeatureDebate{}, TicketID: dctx.ticket.ID})
+		return
+	}
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return
+	}
+	rounds, err := h.db.GetDebateRounds(r.Context(), deb.ID)
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return
+	}
+	chip := buildEffortChipView(deb, rounds, dctx.ticket.ID, time.Now(), h.cfg.StaleReservationAge)
+	_ = h.engine.RenderPartial(w, "debate_effort_chip.html", chip)
+}

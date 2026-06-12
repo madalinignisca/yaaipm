@@ -49,6 +49,7 @@ func setupDebateTestEnv(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.AuthMiddleware(sessions, db))
 		r.Get("/tickets/{ticketID}/debate", h.ShowDebate)
+		r.Get("/tickets/{ticketID}/debate/effort", h.EffortChip)
 		r.Post("/tickets/{ticketID}/debate/start", h.StartDebate)
 		r.Post("/tickets/{ticketID}/debate/rounds", h.CreateRound)
 		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", h.AcceptRound)
@@ -913,5 +914,80 @@ func TestStaleRoundAction_RendersErrorBanner409(t *testing.T) {
 	}
 	if second.Header().Get("HX-Retarget") != "#debate-flash" {
 		t.Fatalf("HX-Retarget = %q, want #debate-flash", second.Header().Get("HX-Retarget"))
+	}
+}
+
+func acceptRoundViaHTTP(t *testing.T, r *chi.Mux, cookie *http.Cookie, ticketID, roundID string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticketID+"/debate/rounds/"+roundID+"/accept", nil)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code >= 400 {
+		t.Fatalf("accept failed: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEffortChipPartial_PollsWhileStale_SettlesAfter90s(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	// startAndCreateRounds already accepts the round internally.
+	rounds := startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"text one"})
+
+	// Wipe the scorer result so the chip is stale regardless of whether
+	// the fake scorer already landed.
+	_, err := db.Pool.Exec(context.Background(),
+		`UPDATE feature_debates SET last_scored_round_id = NULL WHERE ticket_id = $1`, ticket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/effort", nil)
+		req.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("chip GET: %d %s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	if body := get(); !strings.Contains(body, `hx-trigger="load delay:3s"`) {
+		t.Fatalf("stale+recent chip must poll, got: %s", body)
+	}
+
+	_, err = db.Pool.Exec(context.Background(),
+		`UPDATE feature_debate_rounds SET decided_at = now() - interval '2 minutes' WHERE id = $1`, rounds[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := get(); strings.Contains(body, "hx-trigger") {
+		t.Fatalf("stale+old chip must NOT poll, got: %s", body)
+	}
+}
+
+func TestEffortChipPartial_NoPollingWhenDebateTerminal(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	// startAndCreateRounds already accepts the round internally.
+	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"text one"})
+
+	_, err := db.Pool.Exec(context.Background(),
+		`UPDATE feature_debates SET status = 'abandoned', last_scored_round_id = NULL WHERE ticket_id = $1`, ticket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/effort", nil)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("terminal chip GET: %d, want 200 (static chip)", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "hx-trigger") {
+		t.Fatalf("terminal debate must not poll: %s", w.Body.String())
 	}
 }
