@@ -166,3 +166,22 @@
 .gantt-bar:hover { opacity: .85; box-shadow: 0 2px 6px rgba(0,0,0,.18); }
 .gantt-bar-feature { border-radius: 6px; }
 .gantt-bar-label { padding: 0 .5rem; font-size: 10px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Debate inline diff (diff.RenderInlineHTML output). pre-wrap is what
+   keeps markdown line structure — the renderer emits raw \n, never <br>. */
+.diff-inline {
+  white-space: pre-wrap;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.diff-inline ins.diff-ins {
+  text-decoration: none;
+  border-radius: 0.25rem;
+  padding: 0 0.125rem;
+  background: color-mix(in oklab, var(--color-success) 25%, transparent);
+}
+.diff-inline del.diff-del {
+  border-radius: 0.25rem;
+  padding: 0 0.125rem;
+  background: color-mix(in oklab, var(--color-error) 18%, transparent);
+}

@@ -90,3 +90,44 @@ func RenderHTML(unified string) template.HTML {
 	// TestRenderHTML_EscapesAttributeInjection for the pinned proofs.
 	return template.HTML(sb.String()) // nosemgrep: go.lang.security.audit.xss.template-html-does-not-escape.unsafe-template-type
 }
+
+// RenderInlineHTML diffs before→after at word/phrase granularity and
+// returns sanitized HTML: unchanged text plain, insertions wrapped in
+// <ins class="diff-ins">, deletions in <del class="diff-del">. The
+// container div uses white-space: pre-wrap (see tw-input.css) so the
+// escaped newlines preserve markdown's line structure without any <br>
+// rewriting here.
+//
+// DiffCleanupSemantic merges character-level noise into human-readable
+// runs — that is what makes prose diffs legible vs. the line-level
+// unified output of ComputeUnified (kept for the audit trail).
+//
+// Every text segment is routed through template.HTMLEscapeString; the
+// only literal HTML is the hardcoded wrapper/ins/del tags, so the
+// template.HTML cast is sound. Pinned by
+// TestRenderInlineHTML_EscapesScriptTags / _EscapesAttributeInjection.
+func RenderInlineHTML(before, after string) template.HTML {
+	dmp := diffmatchpatch.New()
+	diffs := dmp.DiffMain(before, after, false)
+	diffs = dmp.DiffCleanupSemantic(diffs)
+
+	var sb strings.Builder
+	sb.WriteString(`<div class="diff-inline">`)
+	for _, d := range diffs {
+		text := template.HTMLEscapeString(d.Text)
+		switch d.Type {
+		case diffmatchpatch.DiffEqual:
+			sb.WriteString(text)
+		case diffmatchpatch.DiffInsert:
+			sb.WriteString(`<ins class="diff-ins">`)
+			sb.WriteString(text)
+			sb.WriteString(`</ins>`)
+		case diffmatchpatch.DiffDelete:
+			sb.WriteString(`<del class="diff-del">`)
+			sb.WriteString(text)
+			sb.WriteString(`</del>`)
+		}
+	}
+	sb.WriteString(`</div>`)
+	return template.HTML(sb.String()) // nosemgrep: go.lang.security.audit.xss.template-html-does-not-escape.unsafe-template-type
+}
