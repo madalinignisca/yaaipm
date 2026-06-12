@@ -35,6 +35,14 @@ import (
 // Context's type check and future authz/routing branches.
 const ticketTypeFeature = "feature"
 
+// Client-facing error copy shared across debate handlers (UI refactor
+// spec §5.4). Centralized so wording stays consistent across the ~20
+// call sites.
+const (
+	debateMsgStale = "This page is out of date — reload to see the latest state."
+	debateMsgInfra = "Something went wrong on our side — nothing was changed."
+)
+
 // DebateConfig groups the per-deployment tuning knobs for the debate
 // flow. Defaults come from DefaultDebateConfig; production wiring in
 // cmd/server/main.go can override from env or leave defaults in place.
@@ -325,7 +333,7 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		h.renderDebateError(w, r, http.StatusInternalServerError,
-			"Something went wrong on our side — nothing was changed.")
+			debateMsgInfra)
 		return
 	}
 
@@ -504,6 +512,7 @@ func (h *DebateHandler) renderDebateError(w http.ResponseWriter, r *http.Request
 
 // debateProviderLabel mirrors render.go's providerLabel for handler-
 // side error copy without importing the render FuncMap.
+// NOTE: update alongside render.go's providerLabel when new refiners are wired in cmd/server/main.go.
 func debateProviderLabel(name string) string {
 	switch name {
 	case "claude":
@@ -513,7 +522,7 @@ func debateProviderLabel(name string) string {
 	case "openai":
 		return "ChatGPT"
 	default:
-		return name
+		return "The AI provider"
 	}
 }
 
@@ -525,13 +534,13 @@ func (h *DebateHandler) writeReservationError(w http.ResponseWriter, r *http.Req
 	switch {
 	case errors.Is(err, models.ErrDebateNotActive):
 		h.renderDebateError(w, r, http.StatusConflict,
-			"This page is out of date — reload to see the latest state.")
+			debateMsgStale)
 	case errors.Is(err, models.ErrInFlightAIRequest):
 		h.renderDebateError(w, r, http.StatusConflict,
 			"A suggestion is already being written — give it a few seconds.")
 	default:
 		h.renderDebateError(w, r, http.StatusInternalServerError,
-			"Something went wrong on our side — nothing was changed.")
+			debateMsgInfra)
 	}
 }
 
@@ -543,13 +552,13 @@ func (h *DebateHandler) writeInsertError(w http.ResponseWriter, r *http.Request,
 			"The description changed while the AI was writing — nothing was saved, please try again.")
 	case errors.Is(err, models.ErrDebateNotActive):
 		h.renderDebateError(w, r, http.StatusConflict,
-			"This page is out of date — reload to see the latest state.")
+			debateMsgStale)
 	case errors.Is(err, models.ErrInReviewRoundExists):
 		h.renderDebateError(w, r, http.StatusConflict,
 			"A suggestion is already waiting — accept or dismiss it first.")
 	default:
 		h.renderDebateError(w, r, http.StatusInternalServerError,
-			"Something went wrong on our side — nothing was changed.")
+			debateMsgInfra)
 	}
 }
 
@@ -582,12 +591,12 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		h.renderDebateError(w, r, http.StatusConflict,
-			"This page is out of date — reload to see the latest state.")
+			debateMsgStale)
 		return
 	}
 	if err != nil {
 		h.renderDebateError(w, r, http.StatusInternalServerError,
-			"Something went wrong on our side — nothing was changed.")
+			debateMsgInfra)
 		return
 	}
 
@@ -668,13 +677,13 @@ func (h *DebateHandler) writeAcceptError(w http.ResponseWriter, r *http.Request,
 			"That suggestion no longer exists — reload the page.")
 	case errors.Is(err, models.ErrDebateNotActive):
 		h.renderDebateError(w, r, http.StatusConflict,
-			"This page is out of date — reload to see the latest state.")
+			debateMsgStale)
 	case errors.Is(err, models.ErrRoundNotInReview):
 		h.renderDebateError(w, r, http.StatusConflict,
-			"This page is out of date — reload to see the latest state.")
+			"This suggestion was already decided — reload to continue.")
 	default:
 		h.renderDebateError(w, r, http.StatusInternalServerError,
-			"Something went wrong on our side — nothing was changed.")
+			debateMsgInfra)
 	}
 }
 
@@ -768,12 +777,12 @@ func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		h.renderDebateError(w, r, http.StatusConflict,
-			"This page is out of date — reload to see the latest state.")
+			debateMsgStale)
 		return
 	}
 	if err != nil {
 		h.renderDebateError(w, r, http.StatusInternalServerError,
-			"Something went wrong on our side — nothing was changed.")
+			debateMsgInfra)
 		return
 	}
 
@@ -838,12 +847,12 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		h.renderDebateError(w, r, http.StatusConflict,
-			"This page is out of date — reload to see the latest state.")
+			debateMsgStale)
 		return
 	}
 	if err != nil {
 		h.renderDebateError(w, r, http.StatusInternalServerError,
-			"Something went wrong on our side — nothing was changed.")
+			debateMsgInfra)
 		return
 	}
 
@@ -851,7 +860,7 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(undoErr, models.ErrDebateNotActive):
 			h.renderDebateError(w, r, http.StatusConflict,
-				"This page is out of date — reload to see the latest state.")
+				debateMsgStale)
 		case errors.Is(undoErr, models.ErrNoRoundsToUndo):
 			// ?from=999 on a 3-round debate, etc. Prevents accidental
 			// effort-field wipes on range targets that delete no rows.
@@ -860,7 +869,7 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 		default:
 			log.Printf("debate UndoRound: %v", undoErr)
 			h.renderDebateError(w, r, http.StatusInternalServerError,
-				"Something went wrong on our side — nothing was changed.")
+				debateMsgInfra)
 		}
 		return
 	}
@@ -898,10 +907,10 @@ func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(approveErr, pgx.ErrNoRows):
 			h.renderDebateError(w, r, http.StatusConflict,
-				"This page is out of date — reload to see the latest state.")
+				debateMsgStale)
 		case errors.Is(approveErr, models.ErrDebateNotActive):
 			h.renderDebateError(w, r, http.StatusConflict,
-				"This page is out of date — reload to see the latest state.")
+				debateMsgStale)
 		case errors.Is(approveErr, models.ErrExternalDescriptionEdit):
 			// Tell the user exactly how to resolve: Stop refining unlocks
 			// the ticket description for manual edit, then they can
@@ -911,7 +920,7 @@ func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
 		default:
 			log.Printf("debate ApproveDebate: %v", approveErr)
 			h.renderDebateError(w, r, http.StatusInternalServerError,
-				"Something went wrong on our side — nothing was changed.")
+				debateMsgInfra)
 		}
 		return
 	}
@@ -967,14 +976,14 @@ func (h *DebateHandler) AbandonDebate(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(abandonErr, pgx.ErrNoRows):
 			h.renderDebateError(w, r, http.StatusConflict,
-				"This page is out of date — reload to see the latest state.")
+				debateMsgStale)
 		case errors.Is(abandonErr, models.ErrDebateNotActive):
 			h.renderDebateError(w, r, http.StatusConflict,
-				"This page is out of date — reload to see the latest state.")
+				debateMsgStale)
 		default:
 			log.Printf("debate AbandonDebate: %v", abandonErr)
 			h.renderDebateError(w, r, http.StatusInternalServerError,
-				"Something went wrong on our side — nothing was changed.")
+				debateMsgInfra)
 		}
 		return
 	}
