@@ -217,14 +217,14 @@ func TestShowDebate_ActiveRendersProviderPicker(t *testing.T) {
 	} {
 		if !strings.Contains(body, marker) {
 			// Dump the part of the body we care about: from the first
-			// occurrence of "next-round" (start of the provider-picker
-			// form) to end of body. CSS dump in <head> is noise.
-			idx := strings.Index(body, "next-round")
+			// occurrence of "debate-stage" (anchors at the workspace
+			// stage region) to end of body. CSS dump in <head> is noise.
+			idx := strings.Index(body, "debate-stage")
 			snippet := body
 			if idx >= 0 {
 				snippet = body[idx:min(idx+2000, len(body))]
 			}
-			t.Errorf("response body missing marker %q — partial-render regression?\nbody[next-round..+2000]:\n%s",
+			t.Errorf("response body missing marker %q — partial-render regression?\nbody[debate-stage..+2000]:\n%s",
 				marker, snippet)
 		}
 	}
