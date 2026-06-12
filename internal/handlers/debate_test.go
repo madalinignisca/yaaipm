@@ -376,8 +376,8 @@ func TestCreateRound_RejectsMissingActiveDebate(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400; body = %q", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "no active debate") {
-		t.Errorf("expected 'no active debate', got: %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "No refining session is active") {
+		t.Errorf("expected 'No refining session is active', got: %q", rec.Body.String())
 	}
 }
 
@@ -406,8 +406,8 @@ func TestCreateRound_RejectsUnknownProvider(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400; body = %q", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "unknown provider") {
-		t.Errorf("expected 'unknown provider', got: %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "Unknown AI provider") {
+		t.Errorf("expected 'Unknown AI provider', got: %q", rec.Body.String())
 	}
 }
 
@@ -717,8 +717,8 @@ func TestApproveDebate_CASRejectsExternalEdit(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body = %q", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "edited externally") {
-		t.Errorf("expected 'edited externally' error, got: %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "edited outside this session") {
+		t.Errorf("expected 'edited outside this session' error, got: %q", rec.Body.String())
 	}
 
 	// Debate must stay active; ticket must still show the external
@@ -840,4 +840,78 @@ func mustResolveOrgID(t *testing.T, db *models.DB, projectID string) string {
 		t.Fatalf("resolving org from project: %v", err)
 	}
 	return orgID
+}
+
+// Spec §5.4 — HTMX requests get a debate_error.html banner body with
+// the error status; the status-code discipline itself is pinned by the
+// older tests. Accepting an already-decided round is the stale-tab case.
+func TestStaleRoundAction_RendersErrorBanner409(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	// Start a debate, then insert a round in in_review state (not yet
+	// accepted) so the first accept() call can succeed. startAndCreateRounds
+	// pre-accepts all rounds, so we set up state manually here.
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("/start: %d %s", startRec.Code, startRec.Body.String())
+	}
+
+	deb, err := db.GetActiveDebate(ctx, ticket.ID)
+	if err != nil {
+		t.Fatalf("GetActiveDebate: %v", err)
+	}
+
+	// Insert an in_review round (not yet accepted).
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	round, _, err := db.InsertDebateRoundTx(ctx, tx, models.InsertDebateRoundInput{
+		DebateID:    deb.ID,
+		Provider:    "claude",
+		Model:       ai.ModelClaudeSonnet46,
+		TriggeredBy: deb.StartedBy,
+		InputText:   deb.SeedDescription,
+		OutputText:  "proposal one",
+		CostMicros:  0,
+	}, deb.SeedDescription)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("InsertDebateRoundTx: %v", err)
+	}
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		t.Fatalf("Commit: %v", commitErr)
+	}
+
+	accept := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost,
+			"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", nil)
+		req.AddCookie(cookie)
+		req.Header.Set("HX-Request", "true")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	first := accept()
+	// 204 until Task 9 switches accept to partial responses; both are
+	// success here. Task 9 tightens this to == http.StatusOK.
+	if first.Code >= 400 {
+		t.Fatalf("first accept: got %d, want success", first.Code)
+	}
+	second := accept()
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second accept: got %d, want 409", second.Code)
+	}
+	if !strings.Contains(second.Body.String(), `data-testid="debate-error"`) {
+		t.Fatalf("409 body must be the error banner partial, got: %s", second.Body.String())
+	}
+	if second.Header().Get("HX-Retarget") != "#debate-flash" {
+		t.Fatalf("HX-Retarget = %q, want #debate-flash", second.Header().Get("HX-Retarget"))
+	}
 }

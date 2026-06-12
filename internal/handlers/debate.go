@@ -307,22 +307,25 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	providerName := r.FormValue("provider")
 	refiner, ok := h.refiners[providerName]
 	if !ok {
-		http.Error(w, "unknown provider", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest, "Unknown AI provider.")
 		return
 	}
 	feedback := strings.TrimSpace(r.FormValue("feedback"))
 	if len(feedback) > h.cfg.MaxFeedbackLen {
-		http.Error(w, "feedback too long", http.StatusRequestEntityTooLarge)
+		h.renderDebateError(w, r, http.StatusRequestEntityTooLarge,
+			"Your feedback is too long — please shorten it.")
 		return
 	}
 
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate — call /start first", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest,
+			"No refining session is active — start one first.")
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			"Something went wrong on our side — nothing was changed.")
 		return
 	}
 
@@ -337,11 +340,13 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	// to hitting one ticket N times.
 	if !auth.IsStaffOrAbove(dctx.user.Role) {
 		if roundCount, rcErr := h.db.CountActiveRoundsForDebate(r.Context(), deb.ID); rcErr == nil && roundCount >= h.cfg.ClientRoundCap {
-			http.Error(w, "round cap reached for this feature", http.StatusTooManyRequests)
+			h.renderDebateError(w, r, http.StatusTooManyRequests,
+				"You've reached the suggestion limit for this feature — ask us if you need more.")
 			return
 		}
 		if dailyCount, dcErr := h.db.CountUserRoundsLast24h(r.Context(), dctx.user.ID); dcErr == nil && dailyCount >= h.cfg.ClientDailyRoundCap {
-			http.Error(w, "daily round limit reached — try again tomorrow or ask staff to bypass", http.StatusTooManyRequests)
+			h.renderDebateError(w, r, http.StatusTooManyRequests,
+				"You've reached the daily suggestion limit — try again tomorrow or ask us if you need more.")
 			return
 		}
 	}
@@ -349,7 +354,7 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	// Step 2: reservation tx. Micro-hold on the debate row, commit fast.
 	snapshot, err := h.reserveInFlight(r.Context(), deb.ID)
 	if err != nil {
-		h.writeReservationError(w, err)
+		h.writeReservationError(w, r, err)
 		return
 	}
 
@@ -374,7 +379,8 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		// via the error envelope.
 		log.Printf("debate CreateRound: refiner %s failed for debate %s: %v",
 			refiner.Name(), deb.ID, err)
-		http.Error(w, "AI call failed; please retry", http.StatusBadGateway)
+		h.renderDebateError(w, r, http.StatusBadGateway,
+			debateProviderLabel(refiner.Name())+" couldn't produce a suggestion. Nothing was changed — try again.")
 		return
 	}
 
@@ -387,7 +393,8 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		// ReserveInFlight (StaleReservationAge, 90s) is the
 		// fallback, but eager cleanup avoids that delay entirely.
 		_ = h.db.ClearInFlight(context.WithoutCancel(r.Context()), deb.ID)
-		http.Error(w, "AI returned invalid or truncated output", http.StatusBadGateway)
+		h.renderDebateError(w, r, http.StatusBadGateway,
+			debateProviderLabel(refiner.Name())+" couldn't produce a suggestion. Nothing was changed — try again.")
 		return
 	}
 
@@ -413,7 +420,7 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		// ReserveInFlight (StaleReservationAge, 90s) is the
 		// fallback, but eager cleanup avoids that delay entirely.
 		_ = h.db.ClearInFlight(context.WithoutCancel(r.Context()), deb.ID)
-		h.writeInsertError(w, err)
+		h.writeInsertError(w, r, err)
 		return
 	}
 
@@ -478,32 +485,71 @@ func (h *DebateHandler) insertRound(
 	return round, centsDelta, nil
 }
 
+// renderDebateError keeps spec §3.3's status-code discipline but gives
+// HTMX requests a human-readable banner (UI refactor spec §5.4). The
+// htmx:beforeSwap listener in init.js permits the swap; HX-Retarget
+// puts the banner in #debate-flash so the composer/suggestion in
+// #debate-stage is never destroyed by an error.
+func (h *DebateHandler) renderDebateError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	if r.Header.Get("HX-Request") != "true" {
+		http.Error(w, msg, status)
+		return
+	}
+	w.Header().Set("HX-Retarget", "#debate-flash")
+	w.Header().Set("HX-Reswap", "innerHTML")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_ = h.engine.RenderPartial(w, "debate_error.html", map[string]any{"Message": msg})
+}
+
+// debateProviderLabel mirrors render.go's providerLabel for handler-
+// side error copy without importing the render FuncMap.
+func debateProviderLabel(name string) string {
+	switch name {
+	case "claude":
+		return "Claude"
+	case "gemini":
+		return "Gemini"
+	case "openai":
+		return "ChatGPT"
+	default:
+		return name
+	}
+}
+
 // writeReservationError maps ReserveInFlight's sentinel errors to the
 // right HTTP status per spec §3.3. Keeps error branches distinct —
 // never collapses "not active" / "in flight" / "generic infra" into a
 // single path.
-func (h *DebateHandler) writeReservationError(w http.ResponseWriter, err error) {
+func (h *DebateHandler) writeReservationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, models.ErrDebateNotActive):
-		http.Error(w, "debate not active", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"This page is out of date — reload to see the latest state.")
 	case errors.Is(err, models.ErrInFlightAIRequest):
-		http.Error(w, "another AI request is in flight; wait for it", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"A suggestion is already being written — give it a few seconds.")
 	default:
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			"Something went wrong on our side — nothing was changed.")
 	}
 }
 
 // writeInsertError maps InsertDebateRoundTx's sentinel errors.
-func (h *DebateHandler) writeInsertError(w http.ResponseWriter, err error) {
+func (h *DebateHandler) writeInsertError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, models.ErrStaleAIInput):
-		http.Error(w, "feature description changed while AI was processing — please retry", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"The description changed while the AI was writing — nothing was saved, please try again.")
 	case errors.Is(err, models.ErrDebateNotActive):
-		http.Error(w, "debate not active", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"This page is out of date — reload to see the latest state.")
 	case errors.Is(err, models.ErrInReviewRoundExists):
-		http.Error(w, "another round is already in review — accept or reject it first", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"A suggestion is already waiting — accept or dismiss it first.")
 	default:
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			"Something went wrong on our side — nothing was changed.")
 	}
 }
 
@@ -528,23 +574,26 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 	}
 	roundID := chi.URLParam(r, "roundID")
 	if roundID == "" {
-		http.Error(w, "missing round id", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest,
+			"That suggestion no longer exists — reload the page.")
 		return
 	}
 
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"This page is out of date — reload to see the latest state.")
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			"Something went wrong on our side — nothing was changed.")
 		return
 	}
 
 	round, err := h.acceptRoundUnderLock(r.Context(), deb.ID, roundID)
 	if err != nil {
-		h.writeAcceptError(w, err)
+		h.writeAcceptError(w, r, err)
 		return
 	}
 
@@ -612,16 +661,20 @@ func (h *DebateHandler) acceptRoundUnderLock(ctx context.Context, debateID, roun
 // writeAcceptError maps accept-path sentinels to the right status.
 // ErrRoundNotInReview surfaces as 409 (stale client view), distinct
 // from pgx.ErrNoRows (404, round doesn't exist) and infra failures.
-func (h *DebateHandler) writeAcceptError(w http.ResponseWriter, err error) {
+func (h *DebateHandler) writeAcceptError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		http.Error(w, "round not found", http.StatusNotFound)
+		h.renderDebateError(w, r, http.StatusNotFound,
+			"That suggestion no longer exists — reload the page.")
 	case errors.Is(err, models.ErrDebateNotActive):
-		http.Error(w, "debate not active", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"This page is out of date — reload to see the latest state.")
 	case errors.Is(err, models.ErrRoundNotInReview):
-		http.Error(w, "round is not in review (stale state)", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"This page is out of date — reload to see the latest state.")
 	default:
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			"Something went wrong on our side — nothing was changed.")
 	}
 }
 
@@ -707,22 +760,25 @@ func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
 	}
 	roundID := chi.URLParam(r, "roundID")
 	if roundID == "" {
-		http.Error(w, "missing round id", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest,
+			"That suggestion no longer exists — reload the page.")
 		return
 	}
 
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"This page is out of date — reload to see the latest state.")
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			"Something went wrong on our side — nothing was changed.")
 		return
 	}
 
 	if rejectErr := h.rejectRoundUnderLock(r.Context(), deb.ID, roundID); rejectErr != nil {
-		h.writeAcceptError(w, rejectErr) // same sentinel mapping as accept
+		h.writeAcceptError(w, r, rejectErr) // same sentinel mapping as accept
 		return
 	}
 
@@ -775,31 +831,36 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 	fromStr := r.URL.Query().Get("from")
 	fromN, err := strconv.Atoi(fromStr)
 	if err != nil || fromN < 1 {
-		http.Error(w, "invalid from parameter", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest, "Invalid restore target.")
 		return
 	}
 
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"This page is out of date — reload to see the latest state.")
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			"Something went wrong on our side — nothing was changed.")
 		return
 	}
 
 	if undoErr := h.undoUnderLock(r.Context(), deb.ID, fromN); undoErr != nil {
 		switch {
 		case errors.Is(undoErr, models.ErrDebateNotActive):
-			http.Error(w, "debate not active", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				"This page is out of date — reload to see the latest state.")
 		case errors.Is(undoErr, models.ErrNoRoundsToUndo):
 			// ?from=999 on a 3-round debate, etc. Prevents accidental
 			// effort-field wipes on range targets that delete no rows.
-			http.Error(w, "no rounds matched — check the from index", http.StatusNotFound)
+			h.renderDebateError(w, r, http.StatusNotFound,
+				"That version no longer exists — reload the page.")
 		default:
 			log.Printf("debate UndoRound: %v", undoErr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			h.renderDebateError(w, r, http.StatusInternalServerError,
+				"Something went wrong on our side — nothing was changed.")
 		}
 		return
 	}
@@ -836,19 +897,21 @@ func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
 	if approveErr := h.approveUnderLock(r.Context(), dctx.ticket.ID); approveErr != nil {
 		switch {
 		case errors.Is(approveErr, pgx.ErrNoRows):
-			http.Error(w, "no active debate", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				"This page is out of date — reload to see the latest state.")
 		case errors.Is(approveErr, models.ErrDebateNotActive):
-			http.Error(w, "debate not active", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				"This page is out of date — reload to see the latest state.")
 		case errors.Is(approveErr, models.ErrExternalDescriptionEdit):
-			// Tell the user exactly how to resolve: Abandon unlocks
+			// Tell the user exactly how to resolve: Stop refining unlocks
 			// the ticket description for manual edit, then they can
 			// start a new debate from the current state.
-			http.Error(w,
-				"description was edited externally since the debate started. To resolve: click Abandon to release the debate lock, then manually merge the external edit with the draft, then start a new debate.",
-				http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				"The ticket description was edited outside this session. To resolve: click Stop refining to unlock it, merge the changes manually, then start refining again.")
 		default:
 			log.Printf("debate ApproveDebate: %v", approveErr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			h.renderDebateError(w, r, http.StatusInternalServerError,
+				"Something went wrong on our side — nothing was changed.")
 		}
 		return
 	}
@@ -903,12 +966,15 @@ func (h *DebateHandler) AbandonDebate(w http.ResponseWriter, r *http.Request) {
 	if abandonErr := h.abandonUnderLock(r.Context(), dctx.ticket.ID); abandonErr != nil {
 		switch {
 		case errors.Is(abandonErr, pgx.ErrNoRows):
-			http.Error(w, "no active debate", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				"This page is out of date — reload to see the latest state.")
 		case errors.Is(abandonErr, models.ErrDebateNotActive):
-			http.Error(w, "debate not active", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				"This page is out of date — reload to see the latest state.")
 		default:
 			log.Printf("debate AbandonDebate: %v", abandonErr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			h.renderDebateError(w, r, http.StatusInternalServerError,
+				"Something went wrong on our side — nothing was changed.")
 		}
 		return
 	}
