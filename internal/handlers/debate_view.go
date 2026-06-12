@@ -51,6 +51,15 @@ type DebateView struct {
 	IsStaff               bool
 }
 
+// ViewingVersion drives debate_document.html's read-only older-version
+// mode ("Viewing version N — read-only"). Label 0 means "Original"
+// (the seed text).
+type ViewingVersion struct {
+	Label       int    // 0 means "Original"
+	Text        string // the version's full text (output_text or seed)
+	RestoreFrom int    // undo ?from= that restores this version
+}
+
 // EffortChipView feeds debate_effort_chip.html.
 type EffortChipView struct {
 	Debate    *models.FeatureDebate

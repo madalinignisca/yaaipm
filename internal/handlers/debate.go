@@ -1039,6 +1039,89 @@ func (h *DebateHandler) undoUnderLock(ctx context.Context, debateID string, from
 	return tx.Commit(ctx)
 }
 
+// ── GET /tickets/{ticketID}/debate/document ───────────────────────
+
+// ShowDocument returns the #debate-document partial in current mode —
+// the "Back to current" target when viewing an older version.
+func (h *DebateHandler) ShowDocument(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
+	if !ok {
+		return
+	}
+	view := buildDebateView(deb, rounds, auth.IsStaffOrAbove(dctx.user.Role))
+	_ = h.engine.RenderPartial(w, "debate_document.html", map[string]any{
+		"OOB": false, "TicketID": dctx.ticket.ID, "View": view, "Debate": deb, "Viewing": nil,
+	})
+}
+
+// ── GET /tickets/{ticketID}/debate/versions/{roundID} ─────────────
+
+// ShowVersion renders an older ACCEPTED version (or "original" for the
+// seed) read-only into #debate-document. Dismissed or unknown rounds
+// are 404 — dismissed suggestions never became a version.
+func (h *DebateHandler) ShowVersion(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.engine.RenderError(w, code, err.Error())
+		return
+	}
+	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
+	if !ok {
+		return
+	}
+	view := buildDebateView(deb, rounds, auth.IsStaffOrAbove(dctx.user.Role))
+
+	roundID := chi.URLParam(r, "roundID")
+	var viewing *ViewingVersion
+	if roundID == "original" {
+		viewing = &ViewingVersion{Label: 0, Text: deb.SeedDescription, RestoreFrom: 1}
+	} else {
+		label := 0
+		for _, rd := range rounds { // ASC — count accepted to derive the label
+			if rd.Status == "accepted" {
+				label++
+				if rd.ID == roundID {
+					viewing = &ViewingVersion{Label: label, Text: rd.OutputText, RestoreFrom: rd.RoundNumber + 1}
+					break
+				}
+			}
+		}
+	}
+	if viewing == nil {
+		h.renderDebateError(w, r, http.StatusNotFound, "That version no longer exists — reload the page.")
+		return
+	}
+	_ = h.engine.RenderPartial(w, "debate_document.html", map[string]any{
+		"OOB": false, "TicketID": dctx.ticket.ID, "View": view, "Debate": deb, "Viewing": viewing,
+	})
+}
+
+// loadActiveDebateAndRounds wraps the shared GET-partial preamble: 409
+// banner when the debate is no longer active (stale tab), 500 banner
+// on infra errors. ok=false means a response was already written.
+func (h *DebateHandler) loadActiveDebateAndRounds(w http.ResponseWriter, r *http.Request, dctx debateContext) (*models.FeatureDebate, []models.DebateRound, bool) {
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.renderDebateError(w, r, http.StatusConflict, debateMsgStale)
+		return nil, nil, false
+	}
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return nil, nil, false
+	}
+	rounds, err := h.db.GetDebateRounds(r.Context(), deb.ID)
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return nil, nil, false
+	}
+	return deb, rounds, true
+}
+
 // ── GET /tickets/{ticketID}/debate/effort ─────────────────────────
 
 // EffortChip returns the effort-chip partial. The server decides the

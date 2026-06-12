@@ -57,6 +57,8 @@ func setupDebateTestEnv(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore)
 		r.Post("/tickets/{ticketID}/debate/undo", h.UndoRound)
 		r.Post("/tickets/{ticketID}/debate/approve", h.ApproveDebate)
 		r.Post("/tickets/{ticketID}/debate/abandon", h.AbandonDebate)
+		r.Get("/tickets/{ticketID}/debate/document", h.ShowDocument)
+		r.Get("/tickets/{ticketID}/debate/versions/{roundID}", h.ShowVersion)
 	})
 	return r, db, sessions
 }
@@ -914,6 +916,97 @@ func TestStaleRoundAction_RendersErrorBanner409(t *testing.T) {
 	}
 	if second.Header().Get("HX-Retarget") != "#debate-flash" {
 		t.Fatalf("HX-Retarget = %q, want #debate-flash", second.Header().Get("HX-Retarget"))
+	}
+}
+
+func TestDocumentPartial_RendersCurrentText(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"the current body"})
+
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/document", nil)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("document GET: %d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-testid="debate-current-text"`) {
+		t.Fatalf("expected current-mode document partial, got: %s", body)
+	}
+	if !strings.Contains(body, "the current body") {
+		t.Fatalf("document must render current_text, got: %s", body)
+	}
+}
+
+func TestVersionViewPartial_AcceptedDismissedForeignAndOriginal(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	rounds := startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"version one text", "version two text"})
+	// Make a dismissed round: insert one more in_review round then reject it.
+	ctx := context.Background()
+	deb, err := db.GetActiveDebate(ctx, ticket.ID)
+	if err != nil {
+		t.Fatalf("GetActiveDebate: %v", err)
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	dismissedRound, _, err := db.InsertDebateRoundTx(ctx, tx, models.InsertDebateRoundInput{
+		DebateID:    deb.ID,
+		Provider:    "claude",
+		Model:       ai.ModelClaudeSonnet46,
+		TriggeredBy: deb.StartedBy,
+		InputText:   deb.CurrentText,
+		OutputText:  "dismissed suggestion text",
+		CostMicros:  0,
+	}, deb.CurrentText)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("InsertDebateRoundTx for dismissed: %v", err)
+	}
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		t.Fatalf("Commit: %v", commitErr)
+	}
+	dismissedRoundID := dismissedRound.ID
+	rejectReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/rounds/"+dismissedRoundID+"/reject", http.NoBody)
+	rejectReq.AddCookie(cookie)
+	rejectRec := httptest.NewRecorder()
+	r.ServeHTTP(rejectRec, rejectReq)
+	if rejectRec.Code >= 400 {
+		t.Fatalf("reject: %d %s", rejectRec.Code, rejectRec.Body.String())
+	}
+
+	get := func(rid string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/versions/"+rid, nil)
+		req.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	// Older accepted version (v1) is viewable with banner + restore target.
+	if w := get(rounds[0].ID); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), "version one text") ||
+		!strings.Contains(w.Body.String(), `data-testid="debate-viewing-banner"`) ||
+		!strings.Contains(w.Body.String(), "Viewing version 1") {
+		t.Fatalf("accepted version view wrong: %d %s", w.Code, w.Body.String())
+	}
+	// Dismissed round → 404.
+	if w := get(dismissedRoundID); w.Code != http.StatusNotFound {
+		t.Fatalf("dismissed round view: got %d, want 404", w.Code)
+	}
+	// Unknown round id → 404.
+	if w := get("00000000-0000-0000-0000-000000000000"); w.Code != http.StatusNotFound {
+		t.Fatalf("foreign round view: got %d, want 404", w.Code)
+	}
+	// Original sentinel → seed text + original banner copy.
+	if w := get("original"); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), "Viewing the original") {
+		t.Fatalf("original view wrong: %d %s", w.Code, w.Body.String())
 	}
 }
 
