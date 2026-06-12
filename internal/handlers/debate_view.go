@@ -20,7 +20,7 @@ type VersionEntry struct {
 	DecidedAt    *time.Time
 	RoundID      string
 	Provider     string
-	Feedback     string // snippet for the rail; empty when none given
+	Feedback     string // full feedback text; templates truncate for display
 	Model        string // staff/superadmin only — zeroed for clients
 	RoundNumber  int
 	VersionLabel int   // 0 for dismissed entries
@@ -68,12 +68,11 @@ func buildDebateView(deb *models.FeatureDebate, rounds []models.DebateRound, isS
 	for _, r := range rounds { // rounds are round_number ASC
 		switch r.Status {
 		case "in_review":
-			rr := r
 			v.Pending = &SuggestionView{
-				RoundID:    rr.ID,
-				Provider:   rr.Provider,
-				InputText:  rr.InputText,
-				OutputText: rr.OutputText,
+				RoundID:    r.ID,
+				Provider:   r.Provider,
+				InputText:  r.InputText,
+				OutputText: r.OutputText,
 			}
 			continue // never in the rail
 		case "accepted":

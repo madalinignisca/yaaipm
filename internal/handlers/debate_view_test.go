@@ -97,6 +97,29 @@ func TestBuildDebateView_StaffGating(t *testing.T) {
 	}
 }
 
+func TestBuildDebateView_AllRejectedRounds(t *testing.T) {
+	now := time.Now()
+	deb := &models.FeatureDebate{ID: "d1", Status: models.DebateStatusActive, CurrentText: "seed"}
+	rounds := []models.DebateRound{
+		mkRound("r1", 1, "rejected", "claude", "nope", timePtr(now)),
+		mkRound("r2", 2, "rejected", "gemini", "also nope", timePtr(now)),
+	}
+	v := buildDebateView(deb, rounds, false)
+
+	if v.CurrentVersionLabel != 0 {
+		t.Fatalf("CurrentVersionLabel = %d, want 0", v.CurrentVersionLabel)
+	}
+	if v.CanEditSeed {
+		t.Fatal("rounds exist (even all-rejected) — CanEditSeed must be false")
+	}
+	if len(v.Versions) != 2 || v.Versions[0].Accepted || v.Versions[1].Accepted {
+		t.Fatalf("expected 2 dismissed entries, got: %+v", v.Versions)
+	}
+	if v.LatestAcceptedRoundID != "" || v.Pending != nil {
+		t.Fatalf("no accepted/in_review rounds expected: latest=%q pending=%v", v.LatestAcceptedRoundID, v.Pending)
+	}
+}
+
 func TestBuildEffortChipView_StaleAndPolling(t *testing.T) {
 	now := time.Now()
 	recent := timePtr(now.Add(-10 * time.Second))
