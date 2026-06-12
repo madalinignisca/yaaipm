@@ -61,6 +61,36 @@ type PageData struct {
 	AssistantEnabled bool
 }
 
+// staticFuncMap returns template helpers that are pure functions with
+// no dependency on NewEngine's closed-over locals (assetFunc,
+// highlightCSSStr, md, sanitizer). Extracted so render_test.go can
+// exercise the helpers in isolation without constructing a full Engine.
+func staticFuncMap() template.FuncMap {
+	return template.FuncMap{
+		// renderDiff takes a cached unified-diff string (stored on
+		// feature_debate_rounds.diff_unified) and returns sanitized
+		// HTML with diff-add/diff-del/diff-ctx class spans. Every
+		// line is HTMLEscaped in diff.RenderHTML; see that package
+		// for the safety audit.
+		"renderDiff": func(unified *string) template.HTML {
+			// Nil pointer (no cached diff) and empty string both route
+			// through diff.RenderHTML, which handles the empty case by
+			// returning just the outer <pre><code></code></pre> wrapper.
+			var raw string
+			if unified != nil {
+				raw = *unified
+			}
+			return diff.RenderHTML(raw)
+		},
+		// renderInlineDiff renders a word-level prose diff between two
+		// texts (debate suggestion "What changed" tab). Sanitization
+		// lives in diff.RenderInlineHTML — see that package's audit.
+		"renderInlineDiff": func(before, after string) template.HTML {
+			return diff.RenderInlineHTML(before, after)
+		},
+	}
+}
+
 func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) {
 	e := &Engine{templates: make(map[string]*template.Template)}
 
@@ -247,25 +277,6 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 			return template.JS(b)
 		},
-		// Feature Debate Mode helpers (spec §5 UI rendering).
-		// renderDiff takes a cached unified-diff string (stored on
-		// feature_debate_rounds.diff_unified) and returns sanitized
-		// HTML with diff-add/diff-del/diff-ctx class spans. Every
-		// line is HTMLEscaped in diff.RenderHTML; see that package
-		// for the safety audit.
-		"renderDiff": func(unified *string) template.HTML {
-			// Nil pointer (no cached diff) and empty string both route
-			// through diff.RenderHTML, which handles the empty case by
-			// returning just the outer <pre><code></code></pre> wrapper.
-			// Keeps the template.HTML construction confined to the
-			// already-audited helper rather than minting a new cast
-			// here.
-			var raw string
-			if unified != nil {
-				raw = *unified
-			}
-			return diff.RenderHTML(raw)
-		},
 		// providerLabel maps an internal provider key (claude / gemini /
 		// openai) to its user-facing brand name. Computed server-side so
 		// the debate template doesn't have to put {{if}}{{end}} branches
@@ -373,6 +384,12 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				return template.HTML(`<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`)
 			}
 		},
+	}
+	// Merge stateless helpers (renderDiff, renderInlineDiff, …) so
+	// they're available to all templates without duplicating the
+	// function bodies inside the NewEngine literal.
+	for k, v := range staticFuncMap() {
+		funcMap[k] = v
 	}
 
 	layoutFiles, err := filepath.Glob(filepath.Join(templatesDir, "layouts", "*.html"))
