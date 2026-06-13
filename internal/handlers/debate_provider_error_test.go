@@ -57,9 +57,13 @@ func TestCreateRound_ProviderErrorRendersErrorBanner(t *testing.T) {
 
 	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
 
+	startRec := httptest.NewRecorder()
 	startReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/start", http.NoBody)
 	startReq.AddCookie(cookie)
-	r.ServeHTTP(httptest.NewRecorder(), startReq)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("start debate status = %d, want 303; body = %q", startRec.Code, startRec.Body.String())
+	}
 
 	form := url.Values{"provider": {"claude"}, "feedback": {"tighten it"}}
 	roundReq := httptest.NewRequest(http.MethodPost,

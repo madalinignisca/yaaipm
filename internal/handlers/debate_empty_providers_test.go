@@ -49,9 +49,13 @@ func TestShowDebate_NoProvidersConfigured(t *testing.T) {
 	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
 
 	// Start a debate so ShowDebate renders the composer partial.
+	startRec := httptest.NewRecorder()
 	startReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/start", http.NoBody)
 	startReq.AddCookie(cookie)
-	r.ServeHTTP(httptest.NewRecorder(), startReq)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("start debate status = %d, want 303; body = %q", startRec.Code, startRec.Body.String())
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate", http.NoBody)
 	req.AddCookie(cookie)

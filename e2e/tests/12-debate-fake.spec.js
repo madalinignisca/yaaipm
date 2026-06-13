@@ -37,10 +37,8 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
     await page.request.post('/orgs/debate-fake-org/projects', { form: { name: 'Debate Fake Project' } });
 
     await page.goto('/orgs/debate-fake-org/projects/debate-fake-project/features');
-    const html = await page.content();
-    const match = html.match(/project_id[^>]*value="([^"]+)"/);
-    const projectID = match ? match[1] : '';
-    expect(projectID, 'project id must be discoverable').not.toEqual('');
+    const projectID = await page.locator("input[name='project_id']").first().getAttribute('value');
+    expect(projectID, 'project id must be discoverable').toBeTruthy();
 
     const resp = await page.request.post('/tickets', {
       form: {
@@ -55,9 +53,8 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
     expect(resp.status(), 'create-ticket response').toBeLessThan(400);
 
     await page.goto('/orgs/debate-fake-org/projects/debate-fake-project/features');
-    const linkHTML = await page.content();
-    const linkMatch = linkHTML.match(/href="\/tickets\/([0-9a-f-]{36})"/);
-    ticketID = linkMatch ? linkMatch[1] : '';
+    const href = await page.locator("a[href^='/tickets/']").first().getAttribute('href');
+    ticketID = href ? href.split('/').pop() : '';
     expect(ticketID, 'ticket id must be discoverable on features tab').not.toEqual('');
 
     await page.close();
