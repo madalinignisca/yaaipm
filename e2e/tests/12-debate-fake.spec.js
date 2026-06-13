@@ -163,4 +163,27 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
     await expect(page.locator('[data-testid="debate-version-2"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="debate-version-3"]')).toHaveCount(0);
   });
+
+  test('feedback draft is auto-saved to localStorage and restored after reload', async ({ page }) => {
+    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
+
+    await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
+    await ensureComposer(page);
+
+    // Type a draft, then reload — issue #65 stashes it to localStorage so a
+    // failed AI call or an accidental navigation doesn't lose typed feedback.
+    const draft = 'remember this feedback draft';
+    await page.fill('[data-testid="debate-feedback"]', draft);
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await ensureComposer(page);
+    await expect(page.locator('[data-testid="debate-feedback"]')).toHaveValue(draft);
+
+    // Emptying the box clears the stored draft, so it does not restore later.
+    await page.fill('[data-testid="debate-feedback"]', '');
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await ensureComposer(page);
+    await expect(page.locator('[data-testid="debate-feedback"]')).toHaveValue('');
+  });
 });

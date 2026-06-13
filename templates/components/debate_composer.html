@@ -13,10 +13,18 @@
             hx-on::before-request="const p = this.querySelector('input[name=provider]:checked'); const t = document.getElementById('debate-thinking-provider'); if (p && t) { t.textContent = p.dataset.label || p.value; }"
             class="flex flex-col gap-3">
         {{csrfField}}
+        {{/* Persist the feedback draft to localStorage (issue #65) so it
+             survives a failed AI call or an accidental reload. Keyed by
+             ticket so drafts don't bleed across debates. Restore only when
+             the box is empty — a server pre-fill (e.g. a rejected round's
+             feedback) takes precedence. */}}
         <textarea name="feedback" rows="2" maxlength="2000"
                   placeholder="Optional: tell the AI what to focus on, e.g. 'add acceptance criteria'"
                   class="textarea textarea-bordered w-full text-sm"
-                  data-testid="debate-feedback">{{.Feedback}}</textarea>
+                  data-testid="debate-feedback"
+                  x-data="{ storeKey: 'debate-feedback:{{.TicketID}}' }"
+                  x-init="if (!$el.value) { const draft = localStorage.getItem(storeKey); if (draft) { $el.value = draft; } }"
+                  x-on:input="$el.value.trim() ? localStorage.setItem(storeKey, $el.value) : localStorage.removeItem(storeKey)">{{.Feedback}}</textarea>
         <div role="radiogroup" aria-label="AI provider" class="flex flex-wrap items-center gap-2">
           {{range $p := .Providers}}
             <label class="cursor-pointer" data-provider="{{$p}}">
