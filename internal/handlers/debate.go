@@ -50,7 +50,7 @@ type DebateConfig struct {
 	ClientRoundCap      int           // per-feature cap for clients (staff/superadmin bypass)
 	ClientDailyRoundCap int           // per-user daily safety fuse for clients
 	MaxFeedbackLen      int           // max characters accepted in the feedback textarea
-	MaxTextLen          int           // max characters for seed/description text (spec §3.3)
+	MaxTextLen          int           // max characters for seed/description text (seed/description size cap)
 	MinOutputLen        int           // minimum AI output length to accept
 	StaleReservationAge time.Duration // orphan-recovery threshold for in_flight_request_id
 	AICallTimeout       time.Duration // context timeout wrapping every refiner.Refine call
@@ -410,7 +410,7 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 
 	// Step 5: insert tx.
 	unified := diff.ComputeUnified(snapshot, text)
-	round, centsDelta, err := h.insertRound(r.Context(), models.InsertDebateRoundInput{
+	_, centsDelta, err := h.insertRound(r.Context(), models.InsertDebateRoundInput{
 		DebateID:     deb.ID,
 		Provider:     refiner.Name(),
 		Model:        refiner.Model(),
@@ -443,14 +443,7 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		log.Printf("debate CreateRound: project_costs rollup failed for debate %s: %v", deb.ID, err)
 	}
 
-	// Template expects {Round, TicketID} so the partial can build form
-	// action URLs scoped to the current ticket. Passing a bare round
-	// would leave .Round and $.TicketID undefined and silently break
-	// the Accept/Reject buttons.
-	_ = h.engine.RenderPartial(w, "debate_round.html", map[string]any{
-		"Round":    round,
-		"TicketID": dctx.ticket.ID,
-	})
+	h.renderWorkspaceUpdate(w, r, dctx, "")
 }
 
 // reserveInFlight wraps the reservation-tx boilerplate. Returns
@@ -625,15 +618,7 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 			deb.ID, round.ID, dctx.ticket.ProjectID, round.OutputText)
 	}
 
-	// Hx-Refresh triggers a full client-side reload after accept.
-	// We can't return just the round card via outerHTML swap because
-	// the next-round picker form is suppressed during in_review and
-	// only re-rendered by debate.html when no round is in_review.
-	// Without a reload the user sees the accepted card but no way to
-	// continue the debate (only Undo + Approve final remain). The
-	// reload re-renders debate.html which puts the picker back.
-	w.Header().Set("Hx-Refresh", "true")
-	w.WriteHeader(http.StatusNoContent)
+	h.renderWorkspaceUpdate(w, r, dctx, "")
 }
 
 // acceptRoundUnderLock runs the accept transaction: lock debate row,
@@ -761,8 +746,8 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 // ── POST /tickets/{ticketID}/debate/rounds/{roundID}/reject ───────
 
 // RejectRound marks an in_review round as rejected without touching
-// current_text. Returns the debate_next_round.html partial so HTMX
-// can replace the in-review card with the feedback+AI-picker form.
+// current_text. Returns the full workspace update via renderWorkspaceUpdate,
+// with the rejected round's feedback pre-filled in the composer textarea.
 func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
@@ -793,15 +778,21 @@ func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// debate_next_round.html builds form action URLs from .TicketID,
-	// so we must include it in the data map. Without TicketID the
-	// partial would post to /tickets//debate/... (empty path
-	// segment), breaking the next-round and Approve-Final actions.
-	_ = h.engine.RenderPartial(w, "debate_next_round.html", map[string]any{
-		"Debate":    deb,
-		"Providers": h.providerNames(),
-		"TicketID":  dctx.ticket.ID,
-	})
+	// Preserve the just-rejected round's feedback so the composer
+	// textarea pre-fills it — the user can tweak and retry rather
+	// than re-type from scratch. Re-query all rounds to find the
+	// rejected round rather than threading it through rejectRoundUnderLock,
+	// keeping the tx helper simple.
+	var feedback string
+	if allRounds, rErr := h.db.GetDebateRounds(r.Context(), deb.ID); rErr == nil {
+		for _, rd := range allRounds {
+			if rd.ID == roundID && rd.Feedback != nil {
+				feedback = *rd.Feedback
+				break
+			}
+		}
+	}
+	h.renderWorkspaceUpdate(w, r, dctx, feedback)
 }
 
 func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roundID string) error {
@@ -829,9 +820,9 @@ func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roun
 // ── POST /tickets/{ticketID}/debate/undo?from=N ───────────────────
 
 // UndoRound cascading-deletes every round with round_number >= N
-// and recomputes current_text. After undo, the client reloads the
-// debate page (via Hx-Redirect) to see the recomputed state —
-// simpler than the per-partial swap dance for timeline re-renders.
+// and recomputes current_text. Returns the full workspace update
+// (composer + OOB document/versions/chip) so the stage and all three
+// regions refresh in one response without a page reload.
 func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
@@ -876,8 +867,7 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Hx-Redirect", "/tickets/"+dctx.ticket.ID+"/debate")
-	w.WriteHeader(http.StatusSeeOther)
+	h.renderWorkspaceUpdate(w, r, dctx, "")
 }
 
 // ── POST /tickets/{ticketID}/debate/approve ──────────────────────
@@ -1039,6 +1029,39 @@ func (h *DebateHandler) undoUnderLock(ctx context.Context, debateID string, from
 		return uErr
 	}
 	return tx.Commit(ctx)
+}
+
+// renderWorkspaceUpdate emits the full post-mutation response: primary
+// content for #debate-stage (suggestion if one is pending, composer
+// otherwise) followed by OOB fragments for the document, versions rail,
+// and effort chip. One response, four regions, no reload (UI refactor
+// spec §5.3 — replaces the v0.2.0 Hx-Refresh/Hx-Redirect reloads).
+func (h *DebateHandler) renderWorkspaceUpdate(w http.ResponseWriter, r *http.Request, dctx debateContext, feedback string) {
+	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
+	if !ok {
+		return
+	}
+	isStaff := auth.IsStaffOrAbove(dctx.user.Role)
+	view := buildDebateView(deb, rounds, isStaff)
+	chip := buildEffortChipView(deb, rounds, dctx.ticket.ID, time.Now(), h.cfg.StaleReservationAge)
+	chip.OOB = true
+
+	if view.Pending != nil {
+		_ = h.engine.RenderPartial(w, "debate_suggestion.html", map[string]any{
+			"TicketID": dctx.ticket.ID, "Pending": view.Pending,
+		})
+	} else {
+		_ = h.engine.RenderPartial(w, "debate_composer.html", map[string]any{
+			"TicketID": dctx.ticket.ID, "Providers": h.providerNames(), "Feedback": feedback,
+		})
+	}
+	_ = h.engine.RenderPartial(w, "debate_document.html", map[string]any{
+		"OOB": true, "TicketID": dctx.ticket.ID, "View": view, "Debate": deb, "Viewing": nil,
+	})
+	_ = h.engine.RenderPartial(w, "debate_versions.html", map[string]any{
+		"OOB": true, "TicketID": dctx.ticket.ID, "View": view,
+	})
+	_ = h.engine.RenderPartial(w, "debate_effort_chip.html", chip)
 }
 
 // ── GET /tickets/{ticketID}/debate/document ───────────────────────

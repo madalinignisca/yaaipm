@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -23,7 +24,11 @@ import (
 // debate endpoints wired, using a FakeRefiner so tests don't burn a
 // network round-trip to any AI vendor. Exercises the handler's auth /
 // tenant / validation paths end-to-end through real middleware and DB.
-func setupDebateTestEnv(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore) {
+//
+// An optional scorer can be injected as the first variadic argument.
+// If omitted (or nil), the handler uses nil scorer (scoring silently skips).
+// This lets TestAccept_ReturnsBeforeScorerCompletes inject a blocking FakeScorer.
+func setupDebateTestEnv(t *testing.T, scorerOpt ...ai.Scorer) (*chi.Mux, *models.DB, *auth.SessionStore) {
 	t.Helper()
 
 	pool := testutil.SetupTestDB(t)
@@ -42,7 +47,11 @@ func setupDebateTestEnv(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore)
 			},
 		},
 	}
-	h := NewDebateHandler(db, engine, refiners, nil, DefaultDebateConfig())
+	var scorer ai.Scorer
+	if len(scorerOpt) > 0 {
+		scorer = scorerOpt[0]
+	}
+	h := NewDebateHandler(db, engine, refiners, scorer, DefaultDebateConfig())
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recover)
@@ -482,8 +491,7 @@ func startAndCreateRounds(t *testing.T, r *chi.Mux, db *models.DB, cookie *http.
 
 		// Accept via the HTTP handler so we exercise the production
 		// tx path including the FOR UPDATE status check. Accept any
-		// 2xx — current handler returns 204 + Hx-Refresh, but the
-		// status itself isn't load-bearing for the test.
+		// 2xx — handler returns 200 + OOB partials (Task 9).
 		acceptRec := httptest.NewRecorder()
 		acceptReq := httptest.NewRequest(http.MethodPost,
 			"/tickets/"+ticketID+"/debate/rounds/"+round.ID+"/accept", http.NoBody)
@@ -595,8 +603,12 @@ func TestUndoRound_CascadesLaterRoundsAndResetsEffort(t *testing.T) {
 	undoReq.AddCookie(cookie)
 	r.ServeHTTP(undoRec, undoReq)
 
-	if undoRec.Code != http.StatusSeeOther {
-		t.Errorf("undo status = %d, want %d", undoRec.Code, http.StatusSeeOther)
+	// Task 9: undo now returns 200 + OOB partials instead of 303 Hx-Redirect.
+	if undoRec.Code != http.StatusOK {
+		t.Errorf("undo status = %d, want 200", undoRec.Code)
+	}
+	if !strings.Contains(undoRec.Body.String(), `id="debate-document" hx-swap-oob="true"`) {
+		t.Errorf("undo must OOB-refresh the document region")
 	}
 
 	deb, _ := db.GetActiveDebate(ctx, ticket.ID)
@@ -627,8 +639,9 @@ func TestUndoRound_AllRoundsFallsBackToSeed(t *testing.T) {
 	undoReq.AddCookie(cookie)
 	r.ServeHTTP(undoRec, undoReq)
 
-	if undoRec.Code != http.StatusSeeOther {
-		t.Errorf("status = %d, want 303; body = %q", undoRec.Code, undoRec.Body.String())
+	// Task 9: undo now returns 200 + OOB partials instead of 303 Hx-Redirect.
+	if undoRec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200; body = %q", undoRec.Code, undoRec.Body.String())
 	}
 	deb, _ := db.GetActiveDebate(context.Background(), ticket.ID)
 	if deb.CurrentText != deb.SeedDescription {
@@ -903,10 +916,8 @@ func TestStaleRoundAction_RendersErrorBanner409(t *testing.T) {
 		return w
 	}
 	first := accept()
-	// 204 until Task 9 switches accept to partial responses; both are
-	// success here. Task 9 tightens this to == http.StatusOK.
-	if first.Code >= 400 {
-		t.Fatalf("first accept: got %d, want success", first.Code)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first accept: got %d, want 200", first.Code)
 	}
 	second := accept()
 	if second.Code != http.StatusConflict {
@@ -1115,4 +1126,255 @@ func TestEditSeed_UpdatesAndFreezesAfterRound(t *testing.T) {
 	if w := post("nope"); w.Code != http.StatusBadRequest {
 		t.Fatalf("frozen seed edit: got %d, want 400", w.Code)
 	}
+}
+
+// ── Task 9: OOB partial response tests ───────────────────────────────────────
+
+// insertInReviewRound is a test helper that starts a debate for the given
+// ticket and inserts a single in_review round with the specified output text.
+// Returns the debate and round so callers can build action URLs.
+func insertInReviewRound(t *testing.T, db *models.DB, cookie *http.Cookie, r *chi.Mux, ticketID, outputText string) (*models.FeatureDebate, *models.DebateRound) {
+	t.Helper()
+	ctx := context.Background()
+
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticketID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("insertInReviewRound /start: %d %s", startRec.Code, startRec.Body.String())
+	}
+
+	deb, err := db.GetActiveDebate(ctx, ticketID)
+	if err != nil {
+		t.Fatalf("insertInReviewRound GetActiveDebate: %v", err)
+	}
+
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("insertInReviewRound Begin: %v", err)
+	}
+	round, _, err := db.InsertDebateRoundTx(ctx, tx, models.InsertDebateRoundInput{
+		DebateID:    deb.ID,
+		Provider:    "claude",
+		Model:       ai.ModelClaudeSonnet46,
+		TriggeredBy: deb.StartedBy,
+		InputText:   deb.SeedDescription,
+		OutputText:  outputText,
+		CostMicros:  0,
+	}, deb.SeedDescription)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("insertInReviewRound InsertDebateRoundTx: %v", err)
+	}
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		t.Fatalf("insertInReviewRound Commit: %v", commitErr)
+	}
+	return deb, round
+}
+
+func TestAccept_NoHXRefreshHeader_ReturnsComposerAndOOB(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	_, round := insertInReviewRound(t, db, cookie, r, ticket.ID, "freshly accepted body text")
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", nil)
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("accept: got %d, want 200", w.Code)
+	}
+	if w.Header().Get("Hx-Refresh") != "" {
+		t.Fatal("Hx-Refresh must be gone (regression on #97 hack removal)")
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-testid="debate-composer"`) {
+		t.Fatalf("primary content must be the composer, got: %s", body)
+	}
+	for _, oob := range []string{
+		`id="debate-document" hx-swap-oob="true"`,
+		`id="debate-versions" hx-swap-oob="true"`,
+		`id="debate-effort-chip" hx-swap-oob="true"`,
+	} {
+		if !strings.Contains(body, oob) {
+			t.Fatalf("missing OOB fragment %q", oob)
+		}
+	}
+	if !strings.Contains(body, "freshly accepted body text") {
+		t.Fatal("OOB document must carry the new current text")
+	}
+}
+
+func TestReject_ReturnsComposerWithFeedbackPreserved(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	ctx := context.Background()
+
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("/start: %d %s", startRec.Code, startRec.Body.String())
+	}
+
+	deb, err := db.GetActiveDebate(ctx, ticket.ID)
+	if err != nil {
+		t.Fatalf("GetActiveDebate: %v", err)
+	}
+
+	feedback := "focus on security"
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	round, _, err := db.InsertDebateRoundTx(ctx, tx, models.InsertDebateRoundInput{
+		DebateID:    deb.ID,
+		Provider:    "claude",
+		Model:       ai.ModelClaudeSonnet46,
+		TriggeredBy: deb.StartedBy,
+		Feedback:    feedback,
+		InputText:   deb.SeedDescription,
+		OutputText:  "some output text",
+		CostMicros:  0,
+	}, deb.SeedDescription)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("InsertDebateRoundTx: %v", err)
+	}
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		t.Fatalf("Commit: %v", commitErr)
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/reject", nil)
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("reject: got %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-testid="debate-composer"`) {
+		t.Fatalf("response must contain the composer, got: %s", body)
+	}
+	if !strings.Contains(body, "focus on security") {
+		t.Fatalf("feedback must be preserved in the composer textarea, got: %s", body)
+	}
+	if !strings.Contains(body, `id="debate-versions" hx-swap-oob="true"`) {
+		t.Fatalf("versions OOB must be present so rail shows dismissed entry, got: %s", body)
+	}
+}
+
+func TestUndo_ReturnsComposerAndOOBDocument(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	rounds := startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"v1 text"})
+	_ = rounds
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/undo?from=1", nil)
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("undo: %d %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Hx-Redirect") != "" {
+		t.Fatal("undo must no longer redirect")
+	}
+	if !strings.Contains(w.Body.String(), `id="debate-document" hx-swap-oob="true"`) {
+		t.Fatalf("undo must OOB-refresh the document: %s", w.Body.String())
+	}
+}
+
+func TestCreateRound_ReturnsSuggestionPanelAndOOB(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+
+	// Start the debate.
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("/start: %d %s", startRec.Code, startRec.Body.String())
+	}
+
+	// POST /debate/rounds — the FakeRefiner returns "refactored description from claude".
+	body := strings.NewReader("provider=claude&feedback=make+it+better")
+	req := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/rounds", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("create round: %d %s", w.Code, w.Body.String())
+	}
+	resp := w.Body.String()
+	if !strings.Contains(resp, `data-testid="debate-suggestion"`) {
+		t.Fatalf("primary content must be the suggestion panel, got: %s", resp)
+	}
+	if !strings.Contains(resp, `id="debate-versions" hx-swap-oob="true"`) {
+		t.Fatalf("versions OOB must be present, got: %s", resp)
+	}
+}
+
+func TestAccept_ReturnsBeforeScorerCompletes(t *testing.T) {
+	// Blocking FakeScorer: Score blocks on ch until unblocked.
+	ch := make(chan struct{})
+	scorer := &ai.FakeScorer{
+		Result: ai.ScoreResult{Score: 5, Hours: 8, Reasoning: "medium complexity"},
+		Delay:  func() { <-ch },
+	}
+	r, db, sessions := setupDebateTestEnv(t, scorer)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	_, round := insertInReviewRound(t, db, cookie, r, ticket.ID, "scored text")
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", nil)
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req) // must return before scorer unblocks
+
+	// Response must arrive (200 + composer + OOB) while scorer is still blocked.
+	if w.Code != http.StatusOK {
+		close(ch) // unblock goroutine before failing so test cleanup is clean
+		t.Fatalf("accept: got %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `data-testid="debate-composer"`) {
+		close(ch)
+		t.Fatalf("response must contain composer before scorer completes: %s", w.Body.String())
+	}
+
+	// Unblock scorer and wait for it to write the score.
+	close(ch)
+	ctx := context.Background()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		deb, err := db.GetActiveDebate(ctx, ticket.ID)
+		if err != nil {
+			break // debate may have become terminal — stop polling
+		}
+		if deb.LastScoredRoundID != nil && *deb.LastScoredRoundID == round.ID {
+			// Score landed.
+			if deb.EffortScore == nil {
+				t.Fatalf("last_scored_round_id set but effort_score is nil")
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("scorer did not write last_scored_round_id within 5s after being unblocked")
 }

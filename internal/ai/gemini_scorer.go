@@ -77,8 +77,7 @@ func (s *GeminiScorer) Score(ctx context.Context, text string) (ScoreResult, err
 	// Defensive clamps. ResponseSchema should enforce the bounds server-
 	// side, but a wayward model or SDK quirk could still return an
 	// out-of-range value. Clamping means a bad response never reaches
-	// the CSS calc() in debate_sidebar.html with a negative or >100%
-	// pointer position.
+	// the effort chip's display logic with an out-of-range score.
 	score := min(max(out.Score, 1), 10)
 	hours := max(out.Hours, 1)
 

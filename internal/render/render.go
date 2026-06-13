@@ -67,21 +67,6 @@ type PageData struct {
 // exercise the helpers in isolation without constructing a full Engine.
 func staticFuncMap() template.FuncMap {
 	return template.FuncMap{
-		// renderDiff takes a cached unified-diff string (stored on
-		// feature_debate_rounds.diff_unified) and returns sanitized
-		// HTML with diff-add/diff-del/diff-ctx class spans. Every
-		// line is HTMLEscaped in diff.RenderHTML; see that package
-		// for the safety audit.
-		"renderDiff": func(unified *string) template.HTML {
-			// Nil pointer (no cached diff) and empty string both route
-			// through diff.RenderHTML, which handles the empty case by
-			// returning just the outer <pre><code></code></pre> wrapper.
-			var raw string
-			if unified != nil {
-				raw = *unified
-			}
-			return diff.RenderHTML(raw)
-		},
 		// renderInlineDiff renders a word-level prose diff between two
 		// texts (debate suggestion "What changed" tab). Sanitization
 		// lives in diff.RenderInlineHTML — see that package's audit.
@@ -312,20 +297,17 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				return badgeGhost
 			}
 		},
-		// derefInt / derefString unwrap nullable *int and *string
-		// fields for safe template-side display; zero/empty values
-		// substitute for nil. Used by debate_sidebar.html for the
-		// effort_score / effort_hours / effort_reasoning columns.
+		// derefInt unwraps nullable *int fields for safe template-side
+		// display; zero substitutes for nil. Used by debate_effort_chip.html
+		// for the effort_score / effort_hours columns.
 		"derefInt": func(p *int) int {
 			if p == nil {
 				return 0
 			}
 			return *p
 		},
-		// derefString omitted — the existing derefStr helper (line 187)
-		// already covers this case; debate_sidebar.html uses derefStr.
 		// relTime renders a nullable *time.Time as "just now" / "5m ago"
-		// / "2h ago" / "3d ago" for the sidebar's "last scored"
+		// / "2h ago" / "3d ago" for the effort chip's "last scored"
 		// indicator. Returns an em-dash for nil so the template can
 		// always substitute it into a sentence fragment.
 		"relTime": func(t *time.Time) string {
@@ -385,9 +367,7 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 		},
 	}
-	// Merge stateless helpers (renderDiff, renderInlineDiff, …) so
-	// they're available to all templates without duplicating the
-	// function bodies inside the NewEngine literal.
+	// Stateless helpers needed by render_test.go live in staticFuncMap() below.
 	for k, v := range staticFuncMap() {
 		funcMap[k] = v
 	}
