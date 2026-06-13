@@ -180,6 +180,7 @@
   padding: 0 0.125rem;
   background: color-mix(in oklab, var(--color-success) 25%, transparent);
 }
+/* browser-default line-through kept deliberately — matches the approved design mockup */
 .diff-inline del.diff-del {
   border-radius: 0.25rem;
   padding: 0 0.125rem;

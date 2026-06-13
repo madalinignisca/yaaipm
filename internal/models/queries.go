@@ -2798,8 +2798,8 @@ func (db *DB) UpdateDebateSeed(ctx context.Context, debateID, text string) error
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE feature_debates
-		SET seed_description = $1, current_text = $1, updated_at = now()
-		WHERE id = $2`, text, debateID); err != nil {
+		   SET seed_description = $1, current_text = $1, updated_at = now()
+		 WHERE id = $2`, text, debateID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
