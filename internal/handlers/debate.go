@@ -13,6 +13,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -61,6 +62,17 @@ type DebateConfig struct {
 	MinOutputLen        int           // minimum AI output length to accept
 	StaleReservationAge time.Duration // orphan-recovery threshold for in_flight_request_id
 	AICallTimeout       time.Duration // context timeout wrapping every refiner.Refine call
+
+	// Effort-score retry sweep (phase-2 #68). The in-process background
+	// sweep claims debates whose latest accept settled more than
+	// EffortRetryMinAge ago but whose effort score is still NULL, then
+	// retries the scorer with an exponential backoff growing from
+	// EffortRetryBaseBackoff and capped at EffortRetryMaxBackoff.
+	EffortRetrySweepInterval time.Duration // how often the background goroutine ticks
+	EffortRetryMinAge        time.Duration // latest accept must be older than this before retrying
+	EffortRetryBaseBackoff   time.Duration // first-attempt backoff; doubles each subsequent attempt
+	EffortRetryMaxBackoff    time.Duration // ceiling on the backoff interval
+	EffortRetryBatchSize     int           // max debates claimed per sweep
 }
 
 // DefaultDebateConfig returns the spec-aligned defaults (§3.3, §6).
@@ -73,6 +85,12 @@ func DefaultDebateConfig() DebateConfig {
 		MinOutputLen:        10,
 		StaleReservationAge: 90 * time.Second,
 		AICallTimeout:       60 * time.Second,
+
+		EffortRetrySweepInterval: 5 * time.Minute,
+		EffortRetryMinAge:        5 * time.Minute,
+		EffortRetryBaseBackoff:   5 * time.Minute,
+		EffortRetryMaxBackoff:    time.Hour,
+		EffortRetryBatchSize:     20,
 	}
 }
 
@@ -720,11 +738,26 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 		return
 	}
 
-	// Accumulator + conditional score update under a fresh lock.
+	if applyErr := h.applyScoreResult(ctx, debateID, roundID, projectID, res); applyErr != nil {
+		log.Printf("debate scoreAfterAccept: %v", applyErr)
+	}
+}
+
+// applyScoreResult persists one scorer result: the per-round scorer cost,
+// the conditional effort_* update (UpdateEffortScoreCondTx silently
+// discards out-of-order responses), and the debate's total_cost_micros
+// accumulator, all under a single debate-row lock to stay consistent with
+// the cost accounting (spec §6). The project_costs rollup happens after
+// commit and is non-fatal — those cents are reconstructable from the
+// per-round cost_micros + scorer_cost_micros.
+//
+// Shared by the accept path (scoreAfterAccept) and the background retry
+// sweep (retryOneEffortScore) so the cost-accounting write lives in
+// exactly one place. Returns a wrapped error for the caller to log.
+func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID, projectID string, res ai.ScoreResult) error {
 	tx, err := h.db.Pool.Begin(ctx)
 	if err != nil {
-		log.Printf("debate scoreAfterAccept: Begin: %v", err)
-		return
+		return fmt.Errorf("begin scorer tx for debate %s: %w", debateID, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -732,17 +765,14 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 	if qErr := tx.QueryRow(ctx,
 		`SELECT total_cost_micros FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
 	).Scan(&oldTotal); qErr != nil {
-		log.Printf("debate scoreAfterAccept: lock debate %s: %v", debateID, qErr)
-		return
+		return fmt.Errorf("lock debate %s: %w", debateID, qErr)
 	}
 
 	if uErr := h.db.UpdateScorerCostMicros(ctx, tx, roundID, res.Usage.CostMicros); uErr != nil {
-		log.Printf("debate scoreAfterAccept: update scorer cost on round %s: %v", roundID, uErr)
-		return
+		return fmt.Errorf("update scorer cost on round %s: %w", roundID, uErr)
 	}
 	if uErr := h.db.UpdateEffortScoreCondTx(ctx, tx, debateID, roundID, res.Score, res.Hours, res.Reasoning); uErr != nil {
-		log.Printf("debate scoreAfterAccept: UpdateEffortScoreCondTx debate %s: %v", debateID, uErr)
-		return
+		return fmt.Errorf("UpdateEffortScoreCondTx debate %s: %w", debateID, uErr)
 	}
 
 	newTotal := oldTotal + res.Usage.CostMicros
@@ -750,18 +780,65 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 		`UPDATE feature_debates SET total_cost_micros = $1, updated_at = now() WHERE id = $2`,
 		newTotal, debateID,
 	); uErr != nil {
-		log.Printf("debate scoreAfterAccept: update total_cost_micros debate %s: %v", debateID, uErr)
-		return
+		return fmt.Errorf("update total_cost_micros debate %s: %w", debateID, uErr)
 	}
 
 	if commitErr := tx.Commit(ctx); commitErr != nil {
-		log.Printf("debate scoreAfterAccept: Commit debate %s: %v", debateID, commitErr)
-		return
+		return fmt.Errorf("commit scorer tx for debate %s: %w", debateID, commitErr)
 	}
 
 	centsDelta := newTotal/10000 - oldTotal/10000
 	if incErr := h.db.IncrementProjectCostCents(ctx, projectID, centsDelta); incErr != nil {
-		log.Printf("debate scoreAfterAccept: project_costs rollup for scorer cost: %v", incErr)
+		log.Printf("debate applyScoreResult: project_costs rollup for debate %s: %v", debateID, incErr)
+	}
+	return nil
+}
+
+// RetryStaleEffortScores is the periodic background sweep behind phase-2
+// issue #68. scoreAfterAccept is fire-and-forget, so a transient scorer
+// failure leaves effort_* NULL and the sidebar stuck on its empty state
+// indefinitely. This sweep claims those stale debates
+// (models.ClaimStaleEffortScores), re-runs the scorer for each OUTSIDE
+// any DB lock, and applies the result via the same path the accept flow
+// uses.
+//
+// Safe to run on every server replica concurrently: the claim's
+// FOR UPDATE SKIP LOCKED plus the backoff lease guarantees each debate is
+// scored by at most one replica per window. A nil scorer (no
+// GEMINI_API_KEY) makes it a no-op, matching the accept path.
+func (h *DebateHandler) RetryStaleEffortScores(ctx context.Context) {
+	if h.scorer == nil {
+		return
+	}
+	claimed, err := h.db.ClaimStaleEffortScores(ctx, time.Now(),
+		h.cfg.EffortRetryMinAge, h.cfg.EffortRetryBaseBackoff,
+		h.cfg.EffortRetryMaxBackoff, h.cfg.EffortRetryBatchSize)
+	if err != nil {
+		log.Printf("debate RetryStaleEffortScores: claim: %v", err)
+		return
+	}
+	for _, d := range claimed {
+		h.retryOneEffortScore(ctx, d)
+	}
+}
+
+// retryOneEffortScore scores a single claimed debate. Split from the
+// sweep loop so its per-call context timeout is released each iteration
+// (a deferred cancel inside the loop would pile up until the sweep
+// returns). The claim already advanced this debate's backoff lease, so a
+// scorer failure here simply means the next sweep retries after the
+// backoff elapses.
+func (h *DebateHandler) retryOneEffortScore(ctx context.Context, d models.StaleEffortDebate) {
+	callCtx, cancel := context.WithTimeout(ctx, h.cfg.AICallTimeout)
+	defer cancel()
+
+	res, err := h.scorer.Score(callCtx, d.OutputText)
+	if err != nil {
+		log.Printf("debate RetryStaleEffortScores: scorer failed for debate %s round %s: %v", d.DebateID, d.RoundID, err)
+		return
+	}
+	if applyErr := h.applyScoreResult(ctx, d.DebateID, d.RoundID, d.ProjectID, res); applyErr != nil {
+		log.Printf("debate RetryStaleEffortScores: %v", applyErr)
 	}
 }
 

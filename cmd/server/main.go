@@ -174,7 +174,8 @@ func main() {
 		// #63 makes this configurable per project.
 		debateScorer = ai.NewGeminiScorer(geminiClient, cfg.GeminiModel)
 	}
-	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, handlers.DefaultDebateConfig())
+	debateCfg := handlers.DefaultDebateConfig()
+	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, debateCfg)
 	log.Printf("Feature Debate Mode wired (%d refiners, scorer=%v)", len(debateRefiners), debateScorer != nil)
 
 	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
@@ -346,6 +347,23 @@ func main() {
 			_ = db.ExpireOldInvitations(context.Background())
 		}
 	}()
+
+	// Effort-score retry sweep (phase-2 #68). Self-heals debates whose
+	// accept-path scorer call failed, leaving effort_* NULL and the sidebar
+	// stuck on its empty state. Runs in-process on each replica;
+	// ClaimStaleEffortScores uses FOR UPDATE SKIP LOCKED + a backoff lease
+	// so the two forgedesk-server replicas never double-score (double-bill)
+	// the same debate. Guarded on the scorer being configured — without
+	// GEMINI_API_KEY there is nothing to call.
+	if debateScorer != nil {
+		go func() {
+			ticker := time.NewTicker(debateCfg.EffortRetrySweepInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				debateH.RetryStaleEffortScores(context.Background())
+			}
+		}()
+	}
 
 	// Graceful shutdown
 	go func() {
