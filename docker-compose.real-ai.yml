@@ -1,0 +1,25 @@
+# Overlay for the opt-in real-AI debate smoke (issue #81, Part B).
+#
+# Runs the app from docker-compose.test.yml against LIVE provider APIs
+# instead of the fake refiner. Provider keys are read from your shell
+# environment (no secrets live in this file). Usage:
+#
+#   export ANTHROPIC_API_KEY=... OPENAI_API_KEY=... GEMINI_API_KEY=...
+#   docker compose -f docker-compose.test.yml -f docker-compose.real-ai.yml up -d --build app
+#   (cd e2e && npm run e2e:real-ai)
+#
+# Costs a few cents per run. The default models are the cheapest tier per
+# provider (gpt-5-mini, gemini-2.5-flash); set ANTHROPIC_MODEL to a Haiku
+# tier to cut the Anthropic cost further. Never run this in per-PR CI.
+services:
+  app:
+    environment:
+      # Disable the fake refiner (base file sets it to "fake") and turn on
+      # the real-AI marker so the server logs the billable-calls warning.
+      DEBATE_REFINER_MODE: ""
+      DEBATE_REAL_AI: "1"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      # Optional cheaper Anthropic tier; falls back to the app default.
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-}"

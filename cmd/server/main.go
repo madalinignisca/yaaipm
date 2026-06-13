@@ -141,12 +141,21 @@ func main() {
 	// (anything that isn't localhost/127.0.0.1 or explicitly marked
 	// as an http test origin). Fakes in production are how you ship
 	// a feature that "works" but talks to no real AI.
+	const debateRefinerModeFake = "fake"
 	debateRefinerMode := os.Getenv("DEBATE_REFINER_MODE")
-	if debateRefinerMode == "fake" {
+	if debateRefinerMode == debateRefinerModeFake {
 		if !isLocalDebateEnv(cfg.BaseURL) {
 			log.Fatalf("DEBATE_REFINER_MODE=fake set against non-local BaseURL %q — refusing to start (see cmd/server/main.go)", cfg.BaseURL)
 		}
 		log.Printf("WARNING: DEBATE_REFINER_MODE=fake — all debate refiners return canned output")
+	}
+
+	// DEBATE_REAL_AI=1 marks the opt-in real-AI smoke mode (e2e/tests/
+	// 13-debate-real-ai.spec.js). It drives the debate UI against live
+	// provider APIs, so it is mutually exclusive with the fake refiners.
+	debateRealAI := os.Getenv("DEBATE_REAL_AI") == "1"
+	if debateRealAI && debateRefinerMode == debateRefinerModeFake {
+		log.Fatal("DEBATE_REAL_AI=1 and DEBATE_REFINER_MODE=fake are mutually exclusive — choose real providers or fakes, not both")
 	}
 
 	debateRefiners := map[string]ai.Refiner{}
@@ -165,7 +174,7 @@ func main() {
 	}
 	// Swap in fakes for E2E tests when explicitly opted in (guarded
 	// against production above).
-	if debateRefinerMode == "fake" {
+	if debateRefinerMode == debateRefinerModeFake {
 		debateRefiners = buildFakeDebateRefiners()
 	}
 	var debateScorer ai.Scorer
@@ -177,6 +186,13 @@ func main() {
 	debateCfg := handlers.DefaultDebateConfig()
 	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, debateCfg)
 	log.Printf("Feature Debate Mode wired (%d refiners, scorer=%v)", len(debateRefiners), debateScorer != nil)
+
+	if debateRealAI {
+		if len(debateRefiners) == 0 {
+			log.Fatal("DEBATE_REAL_AI=1 but no provider API keys configured — set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")
+		}
+		log.Printf("WARNING: DEBATE_REAL_AI=1 — debate refiners and scorer make REAL, billable provider calls (%d providers, scorer=%v)", len(debateRefiners), debateScorer != nil)
+	}
 
 	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
 	authLimiter := middleware.NewRateLimiter(0.5, 5)

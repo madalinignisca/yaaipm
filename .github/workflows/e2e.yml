@@ -1,0 +1,72 @@
+name: E2E
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  debate-e2e:
+    name: debate fake-backed e2e
+    runs-on: ubuntu-latest
+    # Cap the whole job so a hung image build or stuck container can't run the
+    # runner indefinitely (the per-step health wait only covers startup).
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build + start the full stack (postgres, minio, migrate, app) with
+      # DEBATE_REFINER_MODE=fake (set in docker-compose.test.yml), so the
+      # debate refiners return canned output and no provider API keys are
+      # needed. The app is published on :8081.
+      - name: Start test stack
+        run: docker compose -f docker-compose.test.yml up -d --build
+
+      - name: Wait for app health
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/health || true)
+            if [ "$code" = "200" ]; then echo "app healthy"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::app did not become healthy on :8081"
+          docker compose -f docker-compose.test.yml logs app
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install e2e dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      # Runs the fake-backed debate spec only. It self-registers the first
+      # user (registration is first-user-only), so it must run against the
+      # fresh CI database on its own — do not add other self-registering
+      # specs to this invocation.
+      - name: Run fake-backed debate e2e
+        working-directory: e2e
+        env:
+          BASE_URL: http://localhost:8081
+        run: npx playwright test 12-debate-fake.spec.js
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: e2e/test-results/
+          retention-days: 7
+
+      - name: Dump app logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs app
