@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -328,7 +329,9 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	feedback := strings.TrimSpace(r.FormValue("feedback"))
-	if len(feedback) > h.cfg.MaxFeedbackLen {
+	// Rune count, not bytes — the textarea's maxlength counts characters,
+	// so multi-byte input (emoji, accents) must not be over-rejected here.
+	if utf8.RuneCountInString(feedback) > h.cfg.MaxFeedbackLen {
 		h.renderDebateError(w, r, http.StatusRequestEntityTooLarge,
 			"Your feedback is too long — please shorten it.")
 		return
@@ -1198,7 +1201,7 @@ func (h *DebateHandler) EditSeed(w http.ResponseWriter, r *http.Request) {
 		h.renderDebateError(w, r, http.StatusBadRequest, "The starting text can't be empty.")
 		return
 	}
-	if len(seed) > h.cfg.MaxTextLen {
+	if utf8.RuneCountInString(seed) > h.cfg.MaxTextLen {
 		h.renderDebateError(w, r, http.StatusRequestEntityTooLarge, "The starting text is too long.")
 		return
 	}
@@ -1223,6 +1226,7 @@ func (h *DebateHandler) EditSeed(w http.ResponseWriter, r *http.Request) {
 		h.renderDebateError(w, r, http.StatusConflict, debateMsgStale)
 		return
 	default:
+		log.Printf("debate EditSeed: %v", err)
 		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
 		return
 	}
