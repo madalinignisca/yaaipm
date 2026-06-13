@@ -200,3 +200,69 @@ func TestCountUserRoundsLast24h_ZeroForNewUser(t *testing.T) {
 		t.Errorf("count = %d, want 0", n)
 	}
 }
+
+func TestUpdateDebateSeed_GuardsRoundsAndInFlight(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := NewDB(pool)
+	ctx := context.Background()
+
+	orgID, userID, projectID, ticketID := seedFeatureTicket(t, db, "original seed")
+
+	deb, err := db.StartDebate(ctx, ticketID, projectID, orgID, userID)
+	if err != nil {
+		t.Fatalf("StartDebate: %v", err)
+	}
+
+	// Happy path: zero rounds → edit must succeed.
+	if execErr := db.UpdateDebateSeed(ctx, deb.ID, "edited seed"); execErr != nil {
+		t.Fatalf("seed edit with no rounds must succeed: %v", execErr)
+	}
+	got, err := db.GetActiveDebate(ctx, ticketID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SeedDescription != "edited seed" || got.CurrentText != "edited seed" {
+		t.Fatalf("seed edit must update seed_description AND current_text: seed=%q current=%q",
+			got.SeedDescription, got.CurrentText)
+	}
+
+	// In-flight reservation blocks the edit.
+	if _, err := db.Pool.Exec(ctx,
+		`UPDATE feature_debates SET in_flight_request_id = gen_random_uuid(), in_flight_started_at = now() WHERE id = $1`,
+		deb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateDebateSeed(ctx, deb.ID, "x"); !errors.Is(err, ErrInFlightAIRequest) {
+		t.Fatalf("want ErrInFlightAIRequest, got %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx,
+		`UPDATE feature_debates SET in_flight_request_id = NULL, in_flight_started_at = NULL WHERE id = $1`,
+		deb.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Any existing round (any status) freezes the seed.
+	if _, err := db.Pool.Exec(ctx, `
+		INSERT INTO feature_debate_rounds
+			(debate_id, round_number, provider, model, triggered_by, input_text, output_text, status)
+		VALUES ($1, 1, 'claude', 'claude-sonnet-4-6', $2, 'in', 'out', 'rejected')`,
+		deb.ID, userID); err != nil {
+		t.Fatalf("inserting test round: %v", err)
+	}
+	if err := db.UpdateDebateSeed(ctx, deb.ID, "y"); !errors.Is(err, ErrSeedFrozen) {
+		t.Fatalf("want ErrSeedFrozen, got %v", err)
+	}
+
+	// Terminal debate blocks the edit.
+	if _, err := db.Pool.Exec(ctx,
+		`DELETE FROM feature_debate_rounds WHERE debate_id = $1`, deb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx,
+		`UPDATE feature_debates SET status = 'abandoned' WHERE id = $1`, deb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateDebateSeed(ctx, deb.ID, "z"); !errors.Is(err, ErrDebateNotActive) {
+		t.Fatalf("want ErrDebateNotActive, got %v", err)
+	}
+}

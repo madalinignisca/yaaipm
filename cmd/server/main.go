@@ -290,6 +290,7 @@ func main() {
 		// Feature Debate Mode (spec §4). Task 9 extends this block
 		// with approve/abandon.
 		r.Get("/tickets/{ticketID}/debate", debateH.ShowDebate)
+		r.Get("/tickets/{ticketID}/debate/effort", debateH.EffortChip)
 		r.Post("/tickets/{ticketID}/debate/start", debateH.StartDebate)
 		r.Post("/tickets/{ticketID}/debate/rounds", debateH.CreateRound)
 		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", debateH.AcceptRound)
@@ -297,6 +298,9 @@ func main() {
 		r.Post("/tickets/{ticketID}/debate/undo", debateH.UndoRound)
 		r.Post("/tickets/{ticketID}/debate/approve", debateH.ApproveDebate)
 		r.Post("/tickets/{ticketID}/debate/abandon", debateH.AbandonDebate)
+		r.Post("/tickets/{ticketID}/debate/seed", debateH.EditSeed)
+		r.Get("/tickets/{ticketID}/debate/document", debateH.ShowDocument)
+		r.Get("/tickets/{ticketID}/debate/versions/{roundID}", debateH.ShowVersion)
 
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)

@@ -1,0 +1,60 @@
+{{define "debate_composer.html"}}
+<div class="card bg-base-100 border border-base-300" data-testid="debate-composer">
+  <div class="card-body p-5 gap-3">
+    <div class="text-xs uppercase tracking-wider text-base-content/60 font-medium">
+      Want it improved further?
+    </div>
+    {{if .Providers}}
+      <form id="debate-suggest-form"
+            hx-post="/tickets/{{.TicketID}}/debate/rounds"
+            hx-target="#debate-stage" hx-swap="innerHTML"
+            hx-indicator="#debate-thinking"
+            hx-disabled-elt="find button[type='submit']"
+            hx-on::before-request="const p = this.querySelector('input[name=provider]:checked'); const t = document.getElementById('debate-thinking-provider'); if (p && t) { t.textContent = p.dataset.label || p.value; }"
+            class="flex flex-col gap-3">
+        {{csrfField}}
+        <textarea name="feedback" rows="2" maxlength="2000"
+                  placeholder="Optional: tell the AI what to focus on, e.g. 'add acceptance criteria'"
+                  class="textarea textarea-bordered w-full text-sm"
+                  data-testid="debate-feedback">{{.Feedback}}</textarea>
+        <div role="radiogroup" aria-label="AI provider" class="flex flex-wrap items-center gap-2">
+          {{range $p := .Providers}}
+            <label class="cursor-pointer" data-provider="{{$p}}">
+              <input type="radio" name="provider" value="{{$p}}" data-label="{{providerLabel $p}}" class="peer sr-only">
+              <span class="badge badge-soft {{providerBadgeClass $p}} cursor-pointer select-none
+                           peer-checked:badge-outline peer-checked:ring-2 peer-checked:ring-offset-2
+                           peer-checked:ring-offset-base-100
+                           peer-focus-visible:ring-2 peer-focus-visible:ring-primary transition-all">
+                {{providerLabel $p}}
+              </span>
+            </label>
+          {{end}}
+        </div>
+        <script>
+          (function () {
+            var first = document.querySelector('#debate-suggest-form input[name="provider"]');
+            if (first) { first.checked = true; }
+          })();
+        </script>
+        <div>
+          <button type="submit" class="btn btn-primary btn-sm" data-testid="debate-suggest">
+            Suggest improvements
+          </button>
+        </div>
+      </form>
+    {{else}}
+      <div class="text-sm text-base-content/60">
+        No AI providers are configured on this server — suggestions are unavailable.
+      </div>
+    {{end}}
+    <div id="debate-thinking" class="htmx-indicator border-2 border-dashed border-primary/40 rounded-lg p-4 text-center text-sm" aria-live="polite">
+      <span class="loading loading-spinner loading-sm text-primary"></span>
+      <strong id="debate-thinking-provider">The AI</strong> is writing a suggestion…
+      <div class="text-xs text-base-content/50 mt-1">usually takes about 10 seconds</div>
+    </div>
+    <div class="text-xs text-base-content/50">
+      Happy with it as-is? Use <strong>✓ Use this version</strong> in the header — it saves the text to the ticket.
+    </div>
+  </div>
+</div>
+{{end}}
