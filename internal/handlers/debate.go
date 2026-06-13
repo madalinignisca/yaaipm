@@ -13,11 +13,13 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -35,6 +37,20 @@ import (
 // Context's type check and future authz/routing branches.
 const ticketTypeFeature = "feature"
 
+// Client-facing error copy shared across debate handlers (UI refactor
+// spec §5.4). Centralized so wording stays consistent across the ~20
+// call sites.
+const (
+	debateMsgStale = "This page is out of date — reload to see the latest state."
+	debateMsgInfra = "Something went wrong on our side — nothing was changed."
+
+	// Round status strings used in Go-side comparisons (handlers package).
+	// Do NOT change these — they must match the values stored in the DB by the models package.
+	roundStatusAccepted = "accepted"
+	roundStatusInReview = "in_review"
+	roundStatusRejected = "rejected"
+)
+
 // DebateConfig groups the per-deployment tuning knobs for the debate
 // flow. Defaults come from DefaultDebateConfig; production wiring in
 // cmd/server/main.go can override from env or leave defaults in place.
@@ -42,9 +58,21 @@ type DebateConfig struct {
 	ClientRoundCap      int           // per-feature cap for clients (staff/superadmin bypass)
 	ClientDailyRoundCap int           // per-user daily safety fuse for clients
 	MaxFeedbackLen      int           // max characters accepted in the feedback textarea
+	MaxTextLen          int           // max characters for seed/description text (seed/description size cap)
 	MinOutputLen        int           // minimum AI output length to accept
 	StaleReservationAge time.Duration // orphan-recovery threshold for in_flight_request_id
 	AICallTimeout       time.Duration // context timeout wrapping every refiner.Refine call
+
+	// Effort-score retry sweep (phase-2 #68). The in-process background
+	// sweep claims debates whose latest accept settled more than
+	// EffortRetryMinAge ago but whose effort score is still NULL, then
+	// retries the scorer with an exponential backoff growing from
+	// EffortRetryBaseBackoff and capped at EffortRetryMaxBackoff.
+	EffortRetrySweepInterval time.Duration // how often the background goroutine ticks
+	EffortRetryMinAge        time.Duration // latest accept must be older than this before retrying
+	EffortRetryBaseBackoff   time.Duration // first-attempt backoff; doubles each subsequent attempt
+	EffortRetryMaxBackoff    time.Duration // ceiling on the backoff interval
+	EffortRetryBatchSize     int           // max debates claimed per sweep
 }
 
 // DefaultDebateConfig returns the spec-aligned defaults (§3.3, §6).
@@ -53,9 +81,16 @@ func DefaultDebateConfig() DebateConfig {
 		ClientRoundCap:      10,
 		ClientDailyRoundCap: 50,
 		MaxFeedbackLen:      2000,
+		MaxTextLen:          20000,
 		MinOutputLen:        10,
 		StaleReservationAge: 90 * time.Second,
 		AICallTimeout:       60 * time.Second,
+
+		EffortRetrySweepInterval: 5 * time.Minute,
+		EffortRetryMinAge:        5 * time.Minute,
+		EffortRetryBaseBackoff:   5 * time.Minute,
+		EffortRetryMaxBackoff:    time.Hour,
+		EffortRetryBatchSize:     20,
 	}
 }
 
@@ -189,7 +224,7 @@ func (h *DebateHandler) providerNames() []string {
 func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -221,8 +256,15 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var view DebateView
+	var chip EffortChipView
+	if deb != nil {
+		view = buildDebateView(deb, rounds, auth.IsStaffOrAbove(dctx.user.Role))
+		chip = buildEffortChipView(deb, rounds, dctx.ticket.ID, time.Now(), h.cfg.StaleReservationAge)
+	}
+
 	_ = h.engine.Render(w, r, "debate.html", render.PageData{
-		Title:         "Debate — " + dctx.ticket.Title,
+		Title:         "Refine — " + dctx.ticket.Title,
 		User:          dctx.user,
 		Org:           dctx.org,
 		Orgs:          middleware.GetOrgs(r),
@@ -231,13 +273,16 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 		ProjectID:     dctx.ticket.ProjectID,
 		CurrentPath:   r.URL.Path,
 		Data: map[string]any{
-			"Ticket":    dctx.ticket,
-			"Org":       dctx.org,
-			"User":      dctx.user,
-			"Debate":    deb,
-			"Rounds":    rounds,
-			"Providers": h.providerNames(),
-			"IsStaff":   auth.IsStaffOrAbove(dctx.user.Role),
+			"Ticket":     dctx.ticket,
+			"Org":        dctx.org,
+			"User":       dctx.user,
+			"Debate":     deb,
+			"Rounds":     rounds,
+			"View":       view,
+			"Chip":       chip,
+			"Providers":  h.providerNames(),
+			"IsStaff":    auth.IsStaffOrAbove(dctx.user.Role),
+			"HasPending": view.Pending != nil,
 		},
 	})
 }
@@ -251,7 +296,7 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 func (h *DebateHandler) StartDebate(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -290,7 +335,7 @@ func (h *DebateHandler) StartDebate(w http.ResponseWriter, r *http.Request) {
 func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -298,22 +343,27 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	providerName := r.FormValue("provider")
 	refiner, ok := h.refiners[providerName]
 	if !ok {
-		http.Error(w, "unknown provider", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest, "Unknown AI provider.")
 		return
 	}
 	feedback := strings.TrimSpace(r.FormValue("feedback"))
-	if len(feedback) > h.cfg.MaxFeedbackLen {
-		http.Error(w, "feedback too long", http.StatusRequestEntityTooLarge)
+	// Rune count, not bytes — the textarea's maxlength counts characters,
+	// so multi-byte input (emoji, accents) must not be over-rejected here.
+	if utf8.RuneCountInString(feedback) > h.cfg.MaxFeedbackLen {
+		h.renderDebateError(w, r, http.StatusRequestEntityTooLarge,
+			"Your feedback is too long — please shorten it.")
 		return
 	}
 
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate — call /start first", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest,
+			"No refining session is active — start one first.")
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			debateMsgInfra)
 		return
 	}
 
@@ -328,11 +378,13 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	// to hitting one ticket N times.
 	if !auth.IsStaffOrAbove(dctx.user.Role) {
 		if roundCount, rcErr := h.db.CountActiveRoundsForDebate(r.Context(), deb.ID); rcErr == nil && roundCount >= h.cfg.ClientRoundCap {
-			http.Error(w, "round cap reached for this feature", http.StatusTooManyRequests)
+			h.renderDebateError(w, r, http.StatusTooManyRequests,
+				"You've reached the suggestion limit for this feature — ask us if you need more.")
 			return
 		}
 		if dailyCount, dcErr := h.db.CountUserRoundsLast24h(r.Context(), dctx.user.ID); dcErr == nil && dailyCount >= h.cfg.ClientDailyRoundCap {
-			http.Error(w, "daily round limit reached — try again tomorrow or ask staff to bypass", http.StatusTooManyRequests)
+			h.renderDebateError(w, r, http.StatusTooManyRequests,
+				"You've reached the daily suggestion limit — try again tomorrow or ask us if you need more.")
 			return
 		}
 	}
@@ -340,7 +392,7 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	// Step 2: reservation tx. Micro-hold on the debate row, commit fast.
 	snapshot, err := h.reserveInFlight(r.Context(), deb.ID)
 	if err != nil {
-		h.writeReservationError(w, err)
+		h.writeReservationError(w, r, err)
 		return
 	}
 
@@ -365,7 +417,8 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		// via the error envelope.
 		log.Printf("debate CreateRound: refiner %s failed for debate %s: %v",
 			refiner.Name(), deb.ID, err)
-		http.Error(w, "AI call failed; please retry", http.StatusBadGateway)
+		h.renderDebateError(w, r, http.StatusBadGateway,
+			debateProviderLabel(refiner.Name())+" couldn't produce a suggestion. Nothing was changed — try again.")
 		return
 	}
 
@@ -378,13 +431,14 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		// ReserveInFlight (StaleReservationAge, 90s) is the
 		// fallback, but eager cleanup avoids that delay entirely.
 		_ = h.db.ClearInFlight(context.WithoutCancel(r.Context()), deb.ID)
-		http.Error(w, "AI returned invalid or truncated output", http.StatusBadGateway)
+		h.renderDebateError(w, r, http.StatusBadGateway,
+			debateProviderLabel(refiner.Name())+" couldn't produce a suggestion. Nothing was changed — try again.")
 		return
 	}
 
 	// Step 5: insert tx.
 	unified := diff.ComputeUnified(snapshot, text)
-	round, centsDelta, err := h.insertRound(r.Context(), models.InsertDebateRoundInput{
+	_, centsDelta, err := h.insertRound(r.Context(), models.InsertDebateRoundInput{
 		DebateID:     deb.ID,
 		Provider:     refiner.Name(),
 		Model:        refiner.Model(),
@@ -404,7 +458,7 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		// ReserveInFlight (StaleReservationAge, 90s) is the
 		// fallback, but eager cleanup avoids that delay entirely.
 		_ = h.db.ClearInFlight(context.WithoutCancel(r.Context()), deb.ID)
-		h.writeInsertError(w, err)
+		h.writeInsertError(w, r, err)
 		return
 	}
 
@@ -417,14 +471,7 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		log.Printf("debate CreateRound: project_costs rollup failed for debate %s: %v", deb.ID, err)
 	}
 
-	// Template expects {Round, TicketID} so the partial can build form
-	// action URLs scoped to the current ticket. Passing a bare round
-	// would leave .Round and $.TicketID undefined and silently break
-	// the Accept/Reject buttons.
-	_ = h.engine.RenderPartial(w, "debate_round.html", map[string]any{
-		"Round":    round,
-		"TicketID": dctx.ticket.ID,
-	})
+	h.renderWorkspaceUpdate(w, r, dctx, "")
 }
 
 // reserveInFlight wraps the reservation-tx boilerplate. Returns
@@ -469,32 +516,84 @@ func (h *DebateHandler) insertRound(
 	return round, centsDelta, nil
 }
 
+// renderContextError surfaces requireDebateContext failures. For HTMX
+// requests it reuses the banner path (a full RenderError page swapped
+// into #debate-stage would destroy the workspace); plain requests keep
+// the full error page.
+func (h *DebateHandler) renderContextError(w http.ResponseWriter, r *http.Request, code int, err error) {
+	if r.Header.Get("Hx-Request") == "true" {
+		h.renderDebateError(w, r, code, "This page is no longer available — reload or go back to the ticket.")
+		return
+	}
+	h.engine.RenderError(w, code, err.Error())
+}
+
+// renderDebateError keeps spec §3.3's status-code discipline but gives
+// HTMX requests a human-readable banner (UI refactor spec §5.4). The
+// htmx:beforeSwap listener in init.js permits the swap; HX-Retarget
+// puts the banner in #debate-flash so the composer/suggestion in
+// #debate-stage is never destroyed by an error.
+func (h *DebateHandler) renderDebateError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	if r.Header.Get("Hx-Request") != "true" {
+		http.Error(w, msg, status)
+		return
+	}
+	w.Header().Set("Hx-Retarget", "#debate-flash")
+	w.Header().Set("Hx-Reswap", "innerHTML")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_ = h.engine.RenderPartial(w, "debate_error.html", map[string]any{"Message": msg})
+}
+
+// debateProviderLabel mirrors render.go's providerLabel for handler-
+// side error copy without importing the render FuncMap.
+// NOTE: update alongside render.go's providerLabel when new refiners are wired in cmd/server/main.go.
+func debateProviderLabel(name string) string {
+	switch name {
+	case "claude":
+		return "Claude"
+	case "gemini":
+		return "Gemini"
+	case "openai":
+		return "ChatGPT"
+	default:
+		return "The AI provider"
+	}
+}
+
 // writeReservationError maps ReserveInFlight's sentinel errors to the
 // right HTTP status per spec §3.3. Keeps error branches distinct —
 // never collapses "not active" / "in flight" / "generic infra" into a
 // single path.
-func (h *DebateHandler) writeReservationError(w http.ResponseWriter, err error) {
+func (h *DebateHandler) writeReservationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, models.ErrDebateNotActive):
-		http.Error(w, "debate not active", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			debateMsgStale)
 	case errors.Is(err, models.ErrInFlightAIRequest):
-		http.Error(w, "another AI request is in flight; wait for it", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"A suggestion is already being written — give it a few seconds.")
 	default:
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			debateMsgInfra)
 	}
 }
 
 // writeInsertError maps InsertDebateRoundTx's sentinel errors.
-func (h *DebateHandler) writeInsertError(w http.ResponseWriter, err error) {
+func (h *DebateHandler) writeInsertError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, models.ErrStaleAIInput):
-		http.Error(w, "feature description changed while AI was processing — please retry", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"The description changed while the AI was writing — nothing was saved, please try again.")
 	case errors.Is(err, models.ErrDebateNotActive):
-		http.Error(w, "debate not active", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			debateMsgStale)
 	case errors.Is(err, models.ErrInReviewRoundExists):
-		http.Error(w, "another round is already in review — accept or reject it first", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"A suggestion is already waiting — accept or dismiss it first.")
 	default:
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			debateMsgInfra)
 	}
 }
 
@@ -514,28 +613,31 @@ func (h *DebateHandler) writeInsertError(w http.ResponseWriter, err error) {
 func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 	roundID := chi.URLParam(r, "roundID")
 	if roundID == "" {
-		http.Error(w, "missing round id", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest,
+			"That suggestion no longer exists — reload the page.")
 		return
 	}
 
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			debateMsgStale)
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			debateMsgInfra)
 		return
 	}
 
 	round, err := h.acceptRoundUnderLock(r.Context(), deb.ID, roundID)
 	if err != nil {
-		h.writeAcceptError(w, err)
+		h.writeAcceptError(w, r, err)
 		return
 	}
 
@@ -556,15 +658,7 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 			deb.ID, round.ID, dctx.ticket.ProjectID, round.OutputText)
 	}
 
-	// Hx-Refresh triggers a full client-side reload after accept.
-	// We can't return just the round card via outerHTML swap because
-	// the next-round picker form is suppressed during in_review and
-	// only re-rendered by debate.html when no round is in_review.
-	// Without a reload the user sees the accepted card but no way to
-	// continue the debate (only Undo + Approve final remain). The
-	// reload re-renders debate.html which puts the picker back.
-	w.Header().Set("Hx-Refresh", "true")
-	w.WriteHeader(http.StatusNoContent)
+	h.renderWorkspaceUpdate(w, r, dctx, "")
 }
 
 // acceptRoundUnderLock runs the accept transaction: lock debate row,
@@ -603,16 +697,20 @@ func (h *DebateHandler) acceptRoundUnderLock(ctx context.Context, debateID, roun
 // writeAcceptError maps accept-path sentinels to the right status.
 // ErrRoundNotInReview surfaces as 409 (stale client view), distinct
 // from pgx.ErrNoRows (404, round doesn't exist) and infra failures.
-func (h *DebateHandler) writeAcceptError(w http.ResponseWriter, err error) {
+func (h *DebateHandler) writeAcceptError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		http.Error(w, "round not found", http.StatusNotFound)
+		h.renderDebateError(w, r, http.StatusNotFound,
+			"That suggestion no longer exists — reload the page.")
 	case errors.Is(err, models.ErrDebateNotActive):
-		http.Error(w, "debate not active", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			debateMsgStale)
 	case errors.Is(err, models.ErrRoundNotInReview):
-		http.Error(w, "round is not in review (stale state)", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			"This suggestion was already decided — reload to continue.")
 	default:
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			debateMsgInfra)
 	}
 }
 
@@ -640,98 +738,172 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 		return
 	}
 
-	// Accumulator + conditional score update under a fresh lock.
-	tx, err := h.db.Pool.Begin(ctx)
-	if err != nil {
-		log.Printf("debate scoreAfterAccept: Begin: %v", err)
-		return
+	if applyErr := h.applyScoreResult(ctx, debateID, roundID, projectID, res); applyErr != nil {
+		log.Printf("debate scoreAfterAccept: %v", applyErr)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+}
+
+// effortScoreWriteTimeout bounds the score-write transaction in
+// applyScoreResult. The work is a handful of fast indexed statements, so
+// 15s is generous headroom while still capping a goroutine wedged on a
+// contended FOR UPDATE lock or a stalled database.
+const effortScoreWriteTimeout = 15 * time.Second
+
+// applyScoreResult persists one scorer result: the per-round scorer cost,
+// the conditional effort_* update (UpdateEffortScoreCondTx silently
+// discards out-of-order responses), and the debate's total_cost_micros
+// accumulator, all under a single debate-row lock to stay consistent with
+// the cost accounting (spec §6). The project_costs rollup happens after
+// commit and is non-fatal — those cents are reconstructable from the
+// per-round cost_micros + scorer_cost_micros.
+//
+// Shared by the accept path (scoreAfterAccept) and the background retry
+// sweep (retryOneEffortScore) so the cost-accounting write lives in
+// exactly one place. Returns a wrapped error for the caller to log.
+func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID, projectID string, res ai.ScoreResult) error {
+	// Both callers pass an un-deadlined context (accept: context.WithoutCancel;
+	// sweep: context.Background). Bound the write so a stuck FOR UPDATE lock
+	// or a slow database can't wedge the goroutine and leak a pooled
+	// connection indefinitely. WithTimeout over WithoutCancel keeps the
+	// "client disconnect must not abort billing" guarantee while still
+	// capping the worst case.
+	dbCtx, cancel := context.WithTimeout(ctx, effortScoreWriteTimeout)
+	defer cancel()
+
+	tx, err := h.db.Pool.Begin(dbCtx)
+	if err != nil {
+		return fmt.Errorf("begin scorer tx for debate %s: %w", debateID, err)
+	}
+	defer func() { _ = tx.Rollback(dbCtx) }()
 
 	var oldTotal int64
-	if qErr := tx.QueryRow(ctx,
+	if qErr := tx.QueryRow(dbCtx,
 		`SELECT total_cost_micros FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
 	).Scan(&oldTotal); qErr != nil {
-		log.Printf("debate scoreAfterAccept: lock debate %s: %v", debateID, qErr)
-		return
+		return fmt.Errorf("lock debate %s: %w", debateID, qErr)
 	}
 
-	if uErr := h.db.UpdateScorerCostMicros(ctx, tx, roundID, res.Usage.CostMicros); uErr != nil {
-		log.Printf("debate scoreAfterAccept: update scorer cost on round %s: %v", roundID, uErr)
-		return
+	if uErr := h.db.UpdateScorerCostMicros(dbCtx, tx, roundID, res.Usage.CostMicros); uErr != nil {
+		return fmt.Errorf("update scorer cost on round %s: %w", roundID, uErr)
 	}
-	if uErr := h.db.UpdateEffortScoreCondTx(ctx, tx, debateID, roundID, res.Score, res.Hours, res.Reasoning); uErr != nil {
-		log.Printf("debate scoreAfterAccept: UpdateEffortScoreCondTx debate %s: %v", debateID, uErr)
-		return
+	if uErr := h.db.UpdateEffortScoreCondTx(dbCtx, tx, debateID, roundID, res.Score, res.Hours, res.Reasoning); uErr != nil {
+		return fmt.Errorf("UpdateEffortScoreCondTx debate %s: %w", debateID, uErr)
 	}
 
 	newTotal := oldTotal + res.Usage.CostMicros
-	if _, uErr := tx.Exec(ctx,
+	if _, uErr := tx.Exec(dbCtx,
 		`UPDATE feature_debates SET total_cost_micros = $1, updated_at = now() WHERE id = $2`,
 		newTotal, debateID,
 	); uErr != nil {
-		log.Printf("debate scoreAfterAccept: update total_cost_micros debate %s: %v", debateID, uErr)
-		return
+		return fmt.Errorf("update total_cost_micros debate %s: %w", debateID, uErr)
 	}
 
-	if commitErr := tx.Commit(ctx); commitErr != nil {
-		log.Printf("debate scoreAfterAccept: Commit debate %s: %v", debateID, commitErr)
-		return
+	if commitErr := tx.Commit(dbCtx); commitErr != nil {
+		return fmt.Errorf("commit scorer tx for debate %s: %w", debateID, commitErr)
 	}
 
 	centsDelta := newTotal/10000 - oldTotal/10000
-	if incErr := h.db.IncrementProjectCostCents(ctx, projectID, centsDelta); incErr != nil {
-		log.Printf("debate scoreAfterAccept: project_costs rollup for scorer cost: %v", incErr)
+	if incErr := h.db.IncrementProjectCostCents(dbCtx, projectID, centsDelta); incErr != nil {
+		log.Printf("debate applyScoreResult: project_costs rollup for debate %s: %v", debateID, incErr)
+	}
+	return nil
+}
+
+// RetryStaleEffortScores is the periodic background sweep behind phase-2
+// issue #68. scoreAfterAccept is fire-and-forget, so a transient scorer
+// failure leaves effort_* NULL and the sidebar stuck on its empty state
+// indefinitely. This sweep claims those stale debates
+// (models.ClaimStaleEffortScores), re-runs the scorer for each OUTSIDE
+// any DB lock, and applies the result via the same path the accept flow
+// uses.
+//
+// Safe to run on every server replica concurrently: the claim's
+// FOR UPDATE SKIP LOCKED plus the backoff lease guarantees each debate is
+// scored by at most one replica per window. A nil scorer (no
+// GEMINI_API_KEY) makes it a no-op, matching the accept path.
+func (h *DebateHandler) RetryStaleEffortScores(ctx context.Context) {
+	if h.scorer == nil {
+		return
+	}
+	claimed, err := h.db.ClaimStaleEffortScores(ctx, time.Now(),
+		h.cfg.EffortRetryMinAge, h.cfg.EffortRetryBaseBackoff,
+		h.cfg.EffortRetryMaxBackoff, h.cfg.EffortRetryBatchSize)
+	if err != nil {
+		log.Printf("debate RetryStaleEffortScores: claim: %v", err)
+		return
+	}
+	for _, d := range claimed {
+		h.retryOneEffortScore(ctx, d)
+	}
+}
+
+// retryOneEffortScore scores a single claimed debate. Split from the
+// sweep loop so its per-call context timeout is released each iteration
+// (a deferred cancel inside the loop would pile up until the sweep
+// returns). The claim already advanced this debate's backoff lease, so a
+// scorer failure here simply means the next sweep retries after the
+// backoff elapses.
+func (h *DebateHandler) retryOneEffortScore(ctx context.Context, d models.StaleEffortDebate) {
+	callCtx, cancel := context.WithTimeout(ctx, h.cfg.AICallTimeout)
+	defer cancel()
+
+	res, err := h.scorer.Score(callCtx, d.OutputText)
+	if err != nil {
+		log.Printf("debate RetryStaleEffortScores: scorer failed for debate %s round %s: %v", d.DebateID, d.RoundID, err)
+		return
+	}
+	if applyErr := h.applyScoreResult(ctx, d.DebateID, d.RoundID, d.ProjectID, res); applyErr != nil {
+		log.Printf("debate RetryStaleEffortScores: %v", applyErr)
 	}
 }
 
 // ── POST /tickets/{ticketID}/debate/rounds/{roundID}/reject ───────
 
 // RejectRound marks an in_review round as rejected without touching
-// current_text. Returns the debate_next_round.html partial so HTMX
-// can replace the in-review card with the feedback+AI-picker form.
+// current_text. Returns the full workspace update via renderWorkspaceUpdate,
+// with the rejected round's feedback pre-filled in the composer textarea.
 func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 	roundID := chi.URLParam(r, "roundID")
 	if roundID == "" {
-		http.Error(w, "missing round id", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest,
+			"That suggestion no longer exists — reload the page.")
 		return
 	}
 
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			debateMsgStale)
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			debateMsgInfra)
 		return
 	}
 
-	if rejectErr := h.rejectRoundUnderLock(r.Context(), deb.ID, roundID); rejectErr != nil {
-		h.writeAcceptError(w, rejectErr) // same sentinel mapping as accept
+	feedback, rejectErr := h.rejectRoundUnderLock(r.Context(), deb.ID, roundID)
+	if rejectErr != nil {
+		h.writeAcceptError(w, r, rejectErr) // same sentinel mapping as accept
 		return
 	}
 
-	// debate_next_round.html builds form action URLs from .TicketID,
-	// so we must include it in the data map. Without TicketID the
-	// partial would post to /tickets//debate/... (empty path
-	// segment), breaking the next-round and Approve-Final actions.
-	_ = h.engine.RenderPartial(w, "debate_next_round.html", map[string]any{
-		"Debate":    deb,
-		"Providers": h.providerNames(),
-		"TicketID":  dctx.ticket.ID,
-	})
+	h.renderWorkspaceUpdate(w, r, dctx, feedback)
 }
 
-func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roundID string) error {
+// rejectRoundUnderLock opens a transaction, locks the debate row, reads the
+// round's feedback (so the caller can pre-fill the composer without a second
+// round-trip), and delegates the status update to RejectRoundTx.
+// It returns the feedback string (empty when none) and any error.
+func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roundID string) (string, error) {
 	tx, err := h.db.Pool.Begin(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -739,64 +911,83 @@ func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roun
 	if qErr := tx.QueryRow(ctx,
 		`SELECT status FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
 	).Scan(&status); qErr != nil {
-		return qErr
+		return "", qErr
 	}
 	if status != models.DebateStatusActive {
-		return models.ErrDebateNotActive
+		return "", models.ErrDebateNotActive
 	}
+
+	// Read feedback before the UPDATE so it is available to the caller
+	// without a post-commit re-query of all rounds.
+	var feedbackPtr *string
+	_ = tx.QueryRow(ctx,
+		`SELECT feedback FROM feature_debate_rounds WHERE id = $1`, roundID,
+	).Scan(&feedbackPtr)
+	var feedback string
+	if feedbackPtr != nil {
+		feedback = *feedbackPtr
+	}
+
 	if rErr := h.db.RejectRoundTx(ctx, tx, debateID, roundID); rErr != nil {
-		return rErr
+		return "", rErr
 	}
-	return tx.Commit(ctx)
+	if cErr := tx.Commit(ctx); cErr != nil {
+		return "", cErr
+	}
+	return feedback, nil
 }
 
 // ── POST /tickets/{ticketID}/debate/undo?from=N ───────────────────
 
 // UndoRound cascading-deletes every round with round_number >= N
-// and recomputes current_text. After undo, the client reloads the
-// debate page (via Hx-Redirect) to see the recomputed state —
-// simpler than the per-partial swap dance for timeline re-renders.
+// and recomputes current_text. Returns the full workspace update
+// (composer + OOB document/versions/chip) so the stage and all three
+// regions refresh in one response without a page reload.
 func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
 	fromStr := r.URL.Query().Get("from")
 	fromN, err := strconv.Atoi(fromStr)
 	if err != nil || fromN < 1 {
-		http.Error(w, "invalid from parameter", http.StatusBadRequest)
+		h.renderDebateError(w, r, http.StatusBadRequest, "Invalid restore target.")
 		return
 	}
 
 	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "no active debate", http.StatusConflict)
+		h.renderDebateError(w, r, http.StatusConflict,
+			debateMsgStale)
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.renderDebateError(w, r, http.StatusInternalServerError,
+			debateMsgInfra)
 		return
 	}
 
 	if undoErr := h.undoUnderLock(r.Context(), deb.ID, fromN); undoErr != nil {
 		switch {
 		case errors.Is(undoErr, models.ErrDebateNotActive):
-			http.Error(w, "debate not active", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				debateMsgStale)
 		case errors.Is(undoErr, models.ErrNoRoundsToUndo):
 			// ?from=999 on a 3-round debate, etc. Prevents accidental
 			// effort-field wipes on range targets that delete no rows.
-			http.Error(w, "no rounds matched — check the from index", http.StatusNotFound)
+			h.renderDebateError(w, r, http.StatusNotFound,
+				"That version no longer exists — reload the page.")
 		default:
 			log.Printf("debate UndoRound: %v", undoErr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			h.renderDebateError(w, r, http.StatusInternalServerError,
+				debateMsgInfra)
 		}
 		return
 	}
 
-	w.Header().Set("Hx-Redirect", "/tickets/"+dctx.ticket.ID+"/debate")
-	w.WriteHeader(http.StatusSeeOther)
+	h.renderWorkspaceUpdate(w, r, dctx, "")
 }
 
 // ── POST /tickets/{ticketID}/debate/approve ──────────────────────
@@ -815,7 +1006,7 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -827,19 +1018,21 @@ func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
 	if approveErr := h.approveUnderLock(r.Context(), dctx.ticket.ID); approveErr != nil {
 		switch {
 		case errors.Is(approveErr, pgx.ErrNoRows):
-			http.Error(w, "no active debate", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				debateMsgStale)
 		case errors.Is(approveErr, models.ErrDebateNotActive):
-			http.Error(w, "debate not active", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				debateMsgStale)
 		case errors.Is(approveErr, models.ErrExternalDescriptionEdit):
-			// Tell the user exactly how to resolve: Abandon unlocks
+			// Tell the user exactly how to resolve: Stop refining unlocks
 			// the ticket description for manual edit, then they can
 			// start a new debate from the current state.
-			http.Error(w,
-				"description was edited externally since the debate started. To resolve: click Abandon to release the debate lock, then manually merge the external edit with the draft, then start a new debate.",
-				http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				"The ticket description was edited outside this session. To resolve: click Stop refining to unlock it, merge the changes manually, then start refining again.")
 		default:
 			log.Printf("debate ApproveDebate: %v", approveErr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			h.renderDebateError(w, r, http.StatusInternalServerError,
+				debateMsgInfra)
 		}
 		return
 	}
@@ -887,19 +1080,22 @@ func (h *DebateHandler) approveUnderLock(ctx context.Context, ticketID string) e
 func (h *DebateHandler) AbandonDebate(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
 	if abandonErr := h.abandonUnderLock(r.Context(), dctx.ticket.ID); abandonErr != nil {
 		switch {
 		case errors.Is(abandonErr, pgx.ErrNoRows):
-			http.Error(w, "no active debate", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				debateMsgStale)
 		case errors.Is(abandonErr, models.ErrDebateNotActive):
-			http.Error(w, "debate not active", http.StatusConflict)
+			h.renderDebateError(w, r, http.StatusConflict,
+				debateMsgStale)
 		default:
 			log.Printf("debate AbandonDebate: %v", abandonErr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			h.renderDebateError(w, r, http.StatusInternalServerError,
+				debateMsgInfra)
 		}
 		return
 	}
@@ -953,4 +1149,213 @@ func (h *DebateHandler) undoUnderLock(ctx context.Context, debateID string, from
 		return uErr
 	}
 	return tx.Commit(ctx)
+}
+
+// renderWorkspaceUpdate emits the full post-mutation response: primary
+// content for #debate-stage (suggestion if one is pending, composer
+// otherwise) followed by OOB fragments for the document, versions rail,
+// effort chip, approve zone, and a flash clear. One response, five regions
+// + flash clear, no reload (UI refactor spec §5.3 — replaces the v0.2.0
+// Hx-Refresh/Hx-Redirect reloads). The approve-zone OOB keeps the header
+// "✓ Use this version" button disabled state in sync with the
+// pending-suggestion state across live HTMX sessions (fix: approve button
+// tracks pending state via OOB).
+func (h *DebateHandler) renderWorkspaceUpdate(w http.ResponseWriter, r *http.Request, dctx debateContext, feedback string) {
+	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
+	if !ok {
+		return
+	}
+	isStaff := auth.IsStaffOrAbove(dctx.user.Role)
+	view := buildDebateView(deb, rounds, isStaff)
+	chip := buildEffortChipView(deb, rounds, dctx.ticket.ID, time.Now(), h.cfg.StaleReservationAge)
+	chip.OOB = true
+
+	if view.Pending != nil {
+		_ = h.engine.RenderPartial(w, "debate_suggestion.html", map[string]any{
+			"TicketID": dctx.ticket.ID, "Pending": view.Pending,
+		})
+	} else {
+		_ = h.engine.RenderPartial(w, "debate_composer.html", map[string]any{
+			"TicketID": dctx.ticket.ID, "Providers": h.providerNames(), "Feedback": feedback,
+		})
+	}
+	_ = h.engine.RenderPartial(w, "debate_document.html", map[string]any{
+		"OOB": true, "TicketID": dctx.ticket.ID, "View": view, "Debate": deb, "Viewing": nil,
+	})
+	_ = h.engine.RenderPartial(w, "debate_versions.html", map[string]any{
+		"OOB": true, "TicketID": dctx.ticket.ID, "View": view,
+	})
+	_ = h.engine.RenderPartial(w, "debate_effort_chip.html", chip)
+	_ = h.engine.RenderPartial(w, "debate_approve.html", map[string]any{
+		"OOB": true, "TicketID": dctx.ticket.ID, "Pending": view.Pending != nil,
+	})
+	// Clear any stale error banner — this response IS the success signal.
+	_, _ = w.Write([]byte(`<div id="debate-flash" hx-swap-oob="true"></div>`))
+}
+
+// ── GET /tickets/{ticketID}/debate/document ───────────────────────
+
+// ShowDocument returns the #debate-document partial in current mode —
+// the "Back to current" target when viewing an older version.
+func (h *DebateHandler) ShowDocument(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.renderContextError(w, r, code, err)
+		return
+	}
+	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
+	if !ok {
+		return
+	}
+	view := buildDebateView(deb, rounds, auth.IsStaffOrAbove(dctx.user.Role))
+	_ = h.engine.RenderPartial(w, "debate_document.html", map[string]any{
+		"OOB": false, "TicketID": dctx.ticket.ID, "View": view, "Debate": deb, "Viewing": nil,
+	})
+}
+
+// ── GET /tickets/{ticketID}/debate/versions/{roundID} ─────────────
+
+// ShowVersion renders an older ACCEPTED version (or "original" for the
+// seed) read-only into #debate-document. Dismissed or unknown rounds
+// are 404 — dismissed suggestions never became a version.
+func (h *DebateHandler) ShowVersion(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.renderContextError(w, r, code, err)
+		return
+	}
+	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
+	if !ok {
+		return
+	}
+	view := buildDebateView(deb, rounds, auth.IsStaffOrAbove(dctx.user.Role))
+
+	roundID := chi.URLParam(r, "roundID")
+	var viewing *ViewingVersion
+	if roundID == "original" {
+		viewing = &ViewingVersion{Label: 0, Text: deb.SeedDescription, RestoreFrom: 1}
+	} else {
+		label := 0
+		for _, rd := range rounds { // ASC — count accepted to derive the label
+			if rd.Status == roundStatusAccepted {
+				label++
+				if rd.ID == roundID {
+					viewing = &ViewingVersion{Label: label, Text: rd.OutputText, RestoreFrom: rd.RoundNumber + 1}
+					break
+				}
+			}
+		}
+	}
+	if viewing == nil {
+		h.renderDebateError(w, r, http.StatusNotFound, "That version no longer exists — reload the page.")
+		return
+	}
+	_ = h.engine.RenderPartial(w, "debate_document.html", map[string]any{
+		"OOB": false, "TicketID": dctx.ticket.ID, "View": view, "Debate": deb, "Viewing": viewing,
+	})
+}
+
+// loadActiveDebateAndRounds wraps the shared GET-partial preamble: 409
+// banner when the debate is no longer active (stale tab), 500 banner
+// on infra errors. ok=false means a response was already written.
+func (h *DebateHandler) loadActiveDebateAndRounds(w http.ResponseWriter, r *http.Request, dctx debateContext) (*models.FeatureDebate, []models.DebateRound, bool) {
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.renderDebateError(w, r, http.StatusConflict, debateMsgStale)
+		return nil, nil, false
+	}
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return nil, nil, false
+	}
+	rounds, err := h.db.GetDebateRounds(r.Context(), deb.ID)
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return nil, nil, false
+	}
+	return deb, rounds, true
+}
+
+// ── POST /tickets/{ticketID}/debate/seed ──────────────────────────
+
+// EditSeed updates the starting text before any round exists. Returns
+// the refreshed #debate-document partial (the edit form lives inside it).
+// Allowed only while status=active, no in-flight AI reservation, and
+// zero rounds of any status exist (debate spec §4.1/§4.2).
+func (h *DebateHandler) EditSeed(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.renderContextError(w, r, code, err)
+		return
+	}
+	seed := strings.TrimSpace(r.FormValue("seed"))
+	if seed == "" {
+		h.renderDebateError(w, r, http.StatusBadRequest, "The starting text can't be empty.")
+		return
+	}
+	if utf8.RuneCountInString(seed) > h.cfg.MaxTextLen {
+		h.renderDebateError(w, r, http.StatusRequestEntityTooLarge, "The starting text is too long.")
+		return
+	}
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.renderDebateError(w, r, http.StatusConflict, debateMsgStale)
+		return
+	}
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return
+	}
+	switch err := h.db.UpdateDebateSeed(r.Context(), deb.ID, seed); {
+	case err == nil:
+	case errors.Is(err, models.ErrSeedFrozen):
+		h.renderDebateError(w, r, http.StatusBadRequest, "The starting text is locked once a suggestion exists.")
+		return
+	case errors.Is(err, models.ErrInFlightAIRequest):
+		h.renderDebateError(w, r, http.StatusConflict, "A suggestion is being written — wait for it before editing.")
+		return
+	case errors.Is(err, models.ErrDebateNotActive):
+		h.renderDebateError(w, r, http.StatusConflict, debateMsgStale)
+		return
+	default:
+		log.Printf("debate EditSeed: %v", err)
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return
+	}
+	h.ShowDocument(w, r) // re-render the document partial with the new text
+}
+
+// ── GET /tickets/{ticketID}/debate/effort ─────────────────────────
+
+// EffortChip returns the effort-chip partial. The server decides the
+// polling behavior per response (UI refactor spec §5.2): hx-trigger is
+// included only while the debate is active and the latest accept is
+// younger than StaleReservationAge. Terminal or missing debates render
+// a static chip — never an error, the chip is informational.
+func (h *DebateHandler) EffortChip(w http.ResponseWriter, r *http.Request) {
+	dctx, code, err := h.requireDebateContext(r)
+	if err != nil {
+		h.renderContextError(w, r, code, err)
+		return
+	}
+
+	deb, err := h.db.GetActiveDebate(r.Context(), dctx.ticket.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Approved/abandoned in another tab: static empty chip, no poll.
+		// Intentionally NOT loadActiveDebateAndRounds: the chip degrades gracefully instead of returning the 409 stale-tab banner.
+		_ = h.engine.RenderPartial(w, "debate_effort_chip.html",
+			EffortChipView{Debate: &models.FeatureDebate{}, TicketID: dctx.ticket.ID})
+		return
+	}
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return
+	}
+	rounds, err := h.db.GetDebateRounds(r.Context(), deb.ID)
+	if err != nil {
+		h.renderDebateError(w, r, http.StatusInternalServerError, debateMsgInfra)
+		return
+	}
+	chip := buildEffortChipView(deb, rounds, dctx.ticket.ID, time.Now(), h.cfg.StaleReservationAge)
+	_ = h.engine.RenderPartial(w, "debate_effort_chip.html", chip)
 }

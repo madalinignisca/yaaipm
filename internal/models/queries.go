@@ -24,6 +24,7 @@ const DebateStatusActive = "active"
 var (
 	ErrDebateNotActive     = errors.New("debate not active")
 	ErrInFlightAIRequest   = errors.New("AI request already in flight")
+	ErrSeedFrozen          = errors.New("seed frozen after first round")
 	ErrStaleAIInput        = errors.New("current_text changed during AI call")
 	ErrInReviewRoundExists = errors.New("an in-review round already exists")
 	ErrDescriptionLocked   = errors.New("ticket description locked: active debate exists")
@@ -2743,6 +2744,109 @@ func (db *DB) UpdateScorerCostMicros(ctx context.Context, tx pgx.Tx, roundID str
 	return err
 }
 
+// StaleEffortDebate is one debate claimed by the effort-score retry
+// sweep: enough to re-run the scorer (OutputText) and write the result
+// back to the right round (RoundID) and project (ProjectID).
+type StaleEffortDebate struct {
+	DebateID   string
+	ProjectID  string
+	RoundID    string
+	OutputText string
+}
+
+// ClaimStaleEffortScores atomically claims up to limit debates whose
+// latest accepted round has no current effort score — either never scored
+// or scored for an earlier round — even though that round settled more
+// than minAge ago, and that are not currently inside a backoff window. It
+// is the engine behind phase-2 issue #68's self-healing sidebar:
+// scoreAfterAccept (handlers/debate.go) is fire-and-forget, so a transient
+// scorer failure otherwise leaves the score missing (or stale from a prior
+// round) and the sidebar wrong forever.
+//
+// Eligibility keys off last_scored_round_id, NOT effort_scored_at: a
+// debate that scored round 1 but whose round-2 scorer call failed still
+// has a non-NULL effort_scored_at, yet its score is stale. Comparing
+// last_scored_round_id against the latest accepted round catches both the
+// never-scored (NULL) and stale-from-older-round cases.
+//
+// "Claim" means, in a single statement: select matching rows with
+// FOR UPDATE SKIP LOCKED — so the two forgedesk-server replicas grab
+// disjoint batches and never both bill the scorer for the same debate —
+// then bump effort_retry_attempts and push effort_retry_next_at forward
+// by an exponential backoff (baseBackoff * 2^prior_attempts, capped at
+// maxBackoff). The caller runs the scorer OUTSIDE any lock; on success
+// UpdateEffortScoreCondTx repoints last_scored_round_id and the row stops
+// matching, on failure the lease set here makes the sweep wait before
+// retrying. A process crash between claim and write is safe: the lease
+// simply elapses and the row is re-claimed on a later sweep.
+//
+// The exponent is capped (LEAST(attempts, 30)) before power(2, …) because
+// PostgreSQL's power() RAISES "value out of range: overflow" once the
+// result exceeds double precision (~2^1024) — a permanently-failing debate
+// would otherwise crash the whole set-based claim after ~1024 attempts.
+// maxBackoff already bounds the resulting interval; the exponent cap only
+// guards the intermediate arithmetic.
+//
+// now is injected (rather than read via now() in SQL) so tests can pin
+// the clock; production passes time.Now(). The backoff arithmetic runs
+// in the database via make_interval so a whole batch is leased with one
+// round trip even though each row's attempt count differs.
+func (db *DB) ClaimStaleEffortScores(
+	ctx context.Context,
+	now time.Time,
+	minAge, baseBackoff, maxBackoff time.Duration,
+	limit int,
+) ([]StaleEffortDebate, error) {
+	rows, err := db.Pool.Query(ctx, `
+		WITH eligible AS (
+			SELECT fd.id
+			  FROM feature_debates fd
+			 WHERE fd.status IN ('active', 'approved')
+			   AND (fd.last_scored_round_id IS NULL
+			        OR fd.last_scored_round_id <> (
+			            SELECT r.id FROM feature_debate_rounds r
+			             WHERE r.debate_id = fd.id AND r.status = 'accepted'
+			             ORDER BY r.round_number DESC LIMIT 1))
+			   AND (fd.effort_retry_next_at IS NULL OR fd.effort_retry_next_at <= $1)
+			   AND (SELECT max(r.decided_at)
+			          FROM feature_debate_rounds r
+			         WHERE r.debate_id = fd.id AND r.status = 'accepted') <= $2
+			 ORDER BY fd.effort_retry_next_at NULLS FIRST
+			 LIMIT $3
+			 FOR UPDATE OF fd SKIP LOCKED
+		)
+		UPDATE feature_debates fd
+		   SET effort_retry_attempts = fd.effort_retry_attempts + 1,
+		       effort_retry_next_at  = $1 + make_interval(
+		           secs => LEAST($4 * power(2, LEAST(fd.effort_retry_attempts, 30)), $5)),
+		       updated_at = now()
+		  FROM eligible
+		 WHERE fd.id = eligible.id
+		RETURNING fd.id, fd.project_id,
+		    (SELECT r.id FROM feature_debate_rounds r
+		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
+		      ORDER BY r.round_number DESC LIMIT 1),
+		    (SELECT r.output_text FROM feature_debate_rounds r
+		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
+		      ORDER BY r.round_number DESC LIMIT 1)`,
+		now, now.Add(-minAge), limit, baseBackoff.Seconds(), maxBackoff.Seconds(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var claimed []StaleEffortDebate
+	for rows.Next() {
+		var d StaleEffortDebate
+		if scanErr := rows.Scan(&d.DebateID, &d.ProjectID, &d.RoundID, &d.OutputText); scanErr != nil {
+			return nil, scanErr
+		}
+		claimed = append(claimed, d)
+	}
+	return claimed, rows.Err()
+}
+
 // IncrementProjectCostCents adds the given delta to the project_costs
 // row for category='debate' in the current month, creating the row if
 // absent. Non-fatal at the handler layer — cost rollups are
@@ -2763,4 +2867,43 @@ func (db *DB) IncrementProjectCostCents(ctx context.Context, projectID string, d
 		projectID, month, deltaCents,
 	)
 	return err
+}
+
+// UpdateDebateSeed edits seed_description AND current_text together —
+// before round 1 they are by definition equal (debate spec §4.1/§4.2).
+// Guards, under the debate row lock: status active, no in-flight AI
+// reservation, zero rounds of any status.
+func (db *DB) UpdateDebateSeed(ctx context.Context, debateID, text string) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status string
+	var inFlight *string
+	var roundCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT d.status, d.in_flight_request_id,
+		       (SELECT count(*) FROM feature_debate_rounds WHERE debate_id = d.id)
+		FROM feature_debates d WHERE d.id = $1 FOR UPDATE`, debateID,
+	).Scan(&status, &inFlight, &roundCount); err != nil {
+		return err
+	}
+	if status != DebateStatusActive {
+		return ErrDebateNotActive
+	}
+	if inFlight != nil {
+		return ErrInFlightAIRequest
+	}
+	if roundCount > 0 {
+		return ErrSeedFrozen
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE feature_debates
+		   SET seed_description = $1, current_text = $1, updated_at = now()
+		 WHERE id = $2`, text, debateID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

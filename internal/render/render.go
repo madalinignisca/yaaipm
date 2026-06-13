@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,19 @@ type PageData struct {
 	Projects         []models.Project
 	Orgs             []models.Organization
 	AssistantEnabled bool
+}
+
+// staticFuncMap returns template helpers that are pure functions with
+// no dependency on NewEngine's closed-over locals (assetFunc,
+// highlightCSSStr, md, sanitizer). Extracted so render_test.go can
+// exercise the helpers in isolation without constructing a full Engine.
+func staticFuncMap() template.FuncMap {
+	return template.FuncMap{
+		// renderInlineDiff renders a word-level prose diff between two
+		// texts (debate suggestion "What changed" tab). Sanitization
+		// lives in diff.RenderInlineHTML — see that package's audit.
+		"renderInlineDiff": diff.RenderInlineHTML,
+	}
 }
 
 func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) {
@@ -247,25 +261,6 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 			return template.JS(b)
 		},
-		// Feature Debate Mode helpers (spec §5 UI rendering).
-		// renderDiff takes a cached unified-diff string (stored on
-		// feature_debate_rounds.diff_unified) and returns sanitized
-		// HTML with diff-add/diff-del/diff-ctx class spans. Every
-		// line is HTMLEscaped in diff.RenderHTML; see that package
-		// for the safety audit.
-		"renderDiff": func(unified *string) template.HTML {
-			// Nil pointer (no cached diff) and empty string both route
-			// through diff.RenderHTML, which handles the empty case by
-			// returning just the outer <pre><code></code></pre> wrapper.
-			// Keeps the template.HTML construction confined to the
-			// already-audited helper rather than minting a new cast
-			// here.
-			var raw string
-			if unified != nil {
-				raw = *unified
-			}
-			return diff.RenderHTML(raw)
-		},
 		// providerLabel maps an internal provider key (claude / gemini /
 		// openai) to its user-facing brand name. Computed server-side so
 		// the debate template doesn't have to put {{if}}{{end}} branches
@@ -301,20 +296,17 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				return badgeGhost
 			}
 		},
-		// derefInt / derefString unwrap nullable *int and *string
-		// fields for safe template-side display; zero/empty values
-		// substitute for nil. Used by debate_sidebar.html for the
-		// effort_score / effort_hours / effort_reasoning columns.
+		// derefInt unwraps nullable *int fields for safe template-side
+		// display; zero substitutes for nil. Used by debate_effort_chip.html
+		// for the effort_score / effort_hours columns.
 		"derefInt": func(p *int) int {
 			if p == nil {
 				return 0
 			}
 			return *p
 		},
-		// derefString omitted — the existing derefStr helper (line 187)
-		// already covers this case; debate_sidebar.html uses derefStr.
 		// relTime renders a nullable *time.Time as "just now" / "5m ago"
-		// / "2h ago" / "3d ago" for the sidebar's "last scored"
+		// / "2h ago" / "3d ago" for the effort chip's "last scored"
 		// indicator. Returns an em-dash for nil so the template can
 		// always substitute it into a sentence fragment.
 		"relTime": func(t *time.Time) string {
@@ -374,6 +366,8 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 		},
 	}
+	// Stateless helpers from staticFuncMap() (defined above) are merged in after the literal — see that function's doc for the extraction criterion.
+	maps.Copy(funcMap, staticFuncMap())
 
 	layoutFiles, err := filepath.Glob(filepath.Join(templatesDir, "layouts", "*.html"))
 	if err != nil {

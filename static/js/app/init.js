@@ -18,6 +18,19 @@ document.addEventListener('htmx:configRequest', function(event) {
     }
 });
 
+// Debate workspace: allow 4xx/5xx responses to swap so the
+// debate_error.html banner (HX-Retarget: #debate-flash) is visible.
+// Scoped to the debate page; everywhere else error responses keep
+// htmx's default no-swap behavior.
+document.addEventListener('htmx:beforeSwap', function (event) {
+    if (event.detail.xhr && event.detail.xhr.status >= 400 &&
+        event.detail.elt && event.detail.elt.closest &&
+        event.detail.elt.closest('#debate-workspace')) {
+        event.detail.shouldSwap = true;
+        event.detail.isError = false;
+    }
+});
+
 // apiFetch wraps fetch() for calls to our own mutation endpoints.
 // It matches the HTMX request profile so raw fetch() callers behave
 // consistently with HTMX-boosted forms:

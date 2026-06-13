@@ -141,12 +141,21 @@ func main() {
 	// (anything that isn't localhost/127.0.0.1 or explicitly marked
 	// as an http test origin). Fakes in production are how you ship
 	// a feature that "works" but talks to no real AI.
+	const debateRefinerModeFake = "fake"
 	debateRefinerMode := os.Getenv("DEBATE_REFINER_MODE")
-	if debateRefinerMode == "fake" {
+	if debateRefinerMode == debateRefinerModeFake {
 		if !isLocalDebateEnv(cfg.BaseURL) {
 			log.Fatalf("DEBATE_REFINER_MODE=fake set against non-local BaseURL %q — refusing to start (see cmd/server/main.go)", cfg.BaseURL)
 		}
 		log.Printf("WARNING: DEBATE_REFINER_MODE=fake — all debate refiners return canned output")
+	}
+
+	// DEBATE_REAL_AI=1 marks the opt-in real-AI smoke mode (e2e/tests/
+	// 13-debate-real-ai.spec.js). It drives the debate UI against live
+	// provider APIs, so it is mutually exclusive with the fake refiners.
+	debateRealAI := os.Getenv("DEBATE_REAL_AI") == "1"
+	if debateRealAI && debateRefinerMode == debateRefinerModeFake {
+		log.Fatal("DEBATE_REAL_AI=1 and DEBATE_REFINER_MODE=fake are mutually exclusive — choose real providers or fakes, not both")
 	}
 
 	debateRefiners := map[string]ai.Refiner{}
@@ -165,7 +174,7 @@ func main() {
 	}
 	// Swap in fakes for E2E tests when explicitly opted in (guarded
 	// against production above).
-	if debateRefinerMode == "fake" {
+	if debateRefinerMode == debateRefinerModeFake {
 		debateRefiners = buildFakeDebateRefiners()
 	}
 	var debateScorer ai.Scorer
@@ -174,8 +183,16 @@ func main() {
 		// #63 makes this configurable per project.
 		debateScorer = ai.NewGeminiScorer(geminiClient, cfg.GeminiModel)
 	}
-	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, handlers.DefaultDebateConfig())
+	debateCfg := handlers.DefaultDebateConfig()
+	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, debateCfg)
 	log.Printf("Feature Debate Mode wired (%d refiners, scorer=%v)", len(debateRefiners), debateScorer != nil)
+
+	if debateRealAI {
+		if len(debateRefiners) == 0 {
+			log.Fatal("DEBATE_REAL_AI=1 but no provider API keys configured — set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")
+		}
+		log.Printf("WARNING: DEBATE_REAL_AI=1 — debate refiners and scorer make REAL, billable provider calls (%d providers, scorer=%v)", len(debateRefiners), debateScorer != nil)
+	}
 
 	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
 	authLimiter := middleware.NewRateLimiter(0.5, 5)
@@ -290,6 +307,7 @@ func main() {
 		// Feature Debate Mode (spec §4). Task 9 extends this block
 		// with approve/abandon.
 		r.Get("/tickets/{ticketID}/debate", debateH.ShowDebate)
+		r.Get("/tickets/{ticketID}/debate/effort", debateH.EffortChip)
 		r.Post("/tickets/{ticketID}/debate/start", debateH.StartDebate)
 		r.Post("/tickets/{ticketID}/debate/rounds", debateH.CreateRound)
 		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", debateH.AcceptRound)
@@ -297,6 +315,9 @@ func main() {
 		r.Post("/tickets/{ticketID}/debate/undo", debateH.UndoRound)
 		r.Post("/tickets/{ticketID}/debate/approve", debateH.ApproveDebate)
 		r.Post("/tickets/{ticketID}/debate/abandon", debateH.AbandonDebate)
+		r.Post("/tickets/{ticketID}/debate/seed", debateH.EditSeed)
+		r.Get("/tickets/{ticketID}/debate/document", debateH.ShowDocument)
+		r.Get("/tickets/{ticketID}/debate/versions/{roundID}", debateH.ShowVersion)
 
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
@@ -342,6 +363,23 @@ func main() {
 			_ = db.ExpireOldInvitations(context.Background())
 		}
 	}()
+
+	// Effort-score retry sweep (phase-2 #68). Self-heals debates whose
+	// accept-path scorer call failed, leaving effort_* NULL and the sidebar
+	// stuck on its empty state. Runs in-process on each replica;
+	// ClaimStaleEffortScores uses FOR UPDATE SKIP LOCKED + a backoff lease
+	// so the two forgedesk-server replicas never double-score (double-bill)
+	// the same debate. Guarded on the scorer being configured — without
+	// GEMINI_API_KEY there is nothing to call.
+	if debateScorer != nil {
+		go func() {
+			ticker := time.NewTicker(debateCfg.EffortRetrySweepInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				debateH.RetryStaleEffortScores(context.Background())
+			}
+		}()
+	}
 
 	// Graceful shutdown
 	go func() {

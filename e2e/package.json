@@ -12,7 +12,9 @@
     "test:projects": "npx playwright test 03-projects",
     "test:tickets": "npx playwright test 04-tickets",
     "test:admin": "npx playwright test 05-admin",
-    "test:org-management": "npx playwright test 07-org-management"
+    "test:org-management": "npx playwright test 07-org-management",
+    "test:debate": "npx playwright test 11-debate 12-debate-fake",
+    "e2e:real-ai": "DEBATE_REAL_AI=1 npx playwright test 13-debate-real-ai.spec.js"
   },
   "keywords": [],
   "author": "",
