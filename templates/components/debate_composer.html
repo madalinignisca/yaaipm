@@ -16,15 +16,19 @@
         {{/* Persist the feedback draft to localStorage (issue #65) so it
              survives a failed AI call or an accidental reload. Keyed by
              ticket so drafts don't bleed across debates. Restore only when
-             the box is empty — a server pre-fill (e.g. a rejected round's
-             feedback) takes precedence. */}}
+             the box is empty so a server pre-fill (e.g. a rejected round's
+             feedback) takes precedence. Cleared once the suggest request
+             succeeds — listened on the window so the handler outlives the
+             form swap — so consumed feedback doesn't resurface. Expressions
+             are kept pure: Alpine x-on does not allow try/catch statements. */}}
         <textarea name="feedback" rows="2" maxlength="2000"
                   placeholder="Optional: tell the AI what to focus on, e.g. 'add acceptance criteria'"
                   class="textarea textarea-bordered w-full text-sm"
                   data-testid="debate-feedback"
                   x-data="{ storeKey: 'debate-feedback:{{.TicketID}}' }"
                   x-init="if (!$el.value) { const draft = localStorage.getItem(storeKey); if (draft) { $el.value = draft; } }"
-                  x-on:input="$el.value.trim() ? localStorage.setItem(storeKey, $el.value) : localStorage.removeItem(storeKey)">{{.Feedback}}</textarea>
+                  x-on:input="$el.value.trim() ? localStorage.setItem(storeKey, $el.value) : localStorage.removeItem(storeKey)"
+                  x-on:htmx:after-request.window="$event.detail.successful && $event.detail.requestConfig && $event.detail.requestConfig.path && $event.detail.requestConfig.path.endsWith('/debate/rounds') && localStorage.removeItem(storeKey)">{{.Feedback}}</textarea>
         <div role="radiogroup" aria-label="AI provider" class="flex flex-wrap items-center gap-2">
           {{range $p := .Providers}}
             <label class="cursor-pointer" data-provider="{{$p}}">

@@ -186,4 +186,26 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
     await ensureComposer(page);
     await expect(page.locator('[data-testid="debate-feedback"]')).toHaveValue('');
   });
+
+  test('a successful suggestion clears the saved feedback draft', async ({ page }) => {
+    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
+
+    await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
+    await ensureComposer(page);
+
+    // Type feedback and send it. On a SUCCESSFUL suggest the draft must be
+    // cleared, so consumed feedback doesn't resurface on a later reload.
+    await page.fill('[data-testid="debate-feedback"]', 'sent feedback that should clear');
+    await page.click('[data-testid="debate-suggest"]');
+    await expect(page.locator('[data-testid="debate-suggestion"]')).toBeVisible();
+    await page.click('[data-testid="debate-dismiss"]');
+    await expect(page.locator('[data-testid="debate-composer"]')).toBeVisible({ timeout: 8000 });
+
+    // Reload from a clean GET: the consumed draft is gone (cleared on the
+    // successful suggest), so nothing is restored into the empty composer.
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await ensureComposer(page);
+    await expect(page.locator('[data-testid="debate-feedback"]')).toHaveValue('');
+  });
 });
