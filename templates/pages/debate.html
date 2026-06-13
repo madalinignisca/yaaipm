@@ -12,23 +12,7 @@
     {{if .Debate}}
       <div class="flex items-center gap-3 flex-wrap">
         {{template "debate_effort_chip.html" .Chip}}
-        <form hx-post="/tickets/{{.Ticket.ID}}/debate/approve"
-              hx-confirm="Save this text to the ticket and finish refining?">
-          {{csrfField}}
-          {{if .View.Pending}}
-          <button type="submit" class="btn btn-success btn-sm" data-testid="debate-approve"
-                  title="Saves this text to the ticket and finishes refining"
-                  disabled>
-            ✓ Use this version
-          </button>
-          {{else}}
-          <button type="submit" class="btn btn-success btn-sm" data-testid="debate-approve"
-                  title="Saves this text to the ticket and finishes refining">
-            ✓ Use this version
-          </button>
-          {{end}}
-        </form>
-        {{if .View.Pending}}<span class="text-xs text-base-content/50">Accept or dismiss the pending suggestion first</span>{{end}}
+        {{template "debate_approve.html" dict "OOB" false "TicketID" .Ticket.ID "Pending" .HasPending}}
         <form hx-post="/tickets/{{.Ticket.ID}}/debate/abandon"
               hx-confirm="Stop refining? The ticket description stays unchanged and this session is archived.">
           {{csrfField}}

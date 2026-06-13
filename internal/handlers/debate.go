@@ -248,15 +248,16 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 		ProjectID:     dctx.ticket.ProjectID,
 		CurrentPath:   r.URL.Path,
 		Data: map[string]any{
-			"Ticket":    dctx.ticket,
-			"Org":       dctx.org,
-			"User":      dctx.user,
-			"Debate":    deb,
-			"Rounds":    rounds,
-			"View":      view,
-			"Chip":      chip,
-			"Providers": h.providerNames(),
-			"IsStaff":   auth.IsStaffOrAbove(dctx.user.Role),
+			"Ticket":     dctx.ticket,
+			"Org":        dctx.org,
+			"User":       dctx.user,
+			"Debate":     deb,
+			"Rounds":     rounds,
+			"View":       view,
+			"Chip":       chip,
+			"Providers":  h.providerNames(),
+			"IsStaff":    auth.IsStaffOrAbove(dctx.user.Role),
+			"HasPending": view.Pending != nil,
 		},
 	})
 }
@@ -1040,8 +1041,11 @@ func (h *DebateHandler) undoUnderLock(ctx context.Context, debateID string, from
 // renderWorkspaceUpdate emits the full post-mutation response: primary
 // content for #debate-stage (suggestion if one is pending, composer
 // otherwise) followed by OOB fragments for the document, versions rail,
-// and effort chip. One response, four regions, no reload (UI refactor
-// spec §5.3 — replaces the v0.2.0 Hx-Refresh/Hx-Redirect reloads).
+// effort chip, and approve zone. One response, five regions, no reload
+// (UI refactor spec §5.3 — replaces the v0.2.0 Hx-Refresh/Hx-Redirect
+// reloads). The approve-zone OOB keeps the header "✓ Use this version"
+// button disabled state in sync with the pending-suggestion state across
+// live HTMX sessions (fix: approve button tracks pending state via OOB).
 func (h *DebateHandler) renderWorkspaceUpdate(w http.ResponseWriter, r *http.Request, dctx debateContext, feedback string) {
 	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
 	if !ok {
@@ -1068,6 +1072,9 @@ func (h *DebateHandler) renderWorkspaceUpdate(w http.ResponseWriter, r *http.Req
 		"OOB": true, "TicketID": dctx.ticket.ID, "View": view,
 	})
 	_ = h.engine.RenderPartial(w, "debate_effort_chip.html", chip)
+	_ = h.engine.RenderPartial(w, "debate_approve.html", map[string]any{
+		"OOB": true, "TicketID": dctx.ticket.ID, "Pending": view.Pending != nil,
+	})
 }
 
 // ── GET /tickets/{ticketID}/debate/document ───────────────────────

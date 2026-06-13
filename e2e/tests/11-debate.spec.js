@@ -131,10 +131,10 @@ test.describe('Feature Debate Mode', () => {
     // 4. Suggestion card appears (HTMX partial swap — no page reload).
     await expect(page.locator('[data-testid="debate-suggestion"]')).toBeVisible();
 
-    // Note: the approve button in the page header is not reactively updated by the
-    // HTMX suggest swap (renderWorkspaceUpdate only OOB-swaps document/versions/chip,
-    // not the full header). The disabled state is enforced on full page loads only.
-    // We skip the disabled assertion here and verify it on a page reload below.
+    // 4a. The approve button is disabled while a suggestion is pending.
+    // renderWorkspaceUpdate now OOB-swaps the approve zone so this state
+    // is kept in sync during live HTMX sessions (not just on full page load).
+    await expect(page.getByTestId('debate-approve')).toBeDisabled();
 
     // 5. Preview tab is selected by default; the fake output is visible.
     await expect(page.locator('[data-testid="debate-preview-pane"]')).toBeVisible();
@@ -152,6 +152,9 @@ test.describe('Feature Debate Mode', () => {
     // 8. Accept the suggestion (bare hx-post, no dialog, swaps composer back).
     await page.click('[data-testid="debate-accept"]');
     await expect(page.locator('[data-testid="debate-composer"]')).toBeVisible({ timeout: 8000 });
+
+    // 8a. After accept the approve button must be enabled — no pending suggestion.
+    await expect(page.getByTestId('debate-approve')).toBeEnabled();
 
     // 9. Version 1 is now visible in the versions rail; it should be marked "current".
     await expect(page.locator('[data-testid="debate-version-1"]')).toBeVisible();

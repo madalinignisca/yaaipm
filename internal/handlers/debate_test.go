@@ -1330,6 +1330,117 @@ func TestCreateRound_ReturnsSuggestionPanelAndOOB(t *testing.T) {
 	}
 }
 
+// TestWorkspaceUpdate_ApproveZoneTracksPendingState verifies that
+// renderWorkspaceUpdate emits an OOB approve-zone fragment whose
+// disabled state matches whether a pending suggestion exists.
+//
+// Phase 1 — after CreateRound (pending suggestion inserted by the fake
+// refiner): the OOB approve-zone fragment must carry hx-swap-oob="true"
+// and the approve button must be disabled.
+//
+// Phase 2 — after AcceptRound (pending suggestion resolved): the
+// approve-zone OOB fragment must still carry hx-swap-oob="true" but the
+// approve button must NOT be disabled.
+func TestWorkspaceUpdate_ApproveZoneTracksPendingState(t *testing.T) {
+	r, db, sessions := setupDebateTestEnv(t)
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+
+	// Start the debate.
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/start", http.NoBody)
+	startReq.AddCookie(cookie)
+	r.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusSeeOther {
+		t.Fatalf("/start: %d %s", startRec.Code, startRec.Body.String())
+	}
+
+	// Phase 1: POST /debate/rounds — FakeRefiner inserts a pending suggestion.
+	roundBody := strings.NewReader("provider=claude&feedback=make+it+better")
+	roundReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/rounds", roundBody)
+	roundReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	roundReq.Header.Set("HX-Request", "true")
+	roundReq.AddCookie(cookie)
+	roundW := httptest.NewRecorder()
+	r.ServeHTTP(roundW, roundReq)
+
+	if roundW.Code != http.StatusOK {
+		t.Fatalf("create round: %d %s", roundW.Code, roundW.Body.String())
+	}
+	roundResp := roundW.Body.String()
+
+	// The approve-zone OOB fragment must be present.
+	if !strings.Contains(roundResp, `id="debate-approve-zone" hx-swap-oob="true"`) {
+		t.Fatalf("create-round response missing approve-zone OOB fragment, got: %s", roundResp)
+	}
+	// Extract the approve-zone fragment to check disabled in isolation
+	// (avoids false-positives from hx-disabled-elt or other attributes elsewhere in the body).
+	approveZoneStart := strings.Index(roundResp, `id="debate-approve-zone"`)
+	if approveZoneStart == -1 {
+		t.Fatalf("approve-zone element not found in create-round response")
+	}
+	approveZoneFragment := roundResp[approveZoneStart:]
+	// Narrow to just the zone element by finding the closing </span>.
+	approveZoneEnd := strings.Index(approveZoneFragment, "</span>")
+	if approveZoneEnd != -1 {
+		approveZoneFragment = approveZoneFragment[:approveZoneEnd+len("</span>")]
+	}
+	if !strings.Contains(approveZoneFragment, "disabled") {
+		t.Fatalf("approve button must be disabled when a pending suggestion exists; approve-zone fragment: %s", approveZoneFragment)
+	}
+
+	// Phase 2: look up the pending round and accept it.
+	ctx := context.Background()
+	deb, err := db.GetActiveDebate(ctx, ticket.ID)
+	if err != nil {
+		t.Fatalf("GetActiveDebate: %v", err)
+	}
+	rounds, err := db.GetDebateRounds(ctx, deb.ID)
+	if err != nil {
+		t.Fatalf("GetDebateRounds: %v", err)
+	}
+	var pendingRoundID string
+	for _, rd := range rounds {
+		if rd.Status == "in_review" {
+			pendingRoundID = rd.ID
+			break
+		}
+	}
+	if pendingRoundID == "" {
+		t.Fatalf("no in_review round found after create-round")
+	}
+
+	acceptReq := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticket.ID+"/debate/rounds/"+pendingRoundID+"/accept", http.NoBody)
+	acceptReq.Header.Set("HX-Request", "true")
+	acceptReq.AddCookie(cookie)
+	acceptW := httptest.NewRecorder()
+	r.ServeHTTP(acceptW, acceptReq)
+
+	if acceptW.Code != http.StatusOK {
+		t.Fatalf("accept: %d %s", acceptW.Code, acceptW.Body.String())
+	}
+	acceptResp := acceptW.Body.String()
+
+	// The approve-zone OOB fragment must still be present after accept.
+	if !strings.Contains(acceptResp, `id="debate-approve-zone" hx-swap-oob="true"`) {
+		t.Fatalf("accept response missing approve-zone OOB fragment, got: %s", acceptResp)
+	}
+	// Extract the approve-zone fragment from the accept response.
+	acceptZoneStart := strings.Index(acceptResp, `id="debate-approve-zone"`)
+	if acceptZoneStart == -1 {
+		t.Fatalf("approve-zone element not found in accept response")
+	}
+	acceptZoneFragment := acceptResp[acceptZoneStart:]
+	acceptZoneEnd := strings.Index(acceptZoneFragment, "</span>")
+	if acceptZoneEnd != -1 {
+		acceptZoneFragment = acceptZoneFragment[:acceptZoneEnd+len("</span>")]
+	}
+	// After accept there is no pending suggestion — button must NOT be disabled.
+	if strings.Contains(acceptZoneFragment, "disabled") {
+		t.Fatalf("approve button must NOT be disabled after suggestion is accepted; approve-zone fragment: %s", acceptZoneFragment)
+	}
+}
+
 func TestAccept_ReturnsBeforeScorerCompletes(t *testing.T) {
 	// Blocking FakeScorer: Score blocks on ch until unblocked.
 	ch := make(chan struct{})
