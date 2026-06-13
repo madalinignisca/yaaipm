@@ -117,7 +117,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 					"date_start":  {Type: genai.TypeString, Description: "Start date in YYYY-MM-DD format (e.g. 2026-03-15). Used for timeline/Gantt view."},
 					"date_end":    {Type: genai.TypeString, Description: "End date in YYYY-MM-DD format (e.g. 2026-03-20). Used for timeline/Gantt view."},
 				},
-				Required: []string{"project_id", "type", "priority"},
+				Required: []string{"project_id", "title", "type", "priority"},
 			},
 		},
 		{
