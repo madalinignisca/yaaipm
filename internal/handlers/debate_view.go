@@ -76,7 +76,7 @@ func buildDebateView(deb *models.FeatureDebate, rounds []models.DebateRound, isS
 	entries := make([]VersionEntry, 0, len(rounds))
 	for _, r := range rounds { // rounds are round_number ASC
 		switch r.Status {
-		case "in_review":
+		case roundStatusInReview:
 			v.Pending = &SuggestionView{
 				RoundID:    r.ID,
 				Provider:   r.Provider,
@@ -84,7 +84,7 @@ func buildDebateView(deb *models.FeatureDebate, rounds []models.DebateRound, isS
 				OutputText: r.OutputText,
 			}
 			continue // never in the rail
-		case "accepted":
+		case roundStatusAccepted:
 			accepted++
 			v.CurrentVersionLabel = accepted
 			v.CurrentProvider = r.Provider
@@ -96,7 +96,7 @@ func buildDebateView(deb *models.FeatureDebate, rounds []models.DebateRound, isS
 			RoundNumber: r.RoundNumber,
 			RestoreFrom: r.RoundNumber + 1,
 			Provider:    r.Provider,
-			Accepted:    r.Status == "accepted",
+			Accepted:    r.Status == roundStatusAccepted,
 			DecidedAt:   r.DecidedAt,
 		}
 		if e.Accepted {
@@ -144,7 +144,7 @@ func buildEffortChipView(deb *models.FeatureDebate, rounds []models.DebateRound,
 
 	var latest *models.DebateRound
 	for i := range rounds {
-		if rounds[i].Status == "accepted" {
+		if rounds[i].Status == roundStatusAccepted {
 			latest = &rounds[i]
 		}
 	}

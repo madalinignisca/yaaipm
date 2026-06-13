@@ -7,7 +7,7 @@ import (
 	"github.com/madalin/forgedesk/internal/models"
 )
 
-func strPtr(s string) *string { return &s }
+func strPtr(s string) *string        { return &s }
 func timePtr(t time.Time) *time.Time { return &t }
 
 func mkRound(id string, n int, status, provider, output string, decided *time.Time) models.DebateRound {

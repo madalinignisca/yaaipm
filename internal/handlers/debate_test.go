@@ -221,12 +221,12 @@ func TestShowDebate_ActiveRendersProviderPicker(t *testing.T) {
 	// or data-attribute landmark that must exist regardless of visual
 	// styling choices.
 	for _, marker := range []string{
-		`type="radio"`,                    // provider picker radio input
-		`data-label="Claude"`,             // thinking-indicator source attribute
-		`data-provider="claude"`,          // chip data attribute
-		`Claude`,                          // visible label text in body
-		`data-testid="debate-composer"`,   // new composer partial rendered
-		`data-testid="debate-approve"`,    // approve header button
+		`type="radio"`,                  // provider picker radio input
+		`data-label="Claude"`,           // thinking-indicator source attribute
+		`data-provider="claude"`,        // chip data attribute
+		`Claude`,                        // visible label text in body
+		`data-testid="debate-composer"`, // new composer partial rendered
+		`data-testid="debate-approve"`,  // approve header button
 	} {
 		if !strings.Contains(body, marker) {
 			// Dump the part of the body we care about: from the first
@@ -908,9 +908,9 @@ func TestStaleRoundAction_RendersErrorBanner409(t *testing.T) {
 
 	accept := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost,
-			"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", nil)
+			"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", http.NoBody)
 		req.AddCookie(cookie)
-		req.Header.Set("HX-Request", "true")
+		req.Header.Set("Hx-Request", "true")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		return w
@@ -926,8 +926,8 @@ func TestStaleRoundAction_RendersErrorBanner409(t *testing.T) {
 	if !strings.Contains(second.Body.String(), `data-testid="debate-error"`) {
 		t.Fatalf("409 body must be the error banner partial, got: %s", second.Body.String())
 	}
-	if second.Header().Get("HX-Retarget") != "#debate-flash" {
-		t.Fatalf("HX-Retarget = %q, want #debate-flash", second.Header().Get("HX-Retarget"))
+	if second.Header().Get("Hx-Retarget") != "#debate-flash" {
+		t.Fatalf("Hx-Retarget = %q, want #debate-flash", second.Header().Get("Hx-Retarget"))
 	}
 }
 
@@ -936,7 +936,7 @@ func TestDocumentPartial_RendersCurrentText(t *testing.T) {
 	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
 	startAndCreateRounds(t, r, db, cookie, ticket.ID, []string{"the current body"})
 
-	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/document", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/document", http.NoBody)
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -993,7 +993,7 @@ func TestVersionViewPartial_AcceptedDismissedForeignAndOriginal(t *testing.T) {
 	}
 
 	get := func(rid string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/versions/"+rid, nil)
+		req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/versions/"+rid, http.NoBody)
 		req.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -1023,18 +1023,6 @@ func TestVersionViewPartial_AcceptedDismissedForeignAndOriginal(t *testing.T) {
 	}
 }
 
-func acceptRoundViaHTTP(t *testing.T, r *chi.Mux, cookie *http.Cookie, ticketID, roundID string) {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost,
-		"/tickets/"+ticketID+"/debate/rounds/"+roundID+"/accept", nil)
-	req.AddCookie(cookie)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code >= 400 {
-		t.Fatalf("accept failed: %d %s", w.Code, w.Body.String())
-	}
-}
-
 func TestEffortChipPartial_PollsWhileStale_SettlesAfter90s(t *testing.T) {
 	r, db, sessions := setupDebateTestEnv(t)
 	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
@@ -1050,7 +1038,7 @@ func TestEffortChipPartial_PollsWhileStale_SettlesAfter90s(t *testing.T) {
 	}
 
 	get := func() string {
-		req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/effort", nil)
+		req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/effort", http.NoBody)
 		req.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -1086,7 +1074,7 @@ func TestEffortChipPartial_NoPollingWhenDebateTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/effort", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/effort", http.NoBody)
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1109,7 +1097,7 @@ func TestEditSeed_UpdatesAndFreezesAfterRound(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost,
 			"/tickets/"+ticket.ID+"/debate/seed", strings.NewReader("seed="+seed))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("HX-Request", "true")
+		req.Header.Set("Hx-Request", "true")
 		req.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -1179,8 +1167,8 @@ func TestAccept_NoHXRefreshHeader_ReturnsComposerAndOOB(t *testing.T) {
 	_, round := insertInReviewRound(t, db, cookie, r, ticket.ID, "freshly accepted body text")
 
 	req := httptest.NewRequest(http.MethodPost,
-		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", nil)
-	req.Header.Set("HX-Request", "true")
+		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", http.NoBody)
+	req.Header.Set("Hx-Request", "true")
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1251,8 +1239,8 @@ func TestReject_ReturnsComposerWithFeedbackPreserved(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost,
-		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/reject", nil)
-	req.Header.Set("HX-Request", "true")
+		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/reject", http.NoBody)
+	req.Header.Set("Hx-Request", "true")
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1279,8 +1267,8 @@ func TestUndo_ReturnsComposerAndOOBDocument(t *testing.T) {
 	_ = rounds
 
 	req := httptest.NewRequest(http.MethodPost,
-		"/tickets/"+ticket.ID+"/debate/undo?from=1", nil)
-	req.Header.Set("HX-Request", "true")
+		"/tickets/"+ticket.ID+"/debate/undo?from=1", http.NoBody)
+	req.Header.Set("Hx-Request", "true")
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1313,7 +1301,7 @@ func TestCreateRound_ReturnsSuggestionPanelAndOOB(t *testing.T) {
 	body := strings.NewReader("provider=claude&feedback=make+it+better")
 	req := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/rounds", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
+	req.Header.Set("Hx-Request", "true")
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -1358,7 +1346,7 @@ func TestWorkspaceUpdate_ApproveZoneTracksPendingState(t *testing.T) {
 	roundBody := strings.NewReader("provider=claude&feedback=make+it+better")
 	roundReq := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/debate/rounds", roundBody)
 	roundReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	roundReq.Header.Set("HX-Request", "true")
+	roundReq.Header.Set("Hx-Request", "true")
 	roundReq.AddCookie(cookie)
 	roundW := httptest.NewRecorder()
 	r.ServeHTTP(roundW, roundReq)
@@ -1411,7 +1399,7 @@ func TestWorkspaceUpdate_ApproveZoneTracksPendingState(t *testing.T) {
 
 	acceptReq := httptest.NewRequest(http.MethodPost,
 		"/tickets/"+ticket.ID+"/debate/rounds/"+pendingRoundID+"/accept", http.NoBody)
-	acceptReq.Header.Set("HX-Request", "true")
+	acceptReq.Header.Set("Hx-Request", "true")
 	acceptReq.AddCookie(cookie)
 	acceptW := httptest.NewRecorder()
 	r.ServeHTTP(acceptW, acceptReq)
@@ -1453,8 +1441,8 @@ func TestAccept_ReturnsBeforeScorerCompletes(t *testing.T) {
 	_, round := insertInReviewRound(t, db, cookie, r, ticket.ID, "scored text")
 
 	req := httptest.NewRequest(http.MethodPost,
-		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", nil)
-	req.Header.Set("HX-Request", "true")
+		"/tickets/"+ticket.ID+"/debate/rounds/"+round.ID+"/accept", http.NoBody)
+	req.Header.Set("Hx-Request", "true")
 	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req) // must return before scorer unblocks

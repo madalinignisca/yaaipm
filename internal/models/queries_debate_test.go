@@ -214,8 +214,8 @@ func TestUpdateDebateSeed_GuardsRoundsAndInFlight(t *testing.T) {
 	}
 
 	// Happy path: zero rounds → edit must succeed.
-	if err := db.UpdateDebateSeed(ctx, deb.ID, "edited seed"); err != nil {
-		t.Fatalf("seed edit with no rounds must succeed: %v", err)
+	if execErr := db.UpdateDebateSeed(ctx, deb.ID, "edited seed"); execErr != nil {
+		t.Fatalf("seed edit with no rounds must succeed: %v", execErr)
 	}
 	got, err := db.GetActiveDebate(ctx, ticketID)
 	if err != nil {

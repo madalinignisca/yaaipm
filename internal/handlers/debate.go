@@ -41,6 +41,12 @@ const ticketTypeFeature = "feature"
 const (
 	debateMsgStale = "This page is out of date — reload to see the latest state."
 	debateMsgInfra = "Something went wrong on our side — nothing was changed."
+
+	// Round status strings used in Go-side comparisons (handlers package).
+	// Do NOT change these — they must match the values stored in the DB by the models package.
+	roundStatusAccepted = "accepted"
+	roundStatusInReview = "in_review"
+	roundStatusRejected = "rejected"
 )
 
 // DebateConfig groups the per-deployment tuning knobs for the debate
@@ -495,12 +501,12 @@ func (h *DebateHandler) insertRound(
 // puts the banner in #debate-flash so the composer/suggestion in
 // #debate-stage is never destroyed by an error.
 func (h *DebateHandler) renderDebateError(w http.ResponseWriter, r *http.Request, status int, msg string) {
-	if r.Header.Get("HX-Request") != "true" {
+	if r.Header.Get("Hx-Request") != "true" {
 		http.Error(w, msg, status)
 		return
 	}
-	w.Header().Set("HX-Retarget", "#debate-flash")
-	w.Header().Set("HX-Reswap", "innerHTML")
+	w.Header().Set("Hx-Retarget", "#debate-flash")
+	w.Header().Set("Hx-Reswap", "innerHTML")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_ = h.engine.RenderPartial(w, "debate_error.html", map[string]any{"Message": msg})
@@ -1121,7 +1127,7 @@ func (h *DebateHandler) ShowVersion(w http.ResponseWriter, r *http.Request) {
 	} else {
 		label := 0
 		for _, rd := range rounds { // ASC — count accepted to derive the label
-			if rd.Status == "accepted" {
+			if rd.Status == roundStatusAccepted {
 				label++
 				if rd.ID == roundID {
 					viewing = &ViewingVersion{Label: label, Text: rd.OutputText, RestoreFrom: rd.RoundNumber + 1}

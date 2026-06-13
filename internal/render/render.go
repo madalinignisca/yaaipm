@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -70,9 +71,7 @@ func staticFuncMap() template.FuncMap {
 		// renderInlineDiff renders a word-level prose diff between two
 		// texts (debate suggestion "What changed" tab). Sanitization
 		// lives in diff.RenderInlineHTML — see that package's audit.
-		"renderInlineDiff": func(before, after string) template.HTML {
-			return diff.RenderInlineHTML(before, after)
-		},
+		"renderInlineDiff": diff.RenderInlineHTML,
 	}
 }
 
@@ -368,9 +367,7 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 		},
 	}
 	// Stateless helpers from staticFuncMap() (defined above) are merged in after the literal — see that function's doc for the extraction criterion.
-	for k, v := range staticFuncMap() {
-		funcMap[k] = v
-	}
+	maps.Copy(funcMap, staticFuncMap())
 
 	layoutFiles, err := filepath.Glob(filepath.Join(templatesDir, "layouts", "*.html"))
 	if err != nil {
