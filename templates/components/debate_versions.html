@@ -26,7 +26,7 @@
                         hx-target="#debate-document" hx-swap="outerHTML">View</button>
                 <form hx-post="/tickets/{{$tid}}/debate/undo?from={{.RestoreFrom}}"
                       hx-target="#debate-stage" hx-swap="innerHTML"
-                      hx-confirm="Restore version {{.VersionLabel}}? Versions after this one will be removed.">
+                      hx-confirm="Restore version {{.VersionLabel}}? Versions after this one — and any pending suggestion — will be removed.">
                   {{csrfField}}
                   <button type="submit" class="btn btn-ghost btn-xs text-primary" data-testid="debate-restore-{{.VersionLabel}}">Restore</button>
                 </form>
@@ -52,7 +52,7 @@
                     hx-target="#debate-document" hx-swap="outerHTML">View</button>
             <form hx-post="/tickets/{{$tid}}/debate/undo?from=1"
                   hx-target="#debate-stage" hx-swap="innerHTML"
-                  hx-confirm="Restore the original text? All versions will be removed.">
+                  hx-confirm="Restore the original text? All versions — and any pending suggestion — will be removed.">
               {{csrfField}}
               <button type="submit" class="btn btn-ghost btn-xs text-primary" data-testid="debate-restore-original">Restore</button>
             </form>

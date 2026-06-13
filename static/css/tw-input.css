@@ -132,6 +132,9 @@
 .gantt-bar-feature { border-radius: 6px; }
 .gantt-bar-label { padding: 0 .5rem; font-size: 10px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* Alpine x-cloak: hide pre-init content (seed form, changes pane) */
+[x-cloak] { display: none !important; }
+
 /* Debate inline diff (diff.RenderInlineHTML output). pre-wrap is what
    keeps markdown line structure — the renderer emits raw \n, never <br>. */
 .diff-inline {

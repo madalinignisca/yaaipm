@@ -205,7 +205,7 @@ func (h *DebateHandler) providerNames() []string {
 func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -277,7 +277,7 @@ func (h *DebateHandler) ShowDebate(w http.ResponseWriter, r *http.Request) {
 func (h *DebateHandler) StartDebate(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -316,7 +316,7 @@ func (h *DebateHandler) StartDebate(w http.ResponseWriter, r *http.Request) {
 func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -495,6 +495,18 @@ func (h *DebateHandler) insertRound(
 	return round, centsDelta, nil
 }
 
+// renderContextError surfaces requireDebateContext failures. For HTMX
+// requests it reuses the banner path (a full RenderError page swapped
+// into #debate-stage would destroy the workspace); plain requests keep
+// the full error page.
+func (h *DebateHandler) renderContextError(w http.ResponseWriter, r *http.Request, code int, err error) {
+	if r.Header.Get("Hx-Request") == "true" {
+		h.renderDebateError(w, r, code, "This page is no longer available — reload or go back to the ticket.")
+		return
+	}
+	h.engine.RenderError(w, code, err.Error())
+}
+
 // renderDebateError keeps spec §3.3's status-code discipline but gives
 // HTMX requests a human-readable banner (UI refactor spec §5.4). The
 // htmx:beforeSwap listener in init.js permits the swap; HX-Retarget
@@ -580,7 +592,7 @@ func (h *DebateHandler) writeInsertError(w http.ResponseWriter, r *http.Request,
 func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 	roundID := chi.URLParam(r, "roundID")
@@ -758,7 +770,7 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 	roundID := chi.URLParam(r, "roundID")
@@ -839,7 +851,7 @@ func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roun
 func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -899,7 +911,7 @@ func (h *DebateHandler) UndoRound(w http.ResponseWriter, r *http.Request) {
 func (h *DebateHandler) ApproveDebate(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -973,7 +985,7 @@ func (h *DebateHandler) approveUnderLock(ctx context.Context, ticketID string) e
 func (h *DebateHandler) AbandonDebate(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
@@ -1047,11 +1059,12 @@ func (h *DebateHandler) undoUnderLock(ctx context.Context, debateID string, from
 // renderWorkspaceUpdate emits the full post-mutation response: primary
 // content for #debate-stage (suggestion if one is pending, composer
 // otherwise) followed by OOB fragments for the document, versions rail,
-// effort chip, and approve zone. One response, five regions, no reload
-// (UI refactor spec §5.3 — replaces the v0.2.0 Hx-Refresh/Hx-Redirect
-// reloads). The approve-zone OOB keeps the header "✓ Use this version"
-// button disabled state in sync with the pending-suggestion state across
-// live HTMX sessions (fix: approve button tracks pending state via OOB).
+// effort chip, approve zone, and a flash clear. One response, five regions
+// + flash clear, no reload (UI refactor spec §5.3 — replaces the v0.2.0
+// Hx-Refresh/Hx-Redirect reloads). The approve-zone OOB keeps the header
+// "✓ Use this version" button disabled state in sync with the
+// pending-suggestion state across live HTMX sessions (fix: approve button
+// tracks pending state via OOB).
 func (h *DebateHandler) renderWorkspaceUpdate(w http.ResponseWriter, r *http.Request, dctx debateContext, feedback string) {
 	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
 	if !ok {
@@ -1081,6 +1094,8 @@ func (h *DebateHandler) renderWorkspaceUpdate(w http.ResponseWriter, r *http.Req
 	_ = h.engine.RenderPartial(w, "debate_approve.html", map[string]any{
 		"OOB": true, "TicketID": dctx.ticket.ID, "Pending": view.Pending != nil,
 	})
+	// Clear any stale error banner — this response IS the success signal.
+	_, _ = w.Write([]byte(`<div id="debate-flash" hx-swap-oob="true"></div>`))
 }
 
 // ── GET /tickets/{ticketID}/debate/document ───────────────────────
@@ -1090,7 +1105,7 @@ func (h *DebateHandler) renderWorkspaceUpdate(w http.ResponseWriter, r *http.Req
 func (h *DebateHandler) ShowDocument(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
@@ -1111,7 +1126,7 @@ func (h *DebateHandler) ShowDocument(w http.ResponseWriter, r *http.Request) {
 func (h *DebateHandler) ShowVersion(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 	deb, rounds, ok := h.loadActiveDebateAndRounds(w, r, dctx)
@@ -1175,7 +1190,7 @@ func (h *DebateHandler) loadActiveDebateAndRounds(w http.ResponseWriter, r *http
 func (h *DebateHandler) EditSeed(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 	seed := strings.TrimSpace(r.FormValue("seed"))
@@ -1224,7 +1239,7 @@ func (h *DebateHandler) EditSeed(w http.ResponseWriter, r *http.Request) {
 func (h *DebateHandler) EffortChip(w http.ResponseWriter, r *http.Request) {
 	dctx, code, err := h.requireDebateContext(r)
 	if err != nil {
-		h.engine.RenderError(w, code, err.Error())
+		h.renderContextError(w, r, code, err)
 		return
 	}
 
