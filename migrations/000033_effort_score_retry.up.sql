@@ -24,10 +24,13 @@ ALTER TABLE feature_debates
     ADD COLUMN effort_retry_next_at  TIMESTAMPTZ;
 
 -- Partial index over the candidate set the sweep scans every few minutes:
--- debates that are unscored and still active or approved. Keeps the claim
--- query off a sequential scan as feature_debates grows; abandoned and
--- already-scored debates never appear in the predicate so the index stays
--- small.
+-- active or approved debates (the sweep then filters those whose
+-- last_scored_round_id lags the latest accepted round). Predicate matches
+-- the claim query's status filter so the planner can use it; abandoned
+-- debates never appear so the index stays small. Note: the predicate does
+-- NOT include effort_scored_at, because eligibility keys off
+-- last_scored_round_id (a scored-but-stale debate has a non-NULL
+-- effort_scored_at yet still needs a retry).
 CREATE INDEX idx_feature_debates_effort_retry
     ON feature_debates (effort_retry_next_at)
-    WHERE effort_scored_at IS NULL AND status IN ('active', 'approved');
+    WHERE status IN ('active', 'approved');

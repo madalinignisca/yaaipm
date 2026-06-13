@@ -123,10 +123,16 @@ func TestClaimStaleEffortScores_SkipsAlreadyScored(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	debateID, _ := seedDebateWithAcceptedRound(t, db, now.Add(-10*time.Minute), "out")
+	debateID, roundID := seedDebateWithAcceptedRound(t, db, now.Add(-10*time.Minute), "out")
+	// A successful score always sets last_scored_round_id to the scored
+	// round (UpdateEffortScoreCondTx) — that, not effort_scored_at, is what
+	// marks the latest accepted round as current.
 	if _, err := db.Pool.Exec(ctx,
-		`UPDATE feature_debates SET effort_score = 5, effort_hours = 8, effort_scored_at = now() WHERE id = $1`,
-		debateID,
+		`UPDATE feature_debates
+		    SET effort_score = 5, effort_hours = 8, effort_scored_at = now(),
+		        last_scored_round_id = $2
+		  WHERE id = $1`,
+		debateID, roundID,
 	); err != nil {
 		t.Fatalf("mark scored: %v", err)
 	}
@@ -136,7 +142,7 @@ func TestClaimStaleEffortScores_SkipsAlreadyScored(t *testing.T) {
 		t.Fatalf("ClaimStaleEffortScores: %v", err)
 	}
 	if len(claimed) != 0 {
-		t.Fatalf("claimed %d, want 0 (already scored)", len(claimed))
+		t.Fatalf("claimed %d, want 0 (latest accepted round already scored)", len(claimed))
 	}
 }
 
@@ -161,6 +167,55 @@ func TestClaimStaleEffortScores_SkipsInBackoff(t *testing.T) {
 	}
 	if len(claimed) != 0 {
 		t.Fatalf("claimed %d, want 0 (in backoff)", len(claimed))
+	}
+}
+
+func TestClaimStaleEffortScores_ReScoresAfterNewerRound(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := NewDB(pool)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	debateID, round1ID := seedDebateWithAcceptedRound(t, db, now.Add(-20*time.Minute), "v1 text")
+	// Round 1 scored successfully.
+	if _, err := db.Pool.Exec(ctx,
+		`UPDATE feature_debates
+		    SET effort_score = 4, effort_hours = 6, effort_scored_at = now(),
+		        last_scored_round_id = $2
+		  WHERE id = $1`,
+		debateID, round1ID,
+	); err != nil {
+		t.Fatalf("mark round 1 scored: %v", err)
+	}
+	// Round 2 accepted later (older than minAge) but its scorer call failed,
+	// so last_scored_round_id still points at round 1 — the score is stale,
+	// not missing. The sweep must retry it for round 2.
+	var round2ID string
+	if err := db.Pool.QueryRow(ctx, `
+		INSERT INTO feature_debate_rounds
+			(debate_id, round_number, provider, model, triggered_by,
+			 input_text, output_text, status, decided_at)
+		SELECT $1, 2, 'gemini', 'gemini-2.5-flash', triggered_by,
+		       'v1 text', 'v2 text', 'accepted', $2
+		  FROM feature_debate_rounds WHERE id = $3
+		RETURNING id`,
+		debateID, now.Add(-10*time.Minute), round1ID,
+	).Scan(&round2ID); err != nil {
+		t.Fatalf("insert round 2: %v", err)
+	}
+
+	claimed, err := db.ClaimStaleEffortScores(ctx, now, testRetryMinAge, testRetryBase, testRetryMax, testRetryLimit)
+	if err != nil {
+		t.Fatalf("ClaimStaleEffortScores: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimed %d, want 1 (stale score from an older round must be retried)", len(claimed))
+	}
+	if claimed[0].RoundID != round2ID {
+		t.Errorf("RoundID = %q, want latest accepted round %q", claimed[0].RoundID, round2ID)
+	}
+	if claimed[0].OutputText != "v2 text" {
+		t.Errorf("OutputText = %q, want %q (latest accepted round's text)", claimed[0].OutputText, "v2 text")
 	}
 }
 

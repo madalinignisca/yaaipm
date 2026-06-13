@@ -743,6 +743,12 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 	}
 }
 
+// effortScoreWriteTimeout bounds the score-write transaction in
+// applyScoreResult. The work is a handful of fast indexed statements, so
+// 15s is generous headroom while still capping a goroutine wedged on a
+// contended FOR UPDATE lock or a stalled database.
+const effortScoreWriteTimeout = 15 * time.Second
+
 // applyScoreResult persists one scorer result: the per-round scorer cost,
 // the conditional effort_* update (UpdateEffortScoreCondTx silently
 // discards out-of-order responses), and the debate's total_cost_micros
@@ -755,40 +761,49 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 // sweep (retryOneEffortScore) so the cost-accounting write lives in
 // exactly one place. Returns a wrapped error for the caller to log.
 func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID, projectID string, res ai.ScoreResult) error {
-	tx, err := h.db.Pool.Begin(ctx)
+	// Both callers pass an un-deadlined context (accept: context.WithoutCancel;
+	// sweep: context.Background). Bound the write so a stuck FOR UPDATE lock
+	// or a slow database can't wedge the goroutine and leak a pooled
+	// connection indefinitely. WithTimeout over WithoutCancel keeps the
+	// "client disconnect must not abort billing" guarantee while still
+	// capping the worst case.
+	dbCtx, cancel := context.WithTimeout(ctx, effortScoreWriteTimeout)
+	defer cancel()
+
+	tx, err := h.db.Pool.Begin(dbCtx)
 	if err != nil {
 		return fmt.Errorf("begin scorer tx for debate %s: %w", debateID, err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(dbCtx) }()
 
 	var oldTotal int64
-	if qErr := tx.QueryRow(ctx,
+	if qErr := tx.QueryRow(dbCtx,
 		`SELECT total_cost_micros FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
 	).Scan(&oldTotal); qErr != nil {
 		return fmt.Errorf("lock debate %s: %w", debateID, qErr)
 	}
 
-	if uErr := h.db.UpdateScorerCostMicros(ctx, tx, roundID, res.Usage.CostMicros); uErr != nil {
+	if uErr := h.db.UpdateScorerCostMicros(dbCtx, tx, roundID, res.Usage.CostMicros); uErr != nil {
 		return fmt.Errorf("update scorer cost on round %s: %w", roundID, uErr)
 	}
-	if uErr := h.db.UpdateEffortScoreCondTx(ctx, tx, debateID, roundID, res.Score, res.Hours, res.Reasoning); uErr != nil {
+	if uErr := h.db.UpdateEffortScoreCondTx(dbCtx, tx, debateID, roundID, res.Score, res.Hours, res.Reasoning); uErr != nil {
 		return fmt.Errorf("UpdateEffortScoreCondTx debate %s: %w", debateID, uErr)
 	}
 
 	newTotal := oldTotal + res.Usage.CostMicros
-	if _, uErr := tx.Exec(ctx,
+	if _, uErr := tx.Exec(dbCtx,
 		`UPDATE feature_debates SET total_cost_micros = $1, updated_at = now() WHERE id = $2`,
 		newTotal, debateID,
 	); uErr != nil {
 		return fmt.Errorf("update total_cost_micros debate %s: %w", debateID, uErr)
 	}
 
-	if commitErr := tx.Commit(ctx); commitErr != nil {
+	if commitErr := tx.Commit(dbCtx); commitErr != nil {
 		return fmt.Errorf("commit scorer tx for debate %s: %w", debateID, commitErr)
 	}
 
 	centsDelta := newTotal/10000 - oldTotal/10000
-	if incErr := h.db.IncrementProjectCostCents(ctx, projectID, centsDelta); incErr != nil {
+	if incErr := h.db.IncrementProjectCostCents(dbCtx, projectID, centsDelta); incErr != nil {
 		log.Printf("debate applyScoreResult: project_costs rollup for debate %s: %v", debateID, incErr)
 	}
 	return nil
