@@ -367,7 +367,7 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 		},
 	}
-	// Stateless helpers needed by render_test.go live in staticFuncMap() below.
+	// Stateless helpers from staticFuncMap() (defined above) are merged in after the literal — see that function's doc for the extraction criterion.
 	for k, v := range staticFuncMap() {
 		funcMap[k] = v
 	}

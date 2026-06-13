@@ -773,32 +773,23 @@ func (h *DebateHandler) RejectRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rejectErr := h.rejectRoundUnderLock(r.Context(), deb.ID, roundID); rejectErr != nil {
+	feedback, rejectErr := h.rejectRoundUnderLock(r.Context(), deb.ID, roundID)
+	if rejectErr != nil {
 		h.writeAcceptError(w, r, rejectErr) // same sentinel mapping as accept
 		return
 	}
 
-	// Preserve the just-rejected round's feedback so the composer
-	// textarea pre-fills it — the user can tweak and retry rather
-	// than re-type from scratch. Re-query all rounds to find the
-	// rejected round rather than threading it through rejectRoundUnderLock,
-	// keeping the tx helper simple.
-	var feedback string
-	if allRounds, rErr := h.db.GetDebateRounds(r.Context(), deb.ID); rErr == nil {
-		for _, rd := range allRounds {
-			if rd.ID == roundID && rd.Feedback != nil {
-				feedback = *rd.Feedback
-				break
-			}
-		}
-	}
 	h.renderWorkspaceUpdate(w, r, dctx, feedback)
 }
 
-func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roundID string) error {
+// rejectRoundUnderLock opens a transaction, locks the debate row, reads the
+// round's feedback (so the caller can pre-fill the composer without a second
+// round-trip), and delegates the status update to RejectRoundTx.
+// It returns the feedback string (empty when none) and any error.
+func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roundID string) (string, error) {
 	tx, err := h.db.Pool.Begin(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -806,15 +797,30 @@ func (h *DebateHandler) rejectRoundUnderLock(ctx context.Context, debateID, roun
 	if qErr := tx.QueryRow(ctx,
 		`SELECT status FROM feature_debates WHERE id = $1 FOR UPDATE`, debateID,
 	).Scan(&status); qErr != nil {
-		return qErr
+		return "", qErr
 	}
 	if status != models.DebateStatusActive {
-		return models.ErrDebateNotActive
+		return "", models.ErrDebateNotActive
 	}
+
+	// Read feedback before the UPDATE so it is available to the caller
+	// without a post-commit re-query of all rounds.
+	var feedbackPtr *string
+	_ = tx.QueryRow(ctx,
+		`SELECT feedback FROM feature_debate_rounds WHERE id = $1`, roundID,
+	).Scan(&feedbackPtr)
+	var feedback string
+	if feedbackPtr != nil {
+		feedback = *feedbackPtr
+	}
+
 	if rErr := h.db.RejectRoundTx(ctx, tx, debateID, roundID); rErr != nil {
-		return rErr
+		return "", rErr
 	}
-	return tx.Commit(ctx)
+	if cErr := tx.Commit(ctx); cErr != nil {
+		return "", cErr
+	}
+	return feedback, nil
 }
 
 // ── POST /tickets/{ticketID}/debate/undo?from=N ───────────────────

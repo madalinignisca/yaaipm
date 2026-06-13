@@ -74,41 +74,6 @@
   --noise:  0;
 }
 
-/* --- Overrides for shared helpers that app.css styles dark --------------
-   The renderDiff FuncMap emits HTML with .diff-block/.diff-add/.diff-del/
-   .diff-ctx classes whose default styling in app.css is dark-theme
-   (black background, bright green/red spans). The debate page is now
-   light-theme via DaisyUI, so we restyle those classes here. When the
-   full v0.3.0 migration ships, app.css goes away and these become the
-   primary definitions. */
-.diff-block {
-  background: oklch(97% 0 0);
-  color: oklch(28% 0.02 265);
-  border: 1px solid oklch(92% 0 0);
-  border-radius: 0.5rem;
-  padding: 0.75rem 1rem;
-  font-size: 0.8rem;
-  line-height: 1.5;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-  overflow-x: auto;
-  white-space: pre;
-  margin: 0;
-}
-.diff-add {
-  display: block;
-  background: oklch(94% 0.06 145);
-  color: oklch(40% 0.15 145);
-}
-.diff-del {
-  display: block;
-  background: oklch(94% 0.08 25);
-  color: oklch(44% 0.18 25);
-}
-.diff-ctx {
-  display: block;
-  color: oklch(55% 0.01 265);
-}
-
 /* --- Gantt chart ----------------------------------------------------------
    Ported verbatim from the pre-migration app.css when it was deleted in
    PR-6. static/js/app/gantt.js injects raw HTML with these class names at
