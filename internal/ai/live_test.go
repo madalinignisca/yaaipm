@@ -19,7 +19,10 @@
 // A skipped test is NO pre-release signal: each provider test skips when
 // its key is unset so partial local runs stay possible, but the release
 // gate should export all three keys. TestLive_AtLeastOneKeyConfigured
-// fails loudly if the tag was requested with no keys at all.
+// fails loudly if the tag was requested with no keys at all, and setting
+// INTEGRATION_AI_STRICT=1 turns every missing-key skip into a failure —
+// use that for the actual release gate so a forgotten key can't silently
+// drop a provider from coverage.
 
 package ai
 
@@ -49,11 +52,15 @@ const liveFeedback = "Mention that the export must respect the viewer's role per
 
 // liveKey returns the env value or skips the calling test. Skips rather
 // than fails so a developer with only one provider key can still smoke
-// that provider locally.
+// that provider locally; INTEGRATION_AI_STRICT=1 upgrades the skip to a
+// failure so the release gate enforces full three-provider coverage.
 func liveKey(t *testing.T, env string) string {
 	t.Helper()
 	k := os.Getenv(env)
 	if k == "" {
+		if os.Getenv("INTEGRATION_AI_STRICT") == "1" {
+			t.Fatalf("%s not set and INTEGRATION_AI_STRICT=1 — the release gate requires all provider keys", env)
+		}
 		t.Skipf("%s not set — skipping (a skip is NO pre-release signal for this provider)", env)
 	}
 	return k
@@ -150,7 +157,10 @@ func TestLive_GeminiRefiner(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), liveCallTimeout)
 	defer cancel()
-	client, err := NewGeminiClient(ctx, key, GeminiModels{Default: model})
+	// Client construction gets the test-lifecycle context, not the
+	// call-scoped timeout ctx, mirroring cmd/server/main.go (which
+	// constructs with context.Background() and scopes timeouts per call).
+	client, err := NewGeminiClient(t.Context(), key, GeminiModels{Default: model})
 	if err != nil {
 		t.Fatalf("gemini client: %v", err)
 	}
@@ -176,7 +186,10 @@ func TestLive_GeminiScorer(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), liveCallTimeout)
 	defer cancel()
-	client, err := NewGeminiClient(ctx, key, GeminiModels{Default: model})
+	// Client construction gets the test-lifecycle context, not the
+	// call-scoped timeout ctx, mirroring cmd/server/main.go (which
+	// constructs with context.Background() and scopes timeouts per call).
+	client, err := NewGeminiClient(t.Context(), key, GeminiModels{Default: model})
 	if err != nil {
 		t.Fatalf("gemini client: %v", err)
 	}
@@ -200,6 +213,9 @@ func TestLive_GeminiScorer(t *testing.T) {
 	}
 	if strings.TrimSpace(res.Reasoning) == "" {
 		t.Error("empty reasoning in live scorer response")
+	}
+	if res.Usage.Model == "" {
+		t.Error("empty Usage.Model in live scorer response")
 	}
 	if res.Usage.InputTokens <= 0 || res.Usage.OutputTokens <= 0 {
 		t.Errorf("non-positive scorer token counts: in=%d out=%d",
