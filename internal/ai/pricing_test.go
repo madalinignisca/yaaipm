@@ -14,6 +14,10 @@ func TestComputeCostMicros_KnownModels(t *testing.T) {
 		{"claude sonnet 2k in / 500 out", ModelClaudeSonnet46, 2000, 500, 6000 + 7500},
 		{"gpt-5-mini 500 in / 200 out", ModelGPT5Mini, 500, 200, 250 + 400},
 		{"zero tokens", ModelGeminiFlash, 0, 0, 0},
+		// Production-pinned models added for issue #108 — the whole point
+		// is that these now compute a non-zero cost.
+		{"gpt-5.4 1k/1k", ModelGPT54, 1000, 1000, 2500 + 15000},
+		{"gemini-3-flash-preview 1k/1k", ModelGemini3FlashPreview, 1000, 1000, 500 + 3000},
 	}
 	for _, c := range cases {
 		got := ComputeCostMicros(c.model, c.inputTok, c.outTok)
@@ -27,6 +31,37 @@ func TestComputeCostMicros_KnownModels(t *testing.T) {
 func TestComputeCostMicros_UnknownModelReturnsZero(t *testing.T) {
 	if got := ComputeCostMicros("not-a-real-model", 1000, 1000); got != 0 {
 		t.Errorf("unknown model should return 0, got %d", got)
+	}
+}
+
+func TestHasPricing(t *testing.T) {
+	if !HasPricing(ModelGemini3FlashPreview) {
+		t.Errorf("HasPricing(%q) = false, want true (issue #108 fix)", ModelGemini3FlashPreview)
+	}
+	if !HasPricing(ModelGPT54) {
+		t.Errorf("HasPricing(%q) = false, want true (issue #108 fix)", ModelGPT54)
+	}
+	if HasPricing("not-a-real-model") {
+		t.Error("HasPricing on an unknown model should be false")
+	}
+}
+
+// TestPricingTable_AllModelConstantsPriced guards the invariant that every
+// Model* constant this package exports has a pricingTable entry. This is
+// the regression test for issue #108: production ran a configured model
+// (gemini-3-flash-preview, gpt-5.4) with no rate, so every AI call recorded
+// $0. Adding a new Model* constant without a rate now fails here instead of
+// silently under-billing in production.
+func TestPricingTable_AllModelConstantsPriced(t *testing.T) {
+	models := []string{
+		ModelClaudeSonnet46, ModelClaudeOpus46,
+		ModelGPT5Mini, ModelGPT5, ModelGPT54,
+		ModelGeminiFlash, ModelGeminiPro, ModelGemini3FlashPreview,
+	}
+	for _, m := range models {
+		if !HasPricing(m) {
+			t.Errorf("model constant %q has no pricing-table entry", m)
+		}
 	}
 }
 

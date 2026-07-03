@@ -8,8 +8,13 @@ const (
 	ModelClaudeOpus46   = "claude-opus-4-6"
 	ModelGPT5Mini       = "gpt-5-mini"
 	ModelGPT5           = "gpt-5"
+	ModelGPT54          = "gpt-5.4"
 	ModelGeminiFlash    = "gemini-2.5-flash"
 	ModelGeminiPro      = "gemini-2.5-pro"
+	// Gemini3FlashPreview is the production-pinned scorer/refiner model
+	// (GEMINI_MODEL in the forgedesk-env cluster Secret). Added 2026-07
+	// after the live-API suite (issue #67) found it un-priced.
+	ModelGemini3FlashPreview = "gemini-3-flash-preview"
 )
 
 // pricingRate expresses a per-1k-token rate in micros (millionths of USD).
@@ -22,17 +27,34 @@ type pricingRate struct {
 // Update when vendors change prices; git history preserves the audit trail
 // of "we were paying $X per 1k tokens during period Y".
 //
-// Rates are the public list prices as of the spec date (2026-04-14). If a
-// model the handler asks about is absent from this table, ComputeCostMicros
-// returns 0 — the round still records successfully, just without cost data
-// (safer than failing the round on a pricing lookup miss).
+// Rates are public list prices. The original set is as of the spec date
+// (2026-04-14); entries added later carry their own date + source in a
+// trailing comment. If a model the handler asks about is absent from this
+// table, ComputeCostMicros returns 0 — the round still records
+// successfully, just without cost data (safer than failing the round on a
+// pricing lookup miss). Because a $0 miss is silent, cmd/server keeps the
+// configured debate models honest at startup via HasPricing (issue #108).
 var pricingTable = map[string]pricingRate{
 	ModelClaudeSonnet46: {inputMicrosPer1k: 3000, outputMicrosPer1k: 15000},
 	ModelClaudeOpus46:   {inputMicrosPer1k: 15000, outputMicrosPer1k: 75000},
 	ModelGPT5Mini:       {inputMicrosPer1k: 500, outputMicrosPer1k: 2000},
 	ModelGPT5:           {inputMicrosPer1k: 3000, outputMicrosPer1k: 15000},
-	ModelGeminiFlash:    {inputMicrosPer1k: 350, outputMicrosPer1k: 2800},
-	ModelGeminiPro:      {inputMicrosPer1k: 2500, outputMicrosPer1k: 15000},
+	// gpt-5.4: $2.50/1M in, $15.00/1M out (developers.openai.com/api/docs/pricing, 2026-07).
+	ModelGPT54:       {inputMicrosPer1k: 2500, outputMicrosPer1k: 15000},
+	ModelGeminiFlash: {inputMicrosPer1k: 350, outputMicrosPer1k: 2800},
+	ModelGeminiPro:   {inputMicrosPer1k: 2500, outputMicrosPer1k: 15000},
+	// gemini-3-flash-preview: $0.50/1M in, $3.00/1M out (ai.google.dev/gemini-api/docs/pricing, 2026-07).
+	ModelGemini3FlashPreview: {inputMicrosPer1k: 500, outputMicrosPer1k: 3000},
+}
+
+// HasPricing reports whether the named model has a rate in pricingTable.
+// cmd/server calls this at startup for each configured debate model so an
+// un-priced model surfaces as a loud WARNING instead of silently recording
+// every call at $0 (issue #108: production ran gemini-3-flash-preview and
+// gpt-5.4 with no entries, so all Gemini/OpenAI debate costs read as $0).
+func HasPricing(model string) bool {
+	_, ok := pricingTable[model]
+	return ok
 }
 
 // ComputeCostMicros returns the cost in micros (millionths of USD) for the
