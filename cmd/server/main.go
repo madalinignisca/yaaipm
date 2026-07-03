@@ -187,6 +187,26 @@ func main() {
 	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, debateCfg)
 	log.Printf("Feature Debate Mode wired (%d refiners, scorer=%v)", len(debateRefiners), debateScorer != nil)
 
+	// Cost-tracking guard (issue #108). A model absent from the pricing
+	// table prices every call at $0 silently; warn loudly at startup so a
+	// future GEMINI_MODEL/OPENAI_MODEL/ANTHROPIC_MODEL bump can't quietly
+	// under-bill clients. Fake mode is skipped — its refiners report
+	// placeholder model names and never make billable calls.
+	if debateRefinerMode != debateRefinerModeFake {
+		unpriced := map[string]struct{}{}
+		for _, r := range debateRefiners {
+			if m := r.Model(); m != "" && !ai.HasPricing(m) {
+				unpriced[m] = struct{}{}
+			}
+		}
+		if debateScorer != nil && cfg.GeminiModel != "" && !ai.HasPricing(cfg.GeminiModel) {
+			unpriced[cfg.GeminiModel] = struct{}{}
+		}
+		for m := range unpriced {
+			log.Printf("WARNING: debate model %q has no pricing-table entry — its AI calls record $0 cost (issue #108, internal/ai/pricing.go)", m)
+		}
+	}
+
 	if debateRealAI {
 		if len(debateRefiners) == 0 {
 			log.Fatal("DEBATE_REAL_AI=1 but no provider API keys configured — set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")
