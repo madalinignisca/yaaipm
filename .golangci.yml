@@ -167,3 +167,9 @@ formatters:
 run:
   timeout: 5m
   tests: true
+  # Analyze tag-gated files too (internal/ai/live_test.go). The tag only
+  # ADDS files to the build, so this cannot hide anything — it prevents
+  # the live-API suite from silently rotting to a compile error because
+  # neither `go test ./...` nor lint ever looked at it.
+  build-tags:
+    - integration_ai
