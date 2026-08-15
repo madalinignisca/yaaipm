@@ -197,7 +197,7 @@ func Load() (*Config, error) {
 		AnthropicContentInputPrice:  envInt64("ANTHROPIC_CONTENT_INPUT_PRICE", 1500),
 		AnthropicContentOutputPrice: envInt64("ANTHROPIC_CONTENT_OUTPUT_PRICE", 7500),
 
-		S3Endpoint:        os.Getenv("S3_ENDPOINT"),
+		S3Endpoint:        envTrimmed("S3_ENDPOINT"),
 		S3AccessKeyID:     envTrimmed("S3_ACCESS_KEY_ID"),
 		S3SecretAccessKey: envTrimmed("S3_SECRET_ACCESS_KEY"),
 		S3Region:          envOrDefault("S3_REGION", "us-east-1"),

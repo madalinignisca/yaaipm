@@ -98,6 +98,7 @@ func TestLoad_TrimsSafeCredentials(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-openai-123\n")
 	t.Setenv("ANTHROPIC_API_KEY", "  sk-anthropic-456")
 	t.Setenv("GEMINI_API_KEY", "gemini-789\n")
+	t.Setenv("S3_ENDPOINT", "https://s3.example.com\n")
 	t.Setenv("S3_ACCESS_KEY_ID", "AKIA123\n")
 	t.Setenv("S3_SECRET_ACCESS_KEY", "s3secret456\n")
 
@@ -116,6 +117,7 @@ func TestLoad_TrimsSafeCredentials(t *testing.T) {
 		{"OpenAIAPIKey", cfg.OpenAIAPIKey, "sk-openai-123"},
 		{"AnthropicAPIKey", cfg.AnthropicAPIKey, "sk-anthropic-456"},
 		{"GeminiAPIKey", cfg.GeminiAPIKey, "gemini-789"},
+		{"S3Endpoint", cfg.S3Endpoint, "https://s3.example.com"},
 		{"S3AccessKeyID", cfg.S3AccessKeyID, "AKIA123"},
 		{"S3SecretAccessKey", cfg.S3SecretAccessKey, "s3secret456"},
 	}
