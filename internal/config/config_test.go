@@ -30,6 +30,128 @@ func TestEnvOrDefault(t *testing.T) {
 	})
 }
 
+func TestEnvOrDefault_TrimsWhitespace(t *testing.T) {
+	t.Run("strips trailing newline", func(t *testing.T) {
+		t.Setenv("TEST_TRIM_KEY", "gpt-5.4\n")
+		if got := envOrDefault("TEST_TRIM_KEY", "fallback"); got != "gpt-5.4" {
+			t.Errorf("envOrDefault() = %q, want %q", got, "gpt-5.4")
+		}
+	})
+
+	t.Run("strips surrounding spaces and tabs", func(t *testing.T) {
+		t.Setenv("TEST_TRIM_KEY", "  gemini-2.5-pro \t")
+		if got := envOrDefault("TEST_TRIM_KEY", "fallback"); got != "gemini-2.5-pro" {
+			t.Errorf("envOrDefault() = %q, want %q", got, "gemini-2.5-pro")
+		}
+	})
+
+	t.Run("whitespace-only value falls back to default", func(t *testing.T) {
+		t.Setenv("TEST_TRIM_KEY", " \n\t ")
+		if got := envOrDefault("TEST_TRIM_KEY", "fallback"); got != "fallback" {
+			t.Errorf("envOrDefault() = %q, want %q", got, "fallback")
+		}
+	})
+}
+
+// TestLoad_TrimsModelWhitespace is the regression test for issue #111: a
+// trailing newline in OPENAI_MODEL (from a base64/heredoc typo in the k8s
+// Secret) made cfg.OpenAIModel = "gpt-5.4\n", which missed the pricing-table
+// key and was sent verbatim to the OpenAI API.
+func TestLoad_TrimsModelWhitespace(t *testing.T) {
+	setRequired(t)
+	t.Setenv("OPENAI_MODEL", "gpt-5.4\n")
+	t.Setenv("ANTHROPIC_MODEL", "  claude-sonnet-4-6  ")
+	t.Setenv("GEMINI_MODEL", "gemini-2.5-flash\n")
+	t.Setenv("S3_REGION", " eu-central-1\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"OpenAIModel", cfg.OpenAIModel, "gpt-5.4"},
+		{"AnthropicModel", cfg.AnthropicModel, "claude-sonnet-4-6"},
+		{"GeminiModel", cfg.GeminiModel, "gemini-2.5-flash"},
+		{"S3Region", cfg.S3Region, "eu-central-1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoad_TrimsSafeCredentials covers the credentials whose formats can never
+// legitimately contain surrounding whitespace, so a stray newline is always a
+// typo we should absorb (issue #111).
+func TestLoad_TrimsSafeCredentials(t *testing.T) {
+	setRequired(t)
+	t.Setenv("DATABASE_URL", "postgres://localhost/testdb\n")
+	t.Setenv("AES_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n")
+	t.Setenv("OPENAI_API_KEY", "sk-openai-123\n")
+	t.Setenv("ANTHROPIC_API_KEY", "  sk-anthropic-456")
+	t.Setenv("GEMINI_API_KEY", "gemini-789\n")
+	t.Setenv("S3_ENDPOINT", "https://s3.example.com\n")
+	t.Setenv("S3_ACCESS_KEY_ID", "AKIA123\n")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "s3secret456\n")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"DatabaseURL", cfg.DatabaseURL, "postgres://localhost/testdb"},
+		{"AESKey", cfg.AESKey, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{"OpenAIAPIKey", cfg.OpenAIAPIKey, "sk-openai-123"},
+		{"AnthropicAPIKey", cfg.AnthropicAPIKey, "sk-anthropic-456"},
+		{"GeminiAPIKey", cfg.GeminiAPIKey, "gemini-789"},
+		{"S3Endpoint", cfg.S3Endpoint, "https://s3.example.com"},
+		{"S3AccessKeyID", cfg.S3AccessKeyID, "AKIA123"},
+		{"S3SecretAccessKey", cfg.S3SecretAccessKey, "s3secret456"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoad_PreservesPasswordWhitespace guards the deliberate decision to NOT
+// trim SESSION_SECRET or SMTP_PASSWORD: those are the only values where edge
+// whitespace could be an intentional part of the secret (issue #111).
+func TestLoad_PreservesPasswordWhitespace(t *testing.T) {
+	setRequired(t)
+	const secret = "  test-secret-key-that-is-32-bytes!  "
+	const smtpPass = " smtp-pass-with-space "
+	t.Setenv("SESSION_SECRET", secret)
+	t.Setenv("SMTP_PASSWORD", smtpPass)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.SessionSecret != secret {
+		t.Errorf("SessionSecret = %q, want %q (must not be trimmed)", cfg.SessionSecret, secret)
+	}
+	if cfg.SMTPPassword != smtpPass {
+		t.Errorf("SMTPPassword = %q, want %q (must not be trimmed)", cfg.SMTPPassword, smtpPass)
+	}
+}
+
 func TestLoad_MissingRequired(t *testing.T) {
 	t.Run("fails without DATABASE_URL", func(t *testing.T) {
 		t.Setenv("DATABASE_URL", "")

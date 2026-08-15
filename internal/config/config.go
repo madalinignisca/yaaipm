@@ -69,15 +69,25 @@ func envInt64(key string, fallback int64) int64 {
 	return fallback
 }
 
+// envTrimmed reads an env var and strips leading/trailing whitespace. Use for
+// values whose format can never legitimately contain surrounding whitespace
+// (model names, API keys, URLs, hex keys) so a stray newline from a base64 or
+// heredoc typo in a Secret/.env is absorbed rather than silently corrupting the
+// value (issue #111). Do NOT use for passwords/secrets that may contain
+// intentional edge whitespace (SESSION_SECRET, SMTP_PASSWORD).
+func envTrimmed(key string) string {
+	return strings.TrimSpace(os.Getenv(key))
+}
+
 func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
 	}
 	return fallback
 }
 
 func Load() (*Config, error) {
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := envTrimmed("DATABASE_URL")
 	if dbURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
@@ -134,7 +144,7 @@ func Load() (*Config, error) {
 		workspacesDir = home + "/forgedesk-workspaces"
 	}
 
-	aesKey := os.Getenv("AES_ENCRYPTION_KEY")
+	aesKey := envTrimmed("AES_ENCRYPTION_KEY")
 	if aesKey == "" {
 		return nil, fmt.Errorf("AES_ENCRYPTION_KEY is required (hex-encoded 32-byte key)")
 	}
@@ -158,7 +168,7 @@ func Load() (*Config, error) {
 		RPDisplayName:        "ForgeDesk",
 		RPID:                 rpID,
 		RPOrigins:            []string{baseURL},
-		GeminiAPIKey:         os.Getenv("GEMINI_API_KEY"),
+		GeminiAPIKey:         envTrimmed("GEMINI_API_KEY"),
 		GeminiModel:          envOrDefault("GEMINI_MODEL", "gemini-2.5-flash"),
 		GeminiModelChat:      envOrDefault("GEMINI_MODEL_CHAT", "gemini-2.5-flash"),
 		GeminiModelPro:       envOrDefault("GEMINI_MODEL_PRO", "gemini-2.5-pro"),
@@ -177,19 +187,19 @@ func Load() (*Config, error) {
 		GeminiImageProTextOutPrice:  envInt64("GEMINI_MODEL_IMAGE_PRO_TEXT_OUTPUT_PRICE", 1200),
 		GeminiImageProImageOutPrice: envInt64("GEMINI_MODEL_IMAGE_PRO_IMAGE_OUTPUT_PRICE", 12000),
 
-		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicAPIKey:             envTrimmed("ANTHROPIC_API_KEY"),
 		AnthropicModel:              envOrDefault("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
 		AnthropicModelContent:       envOrDefault("ANTHROPIC_MODEL_CONTENT", "claude-opus-4-6"),
-		OpenAIAPIKey:                os.Getenv("OPENAI_API_KEY"),
+		OpenAIAPIKey:                envTrimmed("OPENAI_API_KEY"),
 		OpenAIModel:                 envOrDefault("OPENAI_MODEL", "gpt-5-mini"),
 		AnthropicInputPrice:         envInt64("ANTHROPIC_INPUT_PRICE", 300),
 		AnthropicOutputPrice:        envInt64("ANTHROPIC_OUTPUT_PRICE", 1500),
 		AnthropicContentInputPrice:  envInt64("ANTHROPIC_CONTENT_INPUT_PRICE", 1500),
 		AnthropicContentOutputPrice: envInt64("ANTHROPIC_CONTENT_OUTPUT_PRICE", 7500),
 
-		S3Endpoint:        os.Getenv("S3_ENDPOINT"),
-		S3AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
-		S3SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+		S3Endpoint:        envTrimmed("S3_ENDPOINT"),
+		S3AccessKeyID:     envTrimmed("S3_ACCESS_KEY_ID"),
+		S3SecretAccessKey: envTrimmed("S3_SECRET_ACCESS_KEY"),
 		S3Region:          envOrDefault("S3_REGION", "us-east-1"),
 		S3Bucket:          os.Getenv("S3_PUBLIC_BUCKET"),
 		S3ForcePathStyle:  os.Getenv("S3_FORCE_PATH_STYLE") == "true",
