@@ -24,7 +24,7 @@ func NewGeminiRefiner(c *GeminiClient, model string) *GeminiRefiner {
 	return &GeminiRefiner{client: c, model: model}
 }
 
-func (r *GeminiRefiner) Name() string  { return "gemini" }
+func (r *GeminiRefiner) Name() string  { return ProviderGemini }
 func (r *GeminiRefiner) Model() string { return r.model }
 
 // Refine sends one refactoring request and maps the response back to

@@ -84,7 +84,7 @@ func NewAnthropicRefiner(c *AnthropicClient, model string) *AnthropicRefiner {
 	return &AnthropicRefiner{client: c, model: model}
 }
 
-func (r *AnthropicRefiner) Name() string  { return "claude" }
+func (r *AnthropicRefiner) Name() string  { return ProviderClaude }
 func (r *AnthropicRefiner) Model() string { return r.model }
 
 // Refine sends one refactoring request and returns the model's output

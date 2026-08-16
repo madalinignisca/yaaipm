@@ -47,7 +47,7 @@ type OpenAIScorer struct{ c *OpenAIClient }
 // every accept plus the retry sweep and defaults to a cheaper model.
 func NewOpenAIScorer(c *OpenAIClient) *OpenAIScorer { return &OpenAIScorer{c: c} }
 
-func (s *OpenAIScorer) Name() string { return "openai" }
+func (s *OpenAIScorer) Name() string { return ProviderOpenAI }
 func (s *OpenAIScorer) Model() string {
 	if s.c == nil {
 		return ""

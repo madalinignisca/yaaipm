@@ -25,7 +25,7 @@ func NewGeminiScorer(c *GeminiClient, model string) *GeminiScorer {
 	return &GeminiScorer{client: c, model: model}
 }
 
-func (s *GeminiScorer) Name() string  { return "gemini" }
+func (s *GeminiScorer) Name() string  { return ProviderGemini }
 func (s *GeminiScorer) Model() string { return s.model }
 
 // Score returns {score, hours, reasoning} for the given description.

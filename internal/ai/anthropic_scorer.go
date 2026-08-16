@@ -49,7 +49,7 @@ func NewAnthropicScorer(c *AnthropicClient, model string) *AnthropicScorer {
 	return &AnthropicScorer{client: c, model: model}
 }
 
-func (s *AnthropicScorer) Name() string  { return "claude" }
+func (s *AnthropicScorer) Name() string  { return ProviderClaude }
 func (s *AnthropicScorer) Model() string { return s.model }
 
 // buildAnthropicScoreParams assembles the scoring request for a model.

@@ -4,6 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+)
+
+// Provider keys. These identify a provider across every layer: the
+// Refiner/Scorer Name() methods, the registry maps in cmd/server, the
+// per-round provider column, and projects.scorer_provider with its CHECK
+// constraint. Adding a fourth provider means touching all of those, so
+// naming the set once here keeps the compiler in the loop for the Go
+// half of it.
+const (
+	ProviderClaude = "claude"
+	ProviderGemini = "gemini"
+	ProviderOpenAI = "openai"
 )
 
 // Refiner refactors a feature description for one round of debate mode.
@@ -168,12 +181,18 @@ func parseScorePayload(raw string) (scorePayload, error) {
 
 // truncateForError bounds raw provider output included in error
 // messages, so a runaway response can't dump kilobytes into the logs.
+//
+// The cap is in bytes, so the cut can land in the middle of a multi-byte
+// character — client feature text is frequently non-ASCII, and a
+// provider echoing it back in a malformed reply is exactly when this
+// fires. ToValidUTF8 drops the partial trailing rune so the message
+// stays well-formed.
 func truncateForError(s string) string {
 	const maxLen = 200
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "…"
+	return strings.ToValidUTF8(s[:maxLen], "") + "…"
 }
 
 // ScoreResult is the structured scorer output consumed by the accept flow

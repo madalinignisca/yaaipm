@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	openai "github.com/sashabaranov/go-openai"
@@ -224,6 +225,48 @@ func TestParseScorePayload(t *testing.T) {
 		}
 		if len(err.Error()) > 400 {
 			t.Errorf("error message is %d chars, want it truncated", len(err.Error()))
+		}
+	})
+}
+
+// Truncation is byte-bounded, so a cut landing mid-character must not
+// emit a broken rune. Client feature text is often non-ASCII (EU
+// customers), and a provider echoing it back in a malformed reply is
+// exactly when this fires.
+//
+// Asserted on truncateForError directly rather than through
+// parseScorePayload: that formats with %q, which escapes invalid bytes
+// as \xNN and would mask the corruption behind a valid-looking string.
+func TestTruncateForError(t *testing.T) {
+	t.Run("short input passes through unchanged", func(t *testing.T) {
+		if got := truncateForError("hello"); got != "hello" {
+			t.Errorf("truncateForError() = %q, want %q", got, "hello")
+		}
+	})
+
+	t.Run("long ASCII input is bounded", func(t *testing.T) {
+		got := truncateForError(strings.Repeat("x", 5000))
+		if len(got) > 250 {
+			t.Errorf("result is %d bytes, want it bounded near 200", len(got))
+		}
+	})
+
+	t.Run("does not split a multi-byte rune", func(t *testing.T) {
+		// "é" is 2 bytes, so a 200-byte cut lands mid-character.
+		got := truncateForError(strings.Repeat("é", 5000))
+		if !utf8.ValidString(got) {
+			t.Errorf("result is not valid UTF-8: %q", got)
+		}
+		if len(got) > 250 {
+			t.Errorf("result is %d bytes, want it bounded near 200", len(got))
+		}
+	})
+
+	// A 3-byte rune straddling the boundary differently than a 2-byte one.
+	t.Run("does not split a 3-byte rune", func(t *testing.T) {
+		got := truncateForError(strings.Repeat("→", 5000))
+		if !utf8.ValidString(got) {
+			t.Errorf("result is not valid UTF-8: %q", got)
 		}
 	})
 }
