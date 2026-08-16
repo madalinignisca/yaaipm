@@ -37,8 +37,16 @@ type Config struct {
 	DatabaseURL           string
 	AnthropicAPIKey       string
 	// OpenAI (used by Feature Debate Mode's ChatGPT refiner).
-	OpenAIAPIKey                string
-	OpenAIModel                 string
+	OpenAIAPIKey string
+	OpenAIModel  string
+	// Per-provider debate scorer models (issue #63). The scorer runs on
+	// every accepted round plus the background retry sweep, so each
+	// provider defaults to its cheapest priced model rather than reusing
+	// the refiner's — except Gemini, whose refiner model is already
+	// flash-class, so the scorer follows GEMINI_MODEL.
+	ScorerModelGemini           string
+	ScorerModelOpenAI           string
+	ScorerModelClaude           string
 	ProtectedSuperadmins        []string
 	RPOrigins                   []string
 	GeminiImageTextOutPrice     int64
@@ -144,6 +152,12 @@ func Load() (*Config, error) {
 		workspacesDir = home + "/forgedesk-workspaces"
 	}
 
+	// Hoisted out of the Config literal below because ScorerModelGemini
+	// defaults to it: production pins GEMINI_MODEL to a preview flash
+	// model, and a scorer silently running a different Gemini model than
+	// everything else would be a surprising split.
+	geminiModel := envOrDefault("GEMINI_MODEL", "gemini-2.5-flash")
+
 	aesKey := envTrimmed("AES_ENCRYPTION_KEY")
 	if aesKey == "" {
 		return nil, fmt.Errorf("AES_ENCRYPTION_KEY is required (hex-encoded 32-byte key)")
@@ -169,7 +183,7 @@ func Load() (*Config, error) {
 		RPID:                 rpID,
 		RPOrigins:            []string{baseURL},
 		GeminiAPIKey:         envTrimmed("GEMINI_API_KEY"),
-		GeminiModel:          envOrDefault("GEMINI_MODEL", "gemini-2.5-flash"),
+		GeminiModel:          geminiModel,
 		GeminiModelChat:      envOrDefault("GEMINI_MODEL_CHAT", "gemini-2.5-flash"),
 		GeminiModelPro:       envOrDefault("GEMINI_MODEL_PRO", "gemini-2.5-pro"),
 		GeminiModelImage:     envOrDefault("GEMINI_MODEL_IMAGE", "gemini-2.5-flash"),
@@ -187,11 +201,20 @@ func Load() (*Config, error) {
 		GeminiImageProTextOutPrice:  envInt64("GEMINI_MODEL_IMAGE_PRO_TEXT_OUTPUT_PRICE", 1200),
 		GeminiImageProImageOutPrice: envInt64("GEMINI_MODEL_IMAGE_PRO_IMAGE_OUTPUT_PRICE", 12000),
 
-		AnthropicAPIKey:             envTrimmed("ANTHROPIC_API_KEY"),
-		AnthropicModel:              envOrDefault("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-		AnthropicModelContent:       envOrDefault("ANTHROPIC_MODEL_CONTENT", "claude-opus-4-6"),
-		OpenAIAPIKey:                envTrimmed("OPENAI_API_KEY"),
-		OpenAIModel:                 envOrDefault("OPENAI_MODEL", "gpt-5-mini"),
+		AnthropicAPIKey:       envTrimmed("ANTHROPIC_API_KEY"),
+		AnthropicModel:        envOrDefault("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+		AnthropicModelContent: envOrDefault("ANTHROPIC_MODEL_CONTENT", "claude-opus-4-6"),
+		OpenAIAPIKey:          envTrimmed("OPENAI_API_KEY"),
+		OpenAIModel:           envOrDefault("OPENAI_MODEL", "gpt-5-mini"),
+
+		// Scorer models (issue #63). Literals rather than ai.Model*
+		// constants: internal/config does not import internal/ai, and
+		// the refiner model defaults above are literals for the same
+		// reason. Constants named in comments so a grep finds both.
+		ScorerModelGemini: envOrDefault("SCORER_MODEL_GEMINI", geminiModel),
+		ScorerModelOpenAI: envOrDefault("SCORER_MODEL_OPENAI", "gpt-5-mini"),        // ai.ModelGPT5Mini
+		ScorerModelClaude: envOrDefault("SCORER_MODEL_CLAUDE", "claude-sonnet-4-6"), // ai.ModelClaudeSonnet46
+
 		AnthropicInputPrice:         envInt64("ANTHROPIC_INPUT_PRICE", 300),
 		AnthropicOutputPrice:        envInt64("ANTHROPIC_OUTPUT_PRICE", 1500),
 		AnthropicContentInputPrice:  envInt64("ANTHROPIC_CONTENT_INPUT_PRICE", 1500),

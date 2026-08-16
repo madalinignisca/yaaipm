@@ -152,6 +152,94 @@ func TestLoad_PreservesPasswordWhitespace(t *testing.T) {
 	}
 }
 
+// TestLoad_ScorerModels covers the per-provider debate scorer models
+// (issue #63). Scoring runs on every accept plus the background retry
+// sweep, so each provider defaults to its cheapest priced model rather
+// than reusing the (pricier) refiner model — except Gemini, whose refiner
+// model is already flash-class and is therefore the sensible default.
+func TestLoad_ScorerModels(t *testing.T) {
+	t.Run("defaults when unset", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("GEMINI_MODEL", "")
+		t.Setenv("SCORER_MODEL_GEMINI", "")
+		t.Setenv("SCORER_MODEL_OPENAI", "")
+		t.Setenv("SCORER_MODEL_CLAUDE", "")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.ScorerModelGemini != "gemini-2.5-flash" {
+			t.Errorf("ScorerModelGemini = %q, want %q", cfg.ScorerModelGemini, "gemini-2.5-flash")
+		}
+		if cfg.ScorerModelOpenAI != "gpt-5-mini" {
+			t.Errorf("ScorerModelOpenAI = %q, want %q", cfg.ScorerModelOpenAI, "gpt-5-mini")
+		}
+		if cfg.ScorerModelClaude != "claude-sonnet-4-6" {
+			t.Errorf("ScorerModelClaude = %q, want %q", cfg.ScorerModelClaude, "claude-sonnet-4-6")
+		}
+	})
+
+	// The Gemini scorer tracks GEMINI_MODEL rather than a hardcoded
+	// default: production pins gemini-3-flash-preview, and a scorer
+	// silently scoring on 2.5-flash while everything else used the pinned
+	// model would be a surprising split.
+	t.Run("gemini scorer follows a customized GEMINI_MODEL", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("GEMINI_MODEL", "gemini-3-flash-preview")
+		t.Setenv("SCORER_MODEL_GEMINI", "")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.ScorerModelGemini != "gemini-3-flash-preview" {
+			t.Errorf("ScorerModelGemini = %q, want it to follow GEMINI_MODEL", cfg.ScorerModelGemini)
+		}
+	})
+
+	t.Run("explicit values win over defaults", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("GEMINI_MODEL", "gemini-3-flash-preview")
+		t.Setenv("SCORER_MODEL_GEMINI", "gemini-2.5-flash")
+		t.Setenv("SCORER_MODEL_OPENAI", "gpt-5")
+		t.Setenv("SCORER_MODEL_CLAUDE", "claude-opus-4-6")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.ScorerModelGemini != "gemini-2.5-flash" {
+			t.Errorf("ScorerModelGemini = %q, want gemini-2.5-flash", cfg.ScorerModelGemini)
+		}
+		if cfg.ScorerModelOpenAI != "gpt-5" {
+			t.Errorf("ScorerModelOpenAI = %q, want gpt-5", cfg.ScorerModelOpenAI)
+		}
+		if cfg.ScorerModelClaude != "claude-opus-4-6" {
+			t.Errorf("ScorerModelClaude = %q, want claude-opus-4-6", cfg.ScorerModelClaude)
+		}
+	})
+
+	// Same trailing-newline class of typo that broke OPENAI_MODEL in
+	// production (issue #111) — these reads must trim too.
+	t.Run("trims whitespace", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("SCORER_MODEL_OPENAI", "gpt-5-mini\n")
+		t.Setenv("SCORER_MODEL_CLAUDE", "  claude-sonnet-4-6  ")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.ScorerModelOpenAI != "gpt-5-mini" {
+			t.Errorf("ScorerModelOpenAI = %q, want it trimmed", cfg.ScorerModelOpenAI)
+		}
+		if cfg.ScorerModelClaude != "claude-sonnet-4-6" {
+			t.Errorf("ScorerModelClaude = %q, want it trimmed", cfg.ScorerModelClaude)
+		}
+	})
+}
+
 func TestLoad_MissingRequired(t *testing.T) {
 	t.Run("fails without DATABASE_URL", func(t *testing.T) {
 		t.Setenv("DATABASE_URL", "")

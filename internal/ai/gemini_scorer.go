@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"google.golang.org/genai"
@@ -19,12 +18,15 @@ type GeminiScorer struct {
 }
 
 // NewGeminiScorer constructs a Scorer over the shared GeminiClient.
-// The model string should be a flash-class Gemini model for cost — the
-// v1 handler always uses this scorer regardless of which provider ran
-// the refiner.
+// The model string should be a flash-class Gemini model for cost — this
+// is the default scorer for projects that have not configured another
+// provider (issue #63).
 func NewGeminiScorer(c *GeminiClient, model string) *GeminiScorer {
 	return &GeminiScorer{client: c, model: model}
 }
+
+func (s *GeminiScorer) Name() string  { return "gemini" }
+func (s *GeminiScorer) Model() string { return s.model }
 
 // Score returns {score, hours, reasoning} for the given description.
 // Temperature is pinned low (0.2) so repeated scoring of the same text
@@ -65,21 +67,16 @@ func (s *GeminiScorer) Score(ctx context.Context, text string) (ScoreResult, err
 		return ScoreResult{}, fmt.Errorf("gemini scorer: empty response from model %s", s.model)
 	}
 
-	var out struct {
-		Score     int    `json:"score"`
-		Hours     int    `json:"hours"`
-		Reasoning string `json:"reasoning"`
-	}
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return ScoreResult{}, fmt.Errorf("gemini scorer JSON parse: %w (raw: %q)", err, raw)
+	out, err := parseScorePayload(raw)
+	if err != nil {
+		return ScoreResult{}, fmt.Errorf("gemini scorer: %w", err)
 	}
 
 	// Defensive clamps. ResponseSchema should enforce the bounds server-
 	// side, but a wayward model or SDK quirk could still return an
 	// out-of-range value. Clamping means a bad response never reaches
 	// the effort chip's display logic with an out-of-range score.
-	score := min(max(out.Score, 1), 10)
-	hours := max(out.Hours, 1)
+	score, hours := clampScoreFields(out.Score, out.Hours)
 
 	inputTok, outputTok := 0, 0
 	if resp.UsageMetadata != nil {
