@@ -106,18 +106,44 @@ type DebateHandler struct {
 	db       *models.DB
 	engine   *render.Engine
 	refiners map[string]ai.Refiner
-	scorer   ai.Scorer
+	scorers  map[string]ai.Scorer
 	cfg      DebateConfig
 }
 
-// NewDebateHandler constructs the handler. refiners are keyed by
-// Refiner.Name() ("claude", "gemini", "openai"); the scorer can be
-// nil if GEMINI_API_KEY isn't configured (scoring then silently skips
-// and the sidebar shows the empty state).
+// NewDebateHandler constructs the handler. refiners and scorers are both
+// keyed by provider name ("claude", "gemini", "openai") and may be
+// smaller than 3 — or empty — when an operator deployment is missing API
+// keys. Which scorer runs is chosen per project (issue #63); an empty
+// scorers map means scoring silently skips and the sidebar shows the
+// empty state, matching the pre-#63 nil-scorer behavior.
 func NewDebateHandler(db *models.DB, engine *render.Engine,
-	refiners map[string]ai.Refiner, scorer ai.Scorer, cfg DebateConfig,
+	refiners map[string]ai.Refiner, scorers map[string]ai.Scorer, cfg DebateConfig,
 ) *DebateHandler {
-	return &DebateHandler{db: db, engine: engine, refiners: refiners, scorer: scorer, cfg: cfg}
+	return &DebateHandler{db: db, engine: engine, refiners: refiners, scorers: scorers, cfg: cfg}
+}
+
+// errScorerNotConfigured means the project names a provider that has no
+// registered scorer — almost always a missing API key for that vendor.
+// Distinct from a DB failure so the two get different log lines and an
+// operator can tell a misconfiguration from an outage.
+var errScorerNotConfigured = errors.New("no scorer registered for provider")
+
+// scorerForProject resolves the scorer a project is configured to use.
+//
+// Returns the provider name alongside the scorer so callers can name it
+// in logs and record it with the score. Three outcomes are deliberately
+// kept distinct: a DB error (infrastructure), an unregistered provider
+// (operator configuration), and success.
+func (h *DebateHandler) scorerForProject(ctx context.Context, projectID string) (ai.Scorer, string, error) {
+	provider, err := h.db.GetProjectScorerProvider(ctx, projectID)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolving scorer provider for project %s: %w", projectID, err)
+	}
+	scorer, ok := h.scorers[provider]
+	if !ok {
+		return nil, provider, errScorerNotConfigured
+	}
+	return scorer, provider, nil
 }
 
 // debateContext bundles the three things every endpoint looks up in
@@ -653,7 +679,10 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 	// goroutine runs, causing the scorer to evaluate stale content
 	// while the result is still associated with this round's ID. The
 	// direct-pass path guarantees scorer input == round output.
-	if h.scorer != nil {
+	//
+	// The provider lookup happens inside the goroutine, not here: it is a
+	// database round-trip and the accept response must not wait on it.
+	if len(h.scorers) > 0 {
 		go h.scoreAfterAccept(context.WithoutCancel(r.Context()),
 			deb.ID, round.ID, dctx.ticket.ProjectID, round.OutputText)
 	}
@@ -732,13 +761,30 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 	callCtx, cancel := context.WithTimeout(ctx, h.cfg.AICallTimeout)
 	defer cancel()
 
-	res, err := h.scorer.Score(callCtx, textToScore)
-	if err != nil {
-		log.Printf("debate scoreAfterAccept: scorer failed for debate %s round %s: %v", debateID, roundID, err)
+	scorer, provider, err := h.scorerForProject(callCtx, projectID)
+	switch {
+	case errors.Is(err, errScorerNotConfigured):
+		// No silent fallback to another vendor (spec §3.2): the score is
+		// skipped and the sidebar keeps its empty state. The retry sweep
+		// will keep trying and backing off until an operator either
+		// configures the key or changes the project's provider.
+		log.Printf("WARNING: debate scoreAfterAccept: project %s is configured for scorer provider %q "+
+			"but no such scorer is registered (missing API key?) — debate %s round %s left unscored",
+			projectID, provider, debateID, roundID)
+		return
+	case err != nil:
+		log.Printf("debate scoreAfterAccept: %v", err)
 		return
 	}
 
-	if applyErr := h.applyScoreResult(ctx, debateID, roundID, projectID, res); applyErr != nil {
+	res, err := scorer.Score(callCtx, textToScore)
+	if err != nil {
+		log.Printf("debate scoreAfterAccept: scorer %q failed for debate %s round %s: %v",
+			provider, debateID, roundID, err)
+		return
+	}
+
+	if applyErr := h.applyScoreResult(ctx, debateID, roundID, projectID, provider, res); applyErr != nil {
 		log.Printf("debate scoreAfterAccept: %v", applyErr)
 	}
 }
@@ -760,7 +806,7 @@ const effortScoreWriteTimeout = 15 * time.Second
 // Shared by the accept path (scoreAfterAccept) and the background retry
 // sweep (retryOneEffortScore) so the cost-accounting write lives in
 // exactly one place. Returns a wrapped error for the caller to log.
-func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID, projectID string, res ai.ScoreResult) error {
+func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID, projectID, provider string, res ai.ScoreResult) error {
 	// Both callers pass an un-deadlined context (accept: context.WithoutCancel;
 	// sweep: context.Background). Bound the write so a stuck FOR UPDATE lock
 	// or a slow database can't wedge the goroutine and leak a pooled
@@ -786,7 +832,8 @@ func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID,
 	if uErr := h.db.UpdateScorerCostMicros(dbCtx, tx, roundID, res.Usage.CostMicros); uErr != nil {
 		return fmt.Errorf("update scorer cost on round %s: %w", roundID, uErr)
 	}
-	if uErr := h.db.UpdateEffortScoreCondTx(dbCtx, tx, debateID, roundID, res.Score, res.Hours, res.Reasoning); uErr != nil {
+	if uErr := h.db.UpdateEffortScoreCondTx(dbCtx, tx, debateID, roundID,
+		res.Score, res.Hours, res.Reasoning, provider, res.Usage.Model); uErr != nil {
 		return fmt.Errorf("UpdateEffortScoreCondTx debate %s: %w", debateID, uErr)
 	}
 
@@ -819,10 +866,10 @@ func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID,
 //
 // Safe to run on every server replica concurrently: the claim's
 // FOR UPDATE SKIP LOCKED plus the backoff lease guarantees each debate is
-// scored by at most one replica per window. A nil scorer (no
-// GEMINI_API_KEY) makes it a no-op, matching the accept path.
+// scored by at most one replica per window. An empty scorer registry (no
+// provider API keys) makes it a no-op, matching the accept path.
 func (h *DebateHandler) RetryStaleEffortScores(ctx context.Context) {
-	if h.scorer == nil {
+	if len(h.scorers) == 0 {
 		return
 	}
 	claimed, err := h.db.ClaimStaleEffortScores(ctx, time.Now(),
@@ -847,12 +894,23 @@ func (h *DebateHandler) retryOneEffortScore(ctx context.Context, d models.StaleE
 	callCtx, cancel := context.WithTimeout(ctx, h.cfg.AICallTimeout)
 	defer cancel()
 
-	res, err := h.scorer.Score(callCtx, d.OutputText)
-	if err != nil {
-		log.Printf("debate RetryStaleEffortScores: scorer failed for debate %s round %s: %v", d.DebateID, d.RoundID, err)
+	// The claim joined in the project's configured provider, so this is a
+	// map lookup rather than another query per claimed row.
+	scorer, ok := h.scorers[d.ScorerProvider]
+	if !ok {
+		log.Printf("WARNING: debate RetryStaleEffortScores: project %s is configured for scorer provider %q "+
+			"but no such scorer is registered (missing API key?) — debate %s round %s left unscored",
+			d.ProjectID, d.ScorerProvider, d.DebateID, d.RoundID)
 		return
 	}
-	if applyErr := h.applyScoreResult(ctx, d.DebateID, d.RoundID, d.ProjectID, res); applyErr != nil {
+
+	res, err := scorer.Score(callCtx, d.OutputText)
+	if err != nil {
+		log.Printf("debate RetryStaleEffortScores: scorer %q failed for debate %s round %s: %v",
+			d.ScorerProvider, d.DebateID, d.RoundID, err)
+		return
+	}
+	if applyErr := h.applyScoreResult(ctx, d.DebateID, d.RoundID, d.ProjectID, d.ScorerProvider, res); applyErr != nil {
 		log.Printf("debate RetryStaleEffortScores: %v", applyErr)
 	}
 }

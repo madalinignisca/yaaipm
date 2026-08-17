@@ -47,11 +47,14 @@ func setupDebateTestEnv(t *testing.T, scorerOpt ...ai.Scorer) (*chi.Mux, *models
 			},
 		},
 	}
-	var scorer ai.Scorer
-	if len(scorerOpt) > 0 {
-		scorer = scorerOpt[0]
+	// Registered under "gemini": seeded projects take the schema default
+	// for scorer_provider, so this is the scorer per-project resolution
+	// picks (issue #63).
+	scorers := map[string]ai.Scorer{}
+	if len(scorerOpt) > 0 && scorerOpt[0] != nil {
+		scorers[ai.ProviderGemini] = scorerOpt[0]
 	}
-	h := NewDebateHandler(db, engine, refiners, scorer, DefaultDebateConfig())
+	h := NewDebateHandler(db, engine, refiners, scorers, DefaultDebateConfig())
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recover)
