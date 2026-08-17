@@ -97,8 +97,10 @@ func TestUpdateScorerProvider_ClientForbidden(t *testing.T) {
 
 	w := postScorer(t, r, cookie, org, proj, ai.ProviderOpenAI)
 
-	if w.Code != http.StatusForbidden && w.Code != http.StatusNotFound {
-		t.Errorf("client POST: got %d, want 403 (or 404 if org not visible)", w.Code)
+	// Exactly 403: the role check runs before getOrgAndProject, so a
+	// client never reaches the lookup that could 404.
+	if w.Code != http.StatusForbidden {
+		t.Errorf("client POST: got %d, want 403", w.Code)
 	}
 	if got := providerOf(t, db, proj.ID); got != ai.ProviderGemini {
 		t.Errorf("provider = %q, want it unchanged at gemini", got)
@@ -142,6 +144,31 @@ func TestUpdateScorerProvider_RejectsUnconfiguredProvider(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("unconfigured provider: got %d, want 400", w.Code)
+	}
+	if got := providerOf(t, db, proj.ID); got != ai.ProviderGemini {
+		t.Errorf("provider = %q, want it unchanged at gemini", got)
+	}
+}
+
+// An absent scorer_provider field is a no-op, not an error. This is a
+// real interaction, not a hypothetical: when the stored provider has lost
+// its API key the dropdown renders it as a disabled option, and HTML form
+// submission skips disabled options even when selected — so clicking Save
+// without touching the dropdown submits no field at all. Returning 400
+// there would show a bare error page for doing nothing wrong.
+func TestUpdateScorerProvider_EmptySubmissionIsNoOp(t *testing.T) {
+	r, db, sessions := setupScorerSettingsEnv(t, []string{ai.ProviderGemini})
+	_, proj, _ := seedOrgProject(t, db, "staff@test.com", "staff")
+	org, err := db.GetOrgBySlug(context.Background(), "org-"+strings.ToLower(t.Name()))
+	if err != nil {
+		t.Fatalf("GetOrgBySlug: %v", err)
+	}
+	cookie := createAuthenticatedUser(t, db, sessions, "staff2@test.com", "staff")
+
+	w := postScorer(t, r, cookie, org, proj, "")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("empty submission: got %d, want 200 (no-op)", w.Code)
 	}
 	if got := providerOf(t, db, proj.ID); got != ai.ProviderGemini {
 		t.Errorf("provider = %q, want it unchanged at gemini", got)

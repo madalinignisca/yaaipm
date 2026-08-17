@@ -260,11 +260,16 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
 
     await select.selectOption('claude');
     await page.click('button:has-text("Save Scorer Provider")');
-    await page.waitForLoadState('networkidle');
 
-    // The choice survives a reload.
-    await authenticatedDebatePage(page, `/orgs/${orgSlug}/projects/${projSlug}/settings`);
-    await expect(page.locator('select[name="scorer_provider"]')).toHaveValue('claude');
+    // Save responds with Hx-Redirect, which performs a REAL navigation
+    // back to this same URL. Calling page.goto() before that settles
+    // races it ("Navigation is interrupted by another navigation"), so
+    // retry the reload-and-assert until it lands.
+    await expect(async () => {
+      await page.goto(`/orgs/${orgSlug}/projects/${projSlug}/settings`);
+      await page.waitForLoadState('networkidle');
+      await expect(page.locator('select[name="scorer_provider"]')).toHaveValue('claude');
+    }).toPass({ timeout: 20000 });
 
     // ── Run a round to completion ───────────────────────────────
     await authenticatedDebatePage(page, `/tickets/${scorerTicketID}/debate`);

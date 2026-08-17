@@ -292,11 +292,27 @@ func (h *ProjectHandler) UpdateScorerProvider(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// One membership check covers both failure modes: a name that is not
-	// a provider at all, and a real provider whose API key this
-	// deployment lacks. Either way the value must not reach the database
-	// — the CHECK constraint would catch the former but not the latter.
 	provider := strings.TrimSpace(r.FormValue("scorer_provider"))
+
+	// An absent field is "nothing was selected", not "invalid selection",
+	// and must not be reported as an error. It happens for real: when the
+	// stored provider has lost its API key the dropdown renders it as a
+	// disabled option, and HTML form submission SKIPS disabled options
+	// even when they are selected — so a staff user who opens settings
+	// and clicks Save without touching the dropdown sends no field at
+	// all. Treat that as a no-op and return them to the page.
+	if provider == "" {
+		w.Header().Set("Hx-Redirect", r.URL.Path[:strings.LastIndex(r.URL.Path, "/")])
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// One membership check covers both remaining failure modes: a name
+	// that is not a provider at all, and a real provider whose API key
+	// this deployment lacks. Either way the value must not reach the
+	// database — the CHECK constraint would catch the former but not the
+	// latter, and storing the latter leaves the project silently
+	// unscored.
 	if !slices.Contains(h.scorerProviders, provider) {
 		http.Error(w, "Unknown or unconfigured scorer provider", http.StatusBadRequest)
 		return
