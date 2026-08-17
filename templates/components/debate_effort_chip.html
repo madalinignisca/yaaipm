@@ -18,7 +18,15 @@
           </p>
           {{if .Debate.EffortReasoning}}<p class="text-base-content/70">{{derefStr .Debate.EffortReasoning}}</p>{{end}}
           <p class="text-base-content/50">Estimate assumes a full-stack, mid-senior developer.
-            {{if .Debate.EffortScoredAt}}Updated {{relTime .Debate.EffortScoredAt}} · via Gemini{{end}}</p>
+            {{/* Provider comes from the score itself, not the project's
+                 current setting (issue #63): changing the dropdown must
+                 not retroactively relabel who produced an older score.
+                 NULL only for scores predating migration 000034. */}}
+            {{/* derefStr, not a bare pointer test: a non-nil *string is
+                 always truthy to text/template, so a pointer to "" would
+                 render "· via " with no label. The CHECK constraint makes
+                 that unreachable today, but the guard is free. */}}
+            {{if .Debate.EffortScoredAt}}Updated {{relTime .Debate.EffortScoredAt}}{{with derefStr .Debate.EffortScorerProvider}} · via {{providerLabel .}}{{end}}{{end}}</p>
         </div>
       </div>
     </div>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,6 +272,43 @@ func TestAcceptRound_UnregisteredProviderStillAcceptsWithoutScoring(t *testing.T
 	}
 	if provider != nil {
 		t.Errorf("effort_scorer_provider = %q, want NULL", *provider)
+	}
+}
+
+// The effort chip must name the provider that actually produced the
+// score, read from the score row rather than the project's current
+// setting — otherwise flipping the dropdown relabels history. This is
+// the assertion that catches a regression back to a hardcoded label.
+func TestEffortChip_LabelsRecordedProvider(t *testing.T) {
+	openaiScorer := fakeScorerFor(ai.ProviderOpenAI, ai.ModelGPT5Mini)
+	r, db, sessions := setupDebateTestEnvWithRegistry(t, map[string]ai.Scorer{
+		ai.ProviderOpenAI: openaiScorer,
+	})
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	if err := db.UpdateProjectScorerProvider(context.Background(), ticket.ProjectID, ai.ProviderOpenAI); err != nil {
+		t.Fatalf("UpdateProjectScorerProvider: %v", err)
+	}
+	_, round := insertInReviewRound(t, db, cookie, r, ticket.ID, "scored text")
+
+	acceptRoundOK(t, r, cookie, ticket.ID, round.ID)
+	if !waitForEffortScore(t, db, ticket.ID, round.ID) {
+		t.Fatal("scorer did not write a score within 5s")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID+"/debate/effort", http.NoBody)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("effort chip: got %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "via ChatGPT") {
+		t.Errorf("chip should credit the recorded provider (ChatGPT); body: %s", body)
+	}
+	if strings.Contains(body, "via Gemini") {
+		t.Error("chip must not hardcode Gemini")
 	}
 }
 

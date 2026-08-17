@@ -19,6 +19,25 @@ const (
 	ProviderOpenAI = "openai"
 )
 
+// SortedProviderKeys returns the keys present in a provider-keyed
+// registry, in fixed display order.
+//
+// Order is pinned rather than map-iteration order so UI built from a
+// registry — the debate AI-picker buttons, the project scorer dropdown —
+// never shuffles between requests. Generic over the value type so the
+// refiner and scorer registries share one definition instead of each
+// carrying its own copy of the provider list.
+func SortedProviderKeys[T any](registry map[string]T) []string {
+	order := []string{ProviderClaude, ProviderGemini, ProviderOpenAI}
+	keys := make([]string, 0, len(registry))
+	for _, name := range order {
+		if _, ok := registry[name]; ok {
+			keys = append(keys, name)
+		}
+	}
+	return keys
+}
+
 // Refiner refactors a feature description for one round of debate mode.
 // Implementations MUST be safe to call concurrently.
 //

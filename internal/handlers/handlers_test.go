@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/mail"
@@ -44,7 +45,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	authH := NewAuthHandler(db, sessions, engine, aesKey, false)
 	dashH := NewDashboardHandler(db, engine)
 	orgH := NewOrgHandler(db, engine, sessions, mailer, baseURL, nil)
-	projH := NewProjectHandler(db, engine)
+	projH := NewProjectHandler(db, engine, []string{ai.ProviderGemini})
 	ticketH := NewTicketHandler(db, engine, nil, &config.Config{})
 	commentH := NewCommentHandler(db, engine)
 	adminH := NewAdminHandler(db, engine)

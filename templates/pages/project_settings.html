@@ -42,6 +42,77 @@
             </div>
         </div>
 
+        {{/* Debate scorer provider (issue #63). Staff-only — the Go
+             handler already 403s non-staff for this whole page, so the
+             IsStaff guard here is belt-and-braces, matching the AI Cost
+             Margin card in org_settings.html. */}}
+        {{if .IsStaff}}
+        <div class="card bg-base-100 border border-base-300 shadow-sm">
+            <div class="card-body p-6 gap-3">
+                <div>
+                    <h3 class="text-lg font-semibold">Debate effort scorer</h3>
+                    <p class="text-sm text-base-content/60 mt-1">
+                        Which AI provider estimates complexity and hours after each accepted debate round.
+                        Only the refiner buttons are visible to clients; this choice is not.
+                    </p>
+                </div>
+                {{if .ScorerProviders}}
+                <form method="POST"
+                      action="/orgs/{{$.Org.Slug}}/projects/{{.Project.Slug}}/settings/scorer"
+                      class="flex flex-col gap-3">
+                    {{csrfField}}
+                    <div class="form-control">
+                        <label class="label pb-1" for="scorer_provider">
+                            <span class="label-text">Scorer provider</span>
+                        </label>
+                        <select id="scorer_provider" name="scorer_provider"
+                                class="select select-bordered w-full">
+                            {{$current := .Project.ScorerProvider}}
+                            {{range .ScorerProviders}}
+                            {{/* The whole <option> tag is duplicated rather
+                                 than using a conditional bare `selected`
+                                 attribute — html/template can silently
+                                 truncate output on the latter (PR #80). */}}
+                            {{if eq . $current}}
+                            <option value="{{.}}" selected>{{providerLabel .}}</option>
+                            {{else}}
+                            <option value="{{.}}">{{providerLabel .}}</option>
+                            {{end}}
+                            {{end}}
+                            {{/* The stored provider may no longer be
+                                 configured (its API key was removed). Show
+                                 it truthfully rather than letting the select
+                                 silently appear to say something else. */}}
+                            {{if .ScorerProviderUnavailable}}
+                            <option value="{{$current}}" selected disabled>
+                                {{providerLabel $current}} (API key not configured)
+                            </option>
+                            {{end}}
+                        </select>
+                        <label class="label pt-1">
+                            <span class="label-text-alt text-base-content/60">
+                                Scoring runs on every accepted round, so a cheap model is used per provider.
+                                Claude is currently the most expensive option.
+                            </span>
+                        </label>
+                    </div>
+                    <div>
+                        <button type="submit" class="btn btn-primary">Save Scorer Provider</button>
+                    </div>
+                </form>
+                {{else}}
+                <div class="alert alert-warning">
+                    <span>
+                        No AI providers are configured, so debates cannot be scored.
+                        Set at least one of <code>ANTHROPIC_API_KEY</code>, <code>GEMINI_API_KEY</code>
+                        or <code>OPENAI_API_KEY</code> on the server.
+                    </span>
+                </div>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
+
         {{if gt (len .AllOrgs) 1}}
         <div class="card bg-base-100 border border-error/30 shadow-sm"
              x-data="{ confirm: false, targetName: '' }">
