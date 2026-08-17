@@ -1,6 +1,23 @@
 package ai
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// Provider keys. These identify a provider across every layer: the
+// Refiner/Scorer Name() methods, the registry maps in cmd/server, the
+// per-round provider column, and projects.scorer_provider with its CHECK
+// constraint. Adding a fourth provider means touching all of those, so
+// naming the set once here keeps the compiler in the loop for the Go
+// half of it.
+const (
+	ProviderClaude = "claude"
+	ProviderGemini = "gemini"
+	ProviderOpenAI = "openai"
+)
 
 // Refiner refactors a feature description for one round of debate mode.
 // Implementations MUST be safe to call concurrently.
@@ -88,11 +105,94 @@ type RefineUsage struct {
 }
 
 // Scorer judges the complexity of a feature description.
-// v1 uses GeminiScorer with structured output so the JSON shape is
-// schema-enforced; defensive clamps in the adapter guarantee
-// out-of-range values never reach the UI.
+//
+// Each adapter uses its provider's own structured-output mechanism —
+// Gemini a ResponseSchema, OpenAI a strict json_schema response_format,
+// Anthropic a forced tool call — and normalizes the result into
+// ScoreResult. Defensive clamps guarantee out-of-range values never
+// reach the UI.
+//
+// Name and Model mirror Refiner. Model matters beyond audit: the startup
+// pricing guard iterates the configured scorer registry calling Model()
+// so an un-priced scorer surfaces as a loud WARNING instead of silently
+// recording every score at $0 (issue #108). Implementations MUST be safe
+// to call concurrently.
+//
+// Which scorer runs is configured per project (issue #63); see
+// internal/handlers/debate.go's scorerForProject.
 type Scorer interface {
+	Name() string  // "claude" | "gemini" | "openai"
+	Model() string // specific model ID used, for the pricing guard and audit
 	Score(ctx context.Context, text string) (ScoreResult, error)
+}
+
+// Scorer request defaults, centralized like the refiner ones above so
+// the three adapters cannot drift.
+//
+// scorerMaxTokens is small: the response is a {score, hours, reasoning}
+// object whose reasoning is capped at one sentence by the prompt.
+//
+// scorerTemperature is pinned low so repeated scoring of the same text
+// returns stable values — small drifts in the effort bar across
+// re-scores are confusing to users.
+const (
+	scorerMaxTokens   = 512
+	scorerTemperature = 0.2
+)
+
+// clampScoreFields bounds a model's raw score/hours into the range the
+// UI can render: score 1..10, hours >= 1.
+//
+// This is shared rather than per-adapter because it is the ONLY
+// enforcement for two of the three providers. Gemini applies the bounds
+// server-side via ResponseSchema, but OpenAI's strict structured outputs
+// reject numeric constraints such as minimum/maximum, and Anthropic tool
+// input schemas do not enforce them either — so for those adapters a
+// wayward model's 47 or 0 would otherwise reach the effort chip intact.
+func clampScoreFields(score, hours int) (clampedScore, clampedHours int) {
+	return min(max(score, 1), 10), max(hours, 1)
+}
+
+// scorePayload is the raw JSON shape every provider is asked to return.
+// Shared so the three adapters cannot drift on field names — each
+// provider enforces the shape by its own mechanism (Gemini
+// ResponseSchema, OpenAI strict json_schema, Anthropic tool input
+// schema), but they all unmarshal into this.
+type scorePayload struct {
+	Score     int    `json:"score"`
+	Hours     int    `json:"hours"`
+	Reasoning string `json:"reasoning"`
+}
+
+// parseScorePayload unmarshals a provider's structured output.
+//
+// The raw text is included in the error (truncated) because a parse
+// failure here is almost always a provider returning prose or a fenced
+// code block instead of bare JSON, and the first 200 characters make
+// that immediately obvious in a log line. Callers prefix the provider
+// name.
+func parseScorePayload(raw string) (scorePayload, error) {
+	var out scorePayload
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return scorePayload{}, fmt.Errorf("JSON parse: %w (raw: %q)", err, truncateForError(raw))
+	}
+	return out, nil
+}
+
+// truncateForError bounds raw provider output included in error
+// messages, so a runaway response can't dump kilobytes into the logs.
+//
+// The cap is in bytes, so the cut can land in the middle of a multi-byte
+// character — client feature text is frequently non-ASCII, and a
+// provider echoing it back in a malformed reply is exactly when this
+// fires. ToValidUTF8 drops the partial trailing rune so the message
+// stays well-formed.
+func truncateForError(s string) string {
+	const maxLen = 200
+	if len(s) <= maxLen {
+		return s
+	}
+	return strings.ToValidUTF8(s[:maxLen], "") + "…"
 }
 
 // ScoreResult is the structured scorer output consumed by the accept flow

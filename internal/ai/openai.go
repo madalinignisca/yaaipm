@@ -37,7 +37,7 @@ type OpenAIRefiner struct{ c *OpenAIClient }
 // and Model() for the audit trail.
 func NewOpenAIRefiner(c *OpenAIClient) *OpenAIRefiner { return &OpenAIRefiner{c: c} }
 
-func (r *OpenAIRefiner) Name() string { return "openai" }
+func (r *OpenAIRefiner) Name() string { return ProviderOpenAI }
 func (r *OpenAIRefiner) Model() string {
 	if r.c == nil {
 		return ""

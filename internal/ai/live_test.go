@@ -196,33 +196,74 @@ func TestLive_GeminiScorer(t *testing.T) {
 	s := NewGeminiScorer(client, model)
 
 	res, err := s.Score(ctx, liveText)
+	assertLiveScore(t, s.Name(), res, err)
+}
+
+// TestLive_OpenAIScorer is the only check that OpenAI actually ACCEPTS
+// our strict json_schema. Strict mode rejects a schema that omits
+// additionalProperties:false or leaves a property out of required, and
+// it rejects numeric constraints outright — all of which surface as a
+// 400 at call time, invisible to every offline test. The unit tests pin
+// the schema's shape; this one proves the server agrees.
+func TestLive_OpenAIScorer(t *testing.T) {
+	key := liveKey(t, "OPENAI_API_KEY")
+	model := liveEnvOr("SCORER_MODEL_OPENAI", ModelGPT5Mini)
+	s := NewOpenAIScorer(NewOpenAIClient(key, model))
+
+	ctx, cancel := context.WithTimeout(t.Context(), liveCallTimeout)
+	defer cancel()
+	res, err := s.Score(ctx, liveText)
+	assertLiveScore(t, s.Name(), res, err)
+}
+
+// TestLive_AnthropicScorer proves the forced-tool contract holds against
+// the real API: that Claude returns a tool_use block for our tool rather
+// than prose, and that its arguments parse into the score payload.
+func TestLive_AnthropicScorer(t *testing.T) {
+	key := liveKey(t, "ANTHROPIC_API_KEY")
+	model := liveEnvOr("SCORER_MODEL_CLAUDE", ModelClaudeSonnet46)
+	client := NewAnthropicClient(key, AnthropicModels{Default: model, Content: model})
+	s := NewAnthropicScorer(client, model)
+
+	ctx, cancel := context.WithTimeout(t.Context(), liveCallTimeout)
+	defer cancel()
+	res, err := s.Score(ctx, liveText)
+	assertLiveScore(t, s.Name(), res, err)
+}
+
+// assertLiveScore is the shared post-call assertion for every Scorer.
+//
+// Score/Hours range checks are documentation rather than live signal —
+// clampScoreFields already bounds them in the adapter. The real
+// assertions are that the provider's structured output parsed at all
+// (err == nil), Reasoning survived the round trip, and usage metadata is
+// populated so cost tracking works.
+func assertLiveScore(t *testing.T, provider string, res ScoreResult, err error) {
+	t.Helper()
 	if err != nil {
-		// This branch also covers the structured-output JSON failing to
-		// parse — Score wraps json.Unmarshal errors with the raw payload.
-		t.Fatalf("gemini live score: %v", err)
+		// Also covers structured output failing to parse — Score wraps
+		// unmarshal errors with the raw payload — and, for OpenAI, a
+		// strict-schema rejection from the API.
+		t.Fatalf("%s live score: %v", provider, err)
 	}
-	// Score/Hours are clamped in the adapter, so the range checks below
-	// are documentation rather than live signal; the real assertions are
-	// that the schema-enforced JSON parsed (err == nil above), Reasoning
-	// survived the round trip, and usage metadata is populated.
 	if res.Score < 1 || res.Score > 10 {
-		t.Errorf("score out of range: %d", res.Score)
+		t.Errorf("%s: score out of range: %d", provider, res.Score)
 	}
 	if res.Hours < 1 {
-		t.Errorf("hours out of range: %d", res.Hours)
+		t.Errorf("%s: hours out of range: %d", provider, res.Hours)
 	}
 	if strings.TrimSpace(res.Reasoning) == "" {
-		t.Error("empty reasoning in live scorer response")
+		t.Errorf("%s: empty reasoning in live scorer response", provider)
 	}
 	if res.Usage.Model == "" {
-		t.Error("empty Usage.Model in live scorer response")
+		t.Errorf("%s: empty Usage.Model in live scorer response", provider)
 	}
 	if res.Usage.InputTokens <= 0 || res.Usage.OutputTokens <= 0 {
-		t.Errorf("non-positive scorer token counts: in=%d out=%d",
-			res.Usage.InputTokens, res.Usage.OutputTokens)
+		t.Errorf("%s: non-positive scorer token counts: in=%d out=%d",
+			provider, res.Usage.InputTokens, res.Usage.OutputTokens)
 	}
-	checkLivePricing(t, "scorer", res.Usage)
-	t.Logf("scorer ok: model=%s score=%d hours=%d in=%d out=%d cost=%dµ$ reasoning=%q",
-		res.Usage.Model, res.Score, res.Hours,
+	checkLivePricing(t, provider+" scorer", res.Usage)
+	t.Logf("%s scorer ok: model=%s score=%d hours=%d in=%d out=%d cost=%dµ$ reasoning=%q",
+		provider, res.Usage.Model, res.Score, res.Hours,
 		res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.CostMicros, res.Reasoning)
 }
