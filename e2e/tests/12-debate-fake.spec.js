@@ -208,4 +208,84 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
     await ensureComposer(page);
     await expect(page.locator('[data-testid="debate-feedback"]')).toHaveValue('');
   });
+
+  // Per-project scorer provider (issue #63). Lives in this file rather
+  // than its own spec because registration is first-user-only and the CI
+  // job runs exactly one self-registering spec against a fresh database.
+  //
+  // Uses a dedicated org/project/ticket so changing the scorer provider
+  // can't affect the other tests here regardless of execution order.
+  //
+  // Only the critical flow is covered end-to-end; the 403 path and the
+  // validation errors are functional tests in
+  // internal/handlers/projects_scorer_test.go. This works without any
+  // billable key because DEBATE_REFINER_MODE=fake also installs fake
+  // scorers for all three providers (buildFakeDebateScorers).
+  test('scorer provider is per-project and the effort chip credits it', async ({ page }) => {
+    const orgSlug = 'scorer-pick-org';
+    const projSlug = 'scorer-pick-project';
+
+    if (authCookies.length > 0) {
+      await page.context().addCookies(authCookies);
+    }
+    await page.request.post('/orgs', { form: { name: 'Scorer Pick Org' } });
+    await page.request.post(`/orgs/${orgSlug}/projects`, { form: { name: 'Scorer Pick Project' } });
+
+    await page.goto(`/orgs/${orgSlug}/projects/${projSlug}/features`);
+    const projectID = await page.locator("input[name='project_id']").first().getAttribute('value');
+    expect(projectID, 'project id must be discoverable').toBeTruthy();
+
+    const created = await page.request.post('/tickets', {
+      form: {
+        project_id: projectID,
+        title: 'E2E scorer provider feature',
+        type: 'feature',
+        priority: 'medium',
+        description: 'Feature used to verify the per-project scorer provider',
+      },
+      headers: { Referer: `/orgs/${orgSlug}/projects/${projSlug}/features` },
+    });
+    expect(created.status(), 'create-ticket response').toBeLessThan(400);
+
+    await page.goto(`/orgs/${orgSlug}/projects/${projSlug}/features`);
+    const href = await page.locator("a[href^='/tickets/']").first().getAttribute('href');
+    const scorerTicketID = href ? href.split('/').pop() : '';
+    expect(scorerTicketID, 'ticket id must be discoverable').not.toEqual('');
+
+    // ── Change the provider in project settings ─────────────────
+    await authenticatedDebatePage(page, `/orgs/${orgSlug}/projects/${projSlug}/settings`);
+    const select = page.locator('select[name="scorer_provider"]');
+    await expect(select, 'staff must see the scorer dropdown').toBeVisible();
+    await expect(select, 'defaults to the schema default').toHaveValue('gemini');
+
+    await select.selectOption('claude');
+    await page.click('button:has-text("Save Scorer Provider")');
+    await page.waitForLoadState('networkidle');
+
+    // The choice survives a reload.
+    await authenticatedDebatePage(page, `/orgs/${orgSlug}/projects/${projSlug}/settings`);
+    await expect(page.locator('select[name="scorer_provider"]')).toHaveValue('claude');
+
+    // ── Run a round to completion ───────────────────────────────
+    await authenticatedDebatePage(page, `/tickets/${scorerTicketID}/debate`);
+    await ensureComposer(page);
+    await page.click('[data-testid="debate-suggest"]');
+    await expect(page.locator('[data-testid="debate-suggestion"]')).toBeVisible();
+    await page.click('[data-testid="debate-accept"]');
+    await expect(page.locator('[data-testid="debate-composer"]')).toBeVisible({ timeout: 8000 });
+
+    // ── The chip credits the chosen provider ────────────────────
+    // Scoring is fire-and-forget, so retry a reload until it settles.
+    const chip = page.locator('[data-testid="debate-effort-chip"]');
+    await expect(async () => {
+      await page.reload();
+      await page.waitForLoadState('networkidle');
+      await expect(chip).toContainText('Effort', { timeout: 2000 });
+    }).toPass({ timeout: 30000 });
+
+    const chipText = await chip.textContent();
+    expect(chipText, `effort chip text was: ${chipText}`).toContain('via Claude');
+    // The whole point of the feature: not the default provider.
+    expect(chipText, `effort chip text was: ${chipText}`).not.toContain('via Gemini');
+  });
 });

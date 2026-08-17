@@ -228,14 +228,7 @@ func (h *DebateHandler) requireDebateContext(r *http.Request) (debateContext, in
 // on this handler. Used by the template to render the AI-picker
 // buttons.
 func (h *DebateHandler) providerNames() []string {
-	names := make([]string, 0, len(h.refiners))
-	// Fixed order so the button layout doesn't shuffle between requests.
-	for _, n := range []string{"claude", "gemini", "openai"} {
-		if _, ok := h.refiners[n]; ok {
-			names = append(names, n)
-		}
-	}
-	return names
+	return ai.SortedProviderKeys(h.refiners)
 }
 
 // ── GET /tickets/{ticketID}/debate ────────────────────────────────

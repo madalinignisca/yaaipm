@@ -110,7 +110,6 @@ func main() {
 	authH := handlers.NewAuthHandler(db, sessions, engine, cfg.AESKey, secureCookie)
 	dashH := handlers.NewDashboardHandler(db, engine)
 	orgH := handlers.NewOrgHandler(db, engine, sessions, mailer, cfg.BaseURL, cfg.ProtectedSuperadmins)
-	projH := handlers.NewProjectHandler(db, engine)
 	ticketH := handlers.NewTicketHandler(db, engine, geminiClient, cfg)
 	commentH := handlers.NewCommentHandler(db, engine)
 	adminH := handlers.NewAdminHandler(db, engine)
@@ -205,6 +204,10 @@ func main() {
 	}
 	debateCfg := handlers.DefaultDebateConfig()
 	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorers, debateCfg)
+	// Constructed here rather than with the other handlers above because
+	// the project settings dropdown offers exactly the scorer providers
+	// that are actually configured (issue #63), so it needs the registry.
+	projH := handlers.NewProjectHandler(db, engine, ai.SortedProviderKeys(debateScorers))
 	log.Printf("Feature Debate Mode wired (%d refiners, %d scorers)", len(debateRefiners), len(debateScorers))
 
 	// Cost-tracking guard (issue #108). A model absent from the pricing
@@ -333,6 +336,7 @@ func main() {
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/archived", projH.ProjectArchived)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/settings", projH.ProjectSettings)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/settings/repo", projH.UpdateRepoURL)
+		r.Post("/orgs/{orgSlug}/projects/{projSlug}/settings/scorer", projH.UpdateScorerProvider)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/transfer", projH.TransferProject)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.ProjectCosts)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.AddCostItem)
