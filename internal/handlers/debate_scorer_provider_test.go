@@ -2,8 +2,12 @@ package handlers
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/models"
@@ -157,6 +161,116 @@ func TestRetryStaleEffortScores_EmptyRegistryIsNoOp(t *testing.T) {
 	}
 	if attempts != 0 {
 		t.Errorf("effort_retry_attempts = %d, want 0 (nothing was claimed)", attempts)
+	}
+}
+
+// acceptRoundOK POSTs the accept endpoint and requires a 200. Accepting
+// must succeed regardless of whether scoring can run afterwards — the
+// score is fire-and-forget.
+func acceptRoundOK(t *testing.T, r *chi.Mux, cookie *http.Cookie, ticketID, roundID string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost,
+		"/tickets/"+ticketID+"/debate/rounds/"+roundID+"/accept", http.NoBody)
+	req.Header.Set("Hx-Request", "true")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("accept: got %d, want 200 — body: %s", w.Code, w.Body.String())
+	}
+}
+
+// waitForEffortScore polls until the accept path's fire-and-forget
+// scoring goroutine has written a score for the given round.
+func waitForEffortScore(t *testing.T, db *models.DB, ticketID, roundID string) bool {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		deb, err := db.GetActiveDebate(context.Background(), ticketID)
+		if err != nil {
+			return false
+		}
+		if deb.LastScoredRoundID != nil && *deb.LastScoredRoundID == roundID {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// The accept path resolves the provider inside its scoring goroutine,
+// reading dctx.ticket.ProjectID — plumbing unique to this call site and
+// not covered by the sweep tests. Asserts the configured provider runs
+// and is what gets recorded against the score.
+func TestAcceptRound_UsesProjectConfiguredProvider(t *testing.T) {
+	openaiScorer := fakeScorerFor(ai.ProviderOpenAI, ai.ModelGPT5Mini)
+	geminiScorer := fakeScorerFor(ai.ProviderGemini, ai.ModelGeminiFlash)
+
+	r, db, sessions := setupDebateTestEnvWithRegistry(t, map[string]ai.Scorer{
+		ai.ProviderOpenAI: openaiScorer,
+		ai.ProviderGemini: geminiScorer,
+	})
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	if err := db.UpdateProjectScorerProvider(context.Background(), ticket.ProjectID, ai.ProviderOpenAI); err != nil {
+		t.Fatalf("UpdateProjectScorerProvider: %v", err)
+	}
+	deb, round := insertInReviewRound(t, db, cookie, r, ticket.ID, "scored text")
+
+	acceptRoundOK(t, r, cookie, ticket.ID, round.ID)
+
+	if !waitForEffortScore(t, db, ticket.ID, round.ID) {
+		t.Fatal("scorer did not write a score within 5s")
+	}
+	if openaiScorer.CallCount != 1 {
+		t.Errorf("openai scorer CallCount = %d, want 1", openaiScorer.CallCount)
+	}
+	if geminiScorer.CallCount != 0 {
+		t.Errorf("gemini scorer CallCount = %d, want 0 (project selected openai)", geminiScorer.CallCount)
+	}
+
+	provider, model, score := readEffortScorer(t, db, deb.ID)
+	if score == nil {
+		t.Fatal("effort_score is NULL, want it written")
+	}
+	if provider == nil || *provider != ai.ProviderOpenAI {
+		t.Errorf("effort_scorer_provider = %s, want openai", derefOrNull(provider))
+	}
+	if model == nil || *model != ai.ModelGPT5Mini {
+		t.Errorf("effort_scorer_model = %s, want %s", derefOrNull(model), ai.ModelGPT5Mini)
+	}
+}
+
+// Accept must still succeed when the project names a provider with no
+// registered scorer — the round is accepted, the score is simply skipped
+// with a WARNING, and no other vendor is substituted.
+func TestAcceptRound_UnregisteredProviderStillAcceptsWithoutScoring(t *testing.T) {
+	geminiScorer := fakeScorerFor(ai.ProviderGemini, ai.ModelGeminiFlash)
+	r, db, sessions := setupDebateTestEnvWithRegistry(t, map[string]ai.Scorer{
+		ai.ProviderGemini: geminiScorer,
+	})
+	ticket, cookie := seedAuthedFeatureTicket(t, db, sessions)
+	// Claude configured but absent from the registry: a deployment with
+	// no ANTHROPIC_API_KEY.
+	if err := db.UpdateProjectScorerProvider(context.Background(), ticket.ProjectID, ai.ProviderClaude); err != nil {
+		t.Fatalf("UpdateProjectScorerProvider: %v", err)
+	}
+	deb, round := insertInReviewRound(t, db, cookie, r, ticket.ID, "scored text")
+
+	// The accept itself must not fail just because scoring can't run.
+	acceptRoundOK(t, r, cookie, ticket.ID, round.ID)
+
+	// Give the goroutine a chance to (not) score.
+	time.Sleep(300 * time.Millisecond)
+
+	if geminiScorer.CallCount != 0 {
+		t.Errorf("gemini scorer CallCount = %d, want 0 — no silent fallback", geminiScorer.CallCount)
+	}
+	provider, _, score := readEffortScorer(t, db, deb.ID)
+	if score != nil {
+		t.Errorf("effort_score = %d, want NULL", *score)
+	}
+	if provider != nil {
+		t.Errorf("effort_scorer_provider = %q, want NULL", *provider)
 	}
 }
 
