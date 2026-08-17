@@ -16,13 +16,22 @@ import (
 // newScorerHandler builds a DebateHandler with no refiners and the given
 // scorer (which may be nil) — enough to exercise the background retry
 // sweep, which never touches the HTTP layer.
+//
+// The scorer is registered under the "gemini" key because seeded test
+// projects take the schema default for scorer_provider (issue #63), so
+// this is the scorer per-project resolution will actually pick. A nil
+// scorer yields an empty registry, matching the pre-#63 no-scorer case.
 func newScorerHandler(t *testing.T, db *models.DB, scorer ai.Scorer) *DebateHandler {
 	t.Helper()
 	engine, err := render.NewEngine(testutil.ProjectRoot()+"/templates", nil)
 	if err != nil {
 		t.Fatalf("loading templates: %v", err)
 	}
-	return NewDebateHandler(db, engine, map[string]ai.Refiner{}, scorer, DefaultDebateConfig())
+	scorers := map[string]ai.Scorer{}
+	if scorer != nil {
+		scorers[ai.ProviderGemini] = scorer
+	}
+	return NewDebateHandler(db, engine, map[string]ai.Refiner{}, scorers, DefaultDebateConfig())
 }
 
 // seedStaleScorableDebate creates a debate with one accepted round whose

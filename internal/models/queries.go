@@ -817,13 +817,33 @@ func (db *DB) UpdateOrgCurrency(ctx context.Context, orgID, currencyCode string)
 
 // ── Projects ──────────────────────────────────────────────────────
 
+// projectColumns lists the column order used by every project SELECT /
+// RETURNING clause, and scanProject reads that order back. Keeping the
+// pair in one place is what makes adding a column (e.g. scorer_provider
+// in #63) a single edit instead of four synchronized ones — a mismatch
+// between the column list and the scan targets is a RUNTIME error, not a
+// compile error. Same pattern as featureDebateColumns below.
+const projectColumns = `id, org_id, name, slug, brief_markdown, repo_url,
+	scorer_provider, created_at, updated_at`
+
+type projectScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanProject(row projectScanner, p *Project) error {
+	return row.Scan(
+		&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL,
+		&p.ScorerProvider, &p.CreatedAt, &p.UpdatedAt,
+	)
+}
+
 func (db *DB) CreateProject(ctx context.Context, orgID, name, slug string) (*Project, error) {
 	p := &Project{}
-	err := db.Pool.QueryRow(ctx,
+	err := scanProject(db.Pool.QueryRow(ctx,
 		`INSERT INTO projects (org_id, name, slug) VALUES ($1, $2, $3)
-		 RETURNING id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at`,
+		 RETURNING `+projectColumns,
 		orgID, name, slug,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
+	), p)
 	if err != nil {
 		return nil, fmt.Errorf("creating project: %w", err)
 	}
@@ -832,10 +852,10 @@ func (db *DB) CreateProject(ctx context.Context, orgID, name, slug string) (*Pro
 
 func (db *DB) GetProject(ctx context.Context, orgID, slug string) (*Project, error) {
 	p := &Project{}
-	err := db.Pool.QueryRow(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
+	err := scanProject(db.Pool.QueryRow(ctx,
+		`SELECT `+projectColumns+`
 		 FROM projects WHERE org_id = $1 AND slug = $2`, orgID, slug,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
+	), p)
 	if err != nil {
 		return nil, fmt.Errorf("getting project: %w", err)
 	}
@@ -844,10 +864,10 @@ func (db *DB) GetProject(ctx context.Context, orgID, slug string) (*Project, err
 
 func (db *DB) GetProjectByID(ctx context.Context, id string) (*Project, error) {
 	p := &Project{}
-	err := db.Pool.QueryRow(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
+	err := scanProject(db.Pool.QueryRow(ctx,
+		`SELECT `+projectColumns+`
 		 FROM projects WHERE id = $1`, id,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
+	), p)
 	if err != nil {
 		return nil, fmt.Errorf("getting project by id: %w", err)
 	}
@@ -856,7 +876,7 @@ func (db *DB) GetProjectByID(ctx context.Context, id string) (*Project, error) {
 
 func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
+		`SELECT `+projectColumns+`
 		 FROM projects WHERE org_id = $1 ORDER BY name`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("listing projects: %w", err)
@@ -866,7 +886,7 @@ func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error)
 	var projects []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := scanProject(rows, &p); err != nil {
 			return nil, fmt.Errorf("scanning project: %w", err)
 		}
 		projects = append(projects, p)
@@ -890,6 +910,38 @@ func (db *DB) UpdateProjectRepoURL(ctx context.Context, projectID, repoURL strin
 		return fmt.Errorf("updating project repo url: %w", err)
 	}
 	return nil
+}
+
+// UpdateProjectScorerProvider sets which AI provider scores this
+// project's debates (issue #63). Callers MUST validate the provider
+// against the configured registry first; the CHECK constraint from
+// migration 000034 is only the backstop.
+func (db *DB) UpdateProjectScorerProvider(ctx context.Context, projectID, provider string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE projects SET scorer_provider = $1, updated_at = now() WHERE id = $2`, provider, projectID)
+	if err != nil {
+		return fmt.Errorf("updating project scorer provider: %w", err)
+	}
+	return nil
+}
+
+// GetProjectScorerProvider reads just the configured scorer provider.
+//
+// A dedicated one-column query rather than GetProjectByID because the
+// accept path calls this from a background scoring goroutine that needs
+// one word — pulling brief_markdown (which can be many KB) along with it
+// would be wasteful on every accepted round.
+//
+// Returns a wrapped pgx.ErrNoRows for an unknown project so callers can
+// distinguish "project vanished" from "provider not configured".
+func (db *DB) GetProjectScorerProvider(ctx context.Context, projectID string) (string, error) {
+	var provider string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT scorer_provider FROM projects WHERE id = $1`, projectID).Scan(&provider)
+	if err != nil {
+		return "", fmt.Errorf("getting project scorer provider: %w", err)
+	}
+	return provider, nil
 }
 
 func (db *DB) TransferProject(ctx context.Context, projectID, targetOrgID string) error {
@@ -2187,6 +2239,7 @@ const featureDebateColumns = `id, ticket_id, project_id, org_id, started_by, sta
 	seed_description, current_text, original_ticket_description,
 	in_flight_request_id, in_flight_started_at, total_cost_micros,
 	effort_score, effort_hours, effort_reasoning, effort_scored_at,
+	effort_scorer_provider, effort_scorer_model,
 	last_scored_round_id, approved_text, created_at, updated_at`
 
 // scanFeatureDebate reads one row from a pgx.Row or pgx.Rows into a *FeatureDebate.
@@ -2200,6 +2253,7 @@ func scanFeatureDebate(row featureDebateScanner, deb *FeatureDebate) error {
 		&deb.SeedDescription, &deb.CurrentText, &deb.OriginalTicketDescription,
 		&deb.InFlightRequestID, &deb.InFlightStartedAt, &deb.TotalCostMicros,
 		&deb.EffortScore, &deb.EffortHours, &deb.EffortReasoning, &deb.EffortScoredAt,
+		&deb.EffortScorerProvider, &deb.EffortScorerModel,
 		&deb.LastScoredRoundID, &deb.ApprovedText, &deb.CreatedAt, &deb.UpdatedAt,
 	)
 }
@@ -2708,10 +2762,15 @@ func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, 
 // Out-of-order scorer responses (scorer for round N finishes after
 // scorer for round N+1) are silently discarded — the freshest
 // accepted round's score always wins. See spec §4.3 step 8.
+//
+// provider and model record who produced this snapshot (issue #63); they
+// are written in the same statement as the score so the effort chip can
+// never label a score with a provider that did not produce it.
 func (db *DB) UpdateEffortScoreCondTx(
 	ctx context.Context, tx pgx.Tx,
 	debateID, scoredRoundID string,
 	score, hours int, reasoning string,
+	provider, model string,
 ) error {
 	_, err := tx.Exec(ctx, `
 		UPDATE feature_debates
@@ -2719,14 +2778,16 @@ func (db *DB) UpdateEffortScoreCondTx(
 		       effort_hours = $2,
 		       effort_reasoning = $3,
 		       effort_scored_at = now(),
-		       last_scored_round_id = $4,
+		       effort_scorer_provider = $4,
+		       effort_scorer_model = $5,
+		       last_scored_round_id = $6,
 		       updated_at = now()
-		 WHERE id = $5
+		 WHERE id = $7
 		   AND status IN ('active','approved')
 		   AND (last_scored_round_id IS NULL
 		     OR (SELECT round_number FROM feature_debate_rounds WHERE id = last_scored_round_id)
-		      < (SELECT round_number FROM feature_debate_rounds WHERE id = $4))`,
-		score, hours, reasoning, scoredRoundID, debateID,
+		      < (SELECT round_number FROM feature_debate_rounds WHERE id = $6))`,
+		score, hours, reasoning, provider, model, scoredRoundID, debateID,
 	)
 	return err
 }
@@ -2748,10 +2809,14 @@ func (db *DB) UpdateScorerCostMicros(ctx context.Context, tx pgx.Tx, roundID str
 // sweep: enough to re-run the scorer (OutputText) and write the result
 // back to the right round (RoundID) and project (ProjectID).
 type StaleEffortDebate struct {
-	DebateID   string
-	ProjectID  string
-	RoundID    string
-	OutputText string
+	DebateID  string
+	ProjectID string
+	RoundID   string
+	// ScorerProvider is the owning project's configured provider, joined
+	// in by the claim so the sweep can resolve a scorer without a second
+	// query per claimed row (issue #63).
+	ScorerProvider string
+	OutputText     string
 }
 
 // ClaimStaleEffortScores atomically claims up to limit debates whose
@@ -2826,6 +2891,12 @@ func (db *DB) ClaimStaleEffortScores(
 		    (SELECT r.id FROM feature_debate_rounds r
 		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
 		      ORDER BY r.round_number DESC LIMIT 1),
+		    -- Correlated read of the owning project's configured scorer
+		    -- (issue #63). Joined here so the sweep needs no extra query
+		    -- per row; projects is not locked by the claim above, so this
+		    -- does not affect the FOR UPDATE SKIP LOCKED semantics that
+		    -- keep two replicas from double-billing the same debate.
+		    (SELECT p.scorer_provider FROM projects p WHERE p.id = fd.project_id),
 		    (SELECT r.output_text FROM feature_debate_rounds r
 		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
 		      ORDER BY r.round_number DESC LIMIT 1)`,
@@ -2839,7 +2910,7 @@ func (db *DB) ClaimStaleEffortScores(
 	var claimed []StaleEffortDebate
 	for rows.Next() {
 		var d StaleEffortDebate
-		if scanErr := rows.Scan(&d.DebateID, &d.ProjectID, &d.RoundID, &d.OutputText); scanErr != nil {
+		if scanErr := rows.Scan(&d.DebateID, &d.ProjectID, &d.RoundID, &d.ScorerProvider, &d.OutputText); scanErr != nil {
 			return nil, scanErr
 		}
 		claimed = append(claimed, d)

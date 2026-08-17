@@ -30,6 +30,22 @@ import (
 // This lets TestAccept_ReturnsBeforeScorerCompletes inject a blocking FakeScorer.
 func setupDebateTestEnv(t *testing.T, scorerOpt ...ai.Scorer) (*chi.Mux, *models.DB, *auth.SessionStore) {
 	t.Helper()
+	// Registered under "gemini": seeded projects take the schema default
+	// for scorer_provider, so this is the scorer per-project resolution
+	// picks (issue #63).
+	scorers := map[string]ai.Scorer{}
+	if len(scorerOpt) > 0 && scorerOpt[0] != nil {
+		scorers[ai.ProviderGemini] = scorerOpt[0]
+	}
+	return setupDebateTestEnvWithRegistry(t, scorers)
+}
+
+// setupDebateTestEnvWithRegistry is setupDebateTestEnv with an explicit
+// scorer registry, so accept-path tests can register scorers under
+// providers other than the default — or deliberately omit one to
+// exercise the unregistered-provider path (issue #63).
+func setupDebateTestEnvWithRegistry(t *testing.T, scorers map[string]ai.Scorer) (*chi.Mux, *models.DB, *auth.SessionStore) {
+	t.Helper()
 
 	pool := testutil.SetupTestDB(t)
 	db := models.NewDB(pool)
@@ -47,11 +63,7 @@ func setupDebateTestEnv(t *testing.T, scorerOpt ...ai.Scorer) (*chi.Mux, *models
 			},
 		},
 	}
-	var scorer ai.Scorer
-	if len(scorerOpt) > 0 {
-		scorer = scorerOpt[0]
-	}
-	h := NewDebateHandler(db, engine, refiners, scorer, DefaultDebateConfig())
+	h := NewDebateHandler(db, engine, refiners, scorers, DefaultDebateConfig())
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recover)

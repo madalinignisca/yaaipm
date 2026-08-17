@@ -78,6 +78,10 @@ type Project struct {
 	Slug          string    `db:"slug"`
 	BriefMarkdown string    `db:"brief_markdown"`
 	RepoURL       string    `db:"repo_url"`
+	// ScorerProvider selects which AI provider scores this project's
+	// feature debates: claude | gemini | openai (issue #63). Staff-only
+	// setting; defaults to gemini, which is what v1 hardcoded.
+	ScorerProvider string `db:"scorer_provider"`
 }
 
 type Ticket struct {
@@ -238,26 +242,33 @@ type PlatformSettings struct {
 }
 
 type FeatureDebate struct {
-	CreatedAt                 time.Time  `db:"created_at"`
-	UpdatedAt                 time.Time  `db:"updated_at"`
-	InFlightStartedAt         *time.Time `db:"in_flight_started_at"`
-	EffortScoredAt            *time.Time `db:"effort_scored_at"`
-	InFlightRequestID         *string    `db:"in_flight_request_id"`
-	EffortScore               *int       `db:"effort_score"`
-	EffortHours               *int       `db:"effort_hours"`
-	EffortReasoning           *string    `db:"effort_reasoning"`
-	LastScoredRoundID         *string    `db:"last_scored_round_id"`
-	ApprovedText              *string    `db:"approved_text"`
-	ID                        string     `db:"id"`
-	TicketID                  string     `db:"ticket_id"`
-	ProjectID                 string     `db:"project_id"`
-	OrgID                     string     `db:"org_id"`
-	StartedBy                 string     `db:"started_by"`
-	Status                    string     `db:"status"` // active | approved | abandoned
-	SeedDescription           string     `db:"seed_description"`
-	CurrentText               string     `db:"current_text"`
-	OriginalTicketDescription string     `db:"original_ticket_description"`
-	TotalCostMicros           int64      `db:"total_cost_micros"`
+	CreatedAt         time.Time  `db:"created_at"`
+	UpdatedAt         time.Time  `db:"updated_at"`
+	InFlightStartedAt *time.Time `db:"in_flight_started_at"`
+	EffortScoredAt    *time.Time `db:"effort_scored_at"`
+	InFlightRequestID *string    `db:"in_flight_request_id"`
+	EffortScore       *int       `db:"effort_score"`
+	EffortHours       *int       `db:"effort_hours"`
+	EffortReasoning   *string    `db:"effort_reasoning"`
+	LastScoredRoundID *string    `db:"last_scored_round_id"`
+	ApprovedText      *string    `db:"approved_text"`
+	// EffortScorer* record which provider/model produced the CURRENT
+	// effort_* snapshot (issue #63). Not derivable from the project's
+	// live scorer_provider: flipping that dropdown must not retroactively
+	// relabel scores an older provider produced. NULL until first scored;
+	// the model is also NULL for scores backfilled by migration 000034.
+	EffortScorerProvider      *string `db:"effort_scorer_provider"`
+	EffortScorerModel         *string `db:"effort_scorer_model"`
+	ID                        string  `db:"id"`
+	TicketID                  string  `db:"ticket_id"`
+	ProjectID                 string  `db:"project_id"`
+	OrgID                     string  `db:"org_id"`
+	StartedBy                 string  `db:"started_by"`
+	Status                    string  `db:"status"` // active | approved | abandoned
+	SeedDescription           string  `db:"seed_description"`
+	CurrentText               string  `db:"current_text"`
+	OriginalTicketDescription string  `db:"original_ticket_description"`
+	TotalCostMicros           int64   `db:"total_cost_micros"`
 }
 
 type DebateRound struct {
