@@ -149,7 +149,10 @@ func TestUpdateMonthlyBudget_RoleMatrix(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cookie := createAuthenticatedUser(t, db, sessions, tc.email, tc.platform)
+			// createAuthenticatedUser is a shared test helper that creates
+			// its own background context; threading the table-test ctx
+			// through it would change a signature used by ~40 other tests.
+			cookie := createAuthenticatedUser(t, db, sessions, tc.email, tc.platform) //nolint:contextcheck // shared helper manages its own ctx
 			if tc.orgRole != "" {
 				var userID string
 				if err := db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE email = $1`, tc.email).Scan(&userID); err != nil {

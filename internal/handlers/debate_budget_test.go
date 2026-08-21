@@ -480,9 +480,9 @@ func TestCreateRound_RoleAppropriateWording(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateUser: %v", err)
 		}
-		if _, err := db.Pool.Exec(context.Background(),
-			`UPDATE users SET must_setup_2fa = false WHERE id = $1`, staffUser.ID); err != nil {
-			t.Fatalf("clearing must_setup_2fa: %v", err)
+		if _, execErr := db.Pool.Exec(context.Background(),
+			`UPDATE users SET must_setup_2fa = false WHERE id = $1`, staffUser.ID); execErr != nil {
+			t.Fatalf("clearing must_setup_2fa: %v", execErr)
 		}
 		req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 		token, err := sessions.CreateSession(context.Background(), staffUser.ID, false, req)

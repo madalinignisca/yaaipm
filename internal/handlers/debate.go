@@ -66,53 +66,6 @@ var (
 	errBudgetUnavailable = errors.New("org monthly spend could not be determined")
 )
 
-// checkOrgBudget is the enforcement gate for issue #64. Returns nil when
-// the org is uncapped or under cap; errBudgetExceeded at/over cap;
-// errBudgetUnavailable when the aggregate could not be read.
-//
-// Compares in MICROS with no rounding: only DISPLAY figures (the org
-// settings card) round to cents. The cap is bounded to 100_000_000
-// cents at the model layer, so cap*microsPerCent (max ~1e12) is nowhere
-// near int64 overflow.
-func (h *DebateHandler) checkOrgBudget(ctx context.Context, org *models.Organization) error {
-	if org.MonthlyBudgetCents == nil {
-		return nil
-	}
-
-	from, to := models.CurrentUTCMonthRange(time.Now())
-	spendMicros, err := h.db.SumOrgDebateSpendMicros(ctx, org.ID, from, to)
-	if err != nil {
-		return errBudgetUnavailable
-	}
-
-	if spendMicros >= *org.MonthlyBudgetCents*microsPerCent {
-		return errBudgetExceeded
-	}
-	return nil
-}
-
-// budgetExceededMessage picks role-appropriate copy for a tripped
-// budget cap (spec §8). Does ONE GetOrgMembership lookup, and only when
-// the cap has actually tripped, so the hot (under-cap) path never pays
-// for it. A lookup error falls back to the least-informative CLIENT
-// wording — the safe default when role can't be confirmed.
-func (h *DebateHandler) budgetExceededMessage(ctx context.Context, dctx debateContext) string {
-	const actionable = "Monthly AI budget reached for this organization — raise it in organization settings to continue."
-	const clientSafe = "Your organization's monthly budget has been reached. It resets at the start of next month."
-
-	if auth.IsStaffOrAbove(dctx.user.Role) {
-		return actionable
-	}
-	m, err := h.db.GetOrgMembership(ctx, dctx.user.ID, dctx.org.ID)
-	if err != nil {
-		return clientSafe
-	}
-	if auth.CanManageOrg(m.Role) {
-		return actionable
-	}
-	return clientSafe
-}
-
 // DebateConfig groups the per-deployment tuning knobs for the debate
 // flow. Defaults come from DefaultDebateConfig; production wiring in
 // cmd/server/main.go can override from env or leave defaults in place.
@@ -182,6 +135,53 @@ func NewDebateHandler(db *models.DB, engine *render.Engine,
 	refiners map[string]ai.Refiner, scorers map[string]ai.Scorer, cfg DebateConfig,
 ) *DebateHandler {
 	return &DebateHandler{db: db, engine: engine, refiners: refiners, scorers: scorers, cfg: cfg}
+}
+
+// checkOrgBudget is the enforcement gate for issue #64. Returns nil when
+// the org is uncapped or under cap; errBudgetExceeded at/over cap;
+// errBudgetUnavailable when the aggregate could not be read.
+//
+// Compares in MICROS with no rounding: only DISPLAY figures (the org
+// settings card) round to cents. The cap is bounded to 100_000_000
+// cents at the model layer, so cap*microsPerCent (max ~1e12) is nowhere
+// near int64 overflow.
+func (h *DebateHandler) checkOrgBudget(ctx context.Context, org *models.Organization) error {
+	if org.MonthlyBudgetCents == nil {
+		return nil
+	}
+
+	from, to := models.CurrentUTCMonthRange(time.Now())
+	spendMicros, err := h.db.SumOrgDebateSpendMicros(ctx, org.ID, from, to)
+	if err != nil {
+		return errBudgetUnavailable
+	}
+
+	if spendMicros >= *org.MonthlyBudgetCents*microsPerCent {
+		return errBudgetExceeded
+	}
+	return nil
+}
+
+// budgetExceededMessage picks role-appropriate copy for a tripped
+// budget cap (spec §8). Does ONE GetOrgMembership lookup, and only when
+// the cap has actually tripped, so the hot (under-cap) path never pays
+// for it. A lookup error falls back to the least-informative CLIENT
+// wording — the safe default when role can't be confirmed.
+func (h *DebateHandler) budgetExceededMessage(ctx context.Context, dctx debateContext) string {
+	const actionable = "Monthly AI budget reached for this organization — raise it in organization settings to continue."
+	const clientSafe = "Your organization's monthly budget has been reached. It resets at the start of next month."
+
+	if auth.IsStaffOrAbove(dctx.user.Role) {
+		return actionable
+	}
+	m, err := h.db.GetOrgMembership(ctx, dctx.user.ID, dctx.org.ID)
+	if err != nil {
+		return clientSafe
+	}
+	if auth.CanManageOrg(m.Role) {
+		return actionable
+	}
+	return clientSafe
 }
 
 // errScorerNotConfigured means the project names a provider that has no

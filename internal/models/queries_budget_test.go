@@ -82,10 +82,10 @@ func TestUpdateOrgMonthlyBudget_SetAndClear(t *testing.T) {
 
 	var oldCents, newCents *int64
 	var changedBy *string
-	if err := pool.QueryRow(ctx,
+	if scanErr := pool.QueryRow(ctx,
 		`SELECT old_cents, new_cents, changed_by FROM org_budget_changes WHERE org_id = $1`,
-		orgID).Scan(&oldCents, &newCents, &changedBy); err != nil {
-		t.Fatalf("querying audit row: %v", err)
+		orgID).Scan(&oldCents, &newCents, &changedBy); scanErr != nil {
+		t.Fatalf("querying audit row: %v", scanErr)
 	}
 	if oldCents != nil {
 		t.Fatalf("first change old_cents = %v, want nil", oldCents)
@@ -98,8 +98,8 @@ func TestUpdateOrgMonthlyBudget_SetAndClear(t *testing.T) {
 	}
 
 	// Clear back to unlimited.
-	if err := db.UpdateOrgMonthlyBudget(ctx, orgID, userID, nil); err != nil {
-		t.Fatalf("UpdateOrgMonthlyBudget(clear): %v", err)
+	if clearErr := db.UpdateOrgMonthlyBudget(ctx, orgID, userID, nil); clearErr != nil {
+		t.Fatalf("UpdateOrgMonthlyBudget(clear): %v", clearErr)
 	}
 	org2, err := db.GetOrgByID(ctx, orgID)
 	if err != nil {
@@ -229,7 +229,9 @@ func TestSumOrgDebateSpendMicros_NoRounds(t *testing.T) {
 	db := NewDB(pool)
 	ctx := context.Background()
 
-	orgID, _, _, _ := seedFeatureTicket(t, db, "desc")
+	// Only the org matters here — the project/ticket/user the helper also
+	// creates are irrelevant to an org-scoped spend aggregate.
+	orgID, _, _, _ := seedFeatureTicket(t, db, "desc") //nolint:dogsled // helper returns 4 values; only orgID is relevant
 	now := time.Now().UTC()
 	from, to := CurrentUTCMonthRange(now)
 
@@ -278,8 +280,8 @@ func TestSumOrgDebateSpendMicros_SumsAndFilters(t *testing.T) {
 		DescriptionMarkdown: "other desc", Status: "backlog", Priority: "medium",
 		CreatedBy: otherUser.ID,
 	}
-	if err := db.CreateTicket(ctx, otherTicket); err != nil {
-		t.Fatalf("CreateTicket (other org): %v", err)
+	if ctErr := db.CreateTicket(ctx, otherTicket); ctErr != nil {
+		t.Fatalf("CreateTicket (other org): %v", ctErr)
 	}
 	otherDeb, err := db.StartDebate(ctx, otherTicket.ID, otherProj.ID, otherOrg.ID, otherUser.ID)
 	if err != nil {

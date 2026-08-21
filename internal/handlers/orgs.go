@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -207,16 +208,12 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 
 // mergeMap combines two string-keyed maps into one new map (b's keys win
 // on conflict, though none are expected to overlap here). Kept tiny and
-// local rather than pulling in a generic "maps" helper package for a
-// single call site.
+// local rather than pulling in a third-party helper for a single call
+// site; stdlib maps.Copy does the actual copying.
 func mergeMap(a, b map[string]any) map[string]any {
 	out := make(map[string]any, len(a)+len(b))
-	for k, v := range a {
-		out[k] = v
-	}
-	for k, v := range b {
-		out[k] = v
-	}
+	maps.Copy(out, a)
+	maps.Copy(out, b)
 	return out
 }
 
@@ -718,7 +715,7 @@ const maxBudgetCentsInput = maxBudgetDollars * 100
 // like ',' or 'e' as a unit — it stops at the first invalid rune, which
 // would silently truncate rather than reject.
 func isAllASCIIDigits(s string) bool {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] < '0' || s[i] > '9' {
 			return false
 		}
