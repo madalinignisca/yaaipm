@@ -152,6 +152,46 @@
     </div>
     {{end}}
 
+    {{if .CanViewBudget}}
+    <div class="card bg-base-100 border border-base-300 shadow-sm">
+        <div class="card-body p-6 gap-3">
+            <div>
+                <h2 class="text-lg font-semibold">Monthly AI Budget</h2>
+                <p class="text-sm text-base-content/60 mt-1">
+                    Applies to AI feature-refinement spend only. Leave blank for unlimited.
+                    Set to 0 to block new AI suggestions — work already in progress still finishes.
+                </p>
+            </div>
+
+            <div class="text-sm text-base-content/70">
+                <p>Current cap: <span class="font-medium">{{.BudgetCapDisplay}}</span></p>
+                <p>
+                    {{.BudgetMonth}} spend:
+                    {{if .BudgetSpendUnavailable}}
+                        <span class="font-medium">unavailable</span>
+                    {{else}}
+                        <span class="font-medium">{{.BudgetSpendDisplay}}</span>
+                    {{end}}
+                </p>
+            </div>
+
+            {{if .CanManage}}
+            <form method="POST" action="/orgs/{{.OrgSlug}}/settings/budget"
+                  class="flex items-center gap-3">
+                {{csrfField}}
+                <span class="text-sm text-base-content/70">$</span>
+                <input type="text" name="monthly_budget_usd"
+                       value="{{.BudgetCapInput}}"
+                       placeholder="Unlimited"
+                       class="input input-bordered input-sm w-32">
+                <span class="text-sm text-base-content/70">USD</span>
+                <button type="submit" class="btn btn-primary btn-sm">Save</button>
+            </form>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+
     {{if .IsStaff}}
     <div class="card bg-base-100 border border-base-300 shadow-sm">
         <div class="card-body p-6 gap-3">

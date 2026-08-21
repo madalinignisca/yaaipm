@@ -371,7 +371,7 @@ const orgColumns = `id, name, slug, ai_margin_percent, currency_code,
 	business_name, vat_number, registration_number,
 	address_street, address_extra, postal_code, city, country,
 	contact_phones, contact_emails,
-	created_at, updated_at`
+	created_at, updated_at, monthly_budget_cents`
 
 // prefixColumns adds a table alias prefix to each column in a comma-separated list.
 // e.g. prefixColumns("o", "id, name") → "o.id, o.name"
@@ -390,7 +390,7 @@ func scanOrg(scanner interface{ Scan(dest ...any) error }, o *Organization) erro
 		&o.BusinessName, &o.VATNumber, &o.RegistrationNumber,
 		&o.AddressStreet, &o.AddressExtra, &o.PostalCode, &o.City, &o.Country,
 		&o.ContactPhones, &o.ContactEmails,
-		&o.CreatedAt, &o.UpdatedAt,
+		&o.CreatedAt, &o.UpdatedAt, &o.MonthlyBudgetCents,
 	)
 }
 
@@ -813,6 +813,126 @@ func (db *DB) UpdateOrgCurrency(ctx context.Context, orgID, currencyCode string)
 		return fmt.Errorf("updating org currency: %w", err)
 	}
 	return nil
+}
+
+// ErrOrgNotFound is returned by UpdateOrgMonthlyBudget when the org row
+// doesn't exist (or was deleted between the caller's lookup and this
+// call) — distinct from a generic DB failure so the handler can 404
+// instead of 500.
+var ErrOrgNotFound = errors.New("organization not found")
+
+// ErrBudgetOutOfRange is returned by UpdateOrgMonthlyBudget when capCents
+// is negative or exceeds maxBudgetCents. The handler's parser already rejects this, but
+// a future or internal caller that bypasses the handler must not be able
+// to persist a value that overflows cap*microsPerCent at comparison time
+// (spec §6). The DB CHECK only guards the negative direction.
+var ErrBudgetOutOfRange = errors.New("monthly budget out of range")
+
+// maxBudgetCents is USD 1,000,000 in cents. Chosen so maxBudgetCents *
+// microsPerCent (10_000) is nowhere near int64 overflow (1e12 vs ~9.2e18).
+const maxBudgetCents = 100_000_000
+
+// UpdateOrgMonthlyBudget sets (non-nil) or clears (nil) an org's monthly
+// AI debate budget cap, recording the old->new transition in
+// org_budget_changes in the SAME transaction.
+//
+// Atomic on purpose: an unaudited change to a money control is worse
+// than a failed change. If the audit INSERT fails, the cap UPDATE must
+// not survive either — a silent, unrecorded budget change is exactly
+// the failure mode spec §8 exists to prevent.
+func (db *DB) UpdateOrgMonthlyBudget(ctx context.Context, orgID, actorUserID string, capCents *int64) error {
+	// Both directions, and with a distinct sentinel: a negative cap would
+	// otherwise reach the DB and come back as an opaque constraint
+	// violation, which the handler cannot tell apart from an infra fault.
+	if capCents != nil && (*capCents < 0 || *capCents > maxBudgetCents) {
+		return ErrBudgetOutOfRange
+	}
+
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning update org monthly budget transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// FOR UPDATE: takes a row lock so a concurrent update can't read the
+	// same pre-image, both producing an audit row that claims to be "the"
+	// transition from the same old value.
+	var oldCents *int64
+	err = tx.QueryRow(ctx,
+		`SELECT monthly_budget_cents FROM organizations WHERE id = $1 FOR UPDATE`,
+		orgID,
+	).Scan(&oldCents)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrOrgNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("locking org for budget update: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE organizations SET monthly_budget_cents = $1, updated_at = now() WHERE id = $2`,
+		capCents, orgID); err != nil {
+		return fmt.Errorf("updating org monthly budget: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO org_budget_changes (org_id, changed_by, old_cents, new_cents)
+		 VALUES ($1, $2, $3, $4)`,
+		orgID, actorUserID, oldCents, capCents); err != nil {
+		return fmt.Errorf("inserting org budget change audit row: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing update org monthly budget transaction: %w", err)
+	}
+	return nil
+}
+
+// SumOrgDebateSpendMicros totals raw provider spend for one org's debate
+// rounds in [from, to). Refiner AND scorer cost, all round statuses — a
+// rejected suggestion still cost money.
+//
+// Enforcement source of truth (spec §3), NOT project_costs:
+// IncrementProjectCostCents runs after commit and is explicitly
+// non-fatal, so one failed rollup would permanently undercount and
+// silently lift the cap. cost_micros/scorer_cost_micros are written
+// inside the round transaction itself.
+//
+// Returns 0,nil when there are no rounds; callers MUST treat a non-nil
+// error as "unknown", never as zero — see checkOrgBudget's fail-closed
+// contract in internal/handlers/debate.go.
+func (db *DB) SumOrgDebateSpendMicros(ctx context.Context, orgID string, from, to time.Time) (int64, error) {
+	var sum int64
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(COALESCE(r.cost_micros,0) + COALESCE(r.scorer_cost_micros,0)), 0)::BIGINT
+		   FROM feature_debate_rounds r
+		   JOIN feature_debates d ON d.id = r.debate_id
+		  WHERE d.org_id = $1 AND r.created_at >= $2 AND r.created_at < $3`,
+		orgID, from, to,
+	).Scan(&sum)
+	if err != nil {
+		return 0, fmt.Errorf("summing org debate spend: %w", err)
+	}
+	return sum, nil
+}
+
+// CurrentUTCMonthRange returns [start,end) of the UTC month containing
+// now — the same bucket IncrementProjectCostCents writes via
+// Format("2006-01") (spec §7).
+//
+// No error return: constructing the boundaries directly from now with
+// time.Date(...) in UTC cannot fail, whereas a Format-then-Parse
+// round-trip would introduce an impossible error path callers had to
+// handle for no benefit.
+//
+// Callers MUST pass `now` explicitly and never substitute time.Now()
+// internally, or the caller's captured instant and this function's
+// bucket can straddle midnight and disagree.
+func CurrentUTCMonthRange(now time.Time) (start, end time.Time) {
+	y, m, _ := now.UTC().Date()
+	start = time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+	end = start.AddDate(0, 1, 0)
+	return start, end
 }
 
 // ── Projects ──────────────────────────────────────────────────────

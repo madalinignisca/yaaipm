@@ -35,6 +35,9 @@ type Organization struct {
 	ContactEmails      string    `db:"contact_emails"`
 	Slug               string    `db:"slug"`
 	AIMarginPercent    int       `db:"ai_margin_percent"`
+	// MonthlyBudgetCents is USD cents; nil = unlimited. See migration
+	// 000035 and docs/superpowers/specs/2026-08-20-org-monthly-budget-design.md.
+	MonthlyBudgetCents *int64 `db:"monthly_budget_cents"`
 }
 
 type OrgMembership struct {
