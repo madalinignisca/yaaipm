@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"regexp"
@@ -527,4 +528,120 @@ func (h *OrgHandler) UpdateCurrency(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/orgs/"+slug+"/settings", http.StatusSeeOther)
+}
+
+// Distinct sentinels so the set-budget handler can return distinct 400s
+// per failure mode, matching this repo's convention of never collapsing
+// DB-error / not-found / validation-failure into a single branch.
+var (
+	errBudgetNotANumber      = errors.New("that doesn't look like a dollar amount — use a plain number like 25 or 25.50")
+	errBudgetTooManyDecimals = errors.New("use at most two decimal places")
+	errBudgetOutOfRange      = errors.New("amount is too large — the maximum is $1,000,000")
+)
+
+// maxBudgetDollars mirrors models.maxBudgetCents (100_000_000 cents =
+// USD 1,000,000), expressed as whole dollars. Checked BEFORE multiplying
+// by 100 (spec §6): a caller supplying a huge but syntactically valid
+// dollar figure must be rejected by comparison, not by letting
+// dollars*100 run first and hoping it doesn't overflow.
+const maxBudgetDollars = 1_000_000
+
+// maxBudgetCentsInput is the cents-side twin of maxBudgetDollars, used
+// for the final range check after the fractional part is folded in
+// (e.g. "1000000.01" passes the whole-dollar check but must still be
+// rejected). Duplicated from models.maxBudgetCents rather than
+// exported/shared — it is a parsing-layer constant, not a persistence
+// one, and the two are independently pinned by tests on both sides.
+const maxBudgetCentsInput = maxBudgetDollars * 100
+
+// isAllASCIIDigits reports whether every byte in s is '0'-'9'. Used to
+// validate the lexical grammar BEFORE handing substrings to ParseInt:
+// ParseInt alone would accept a leading '+' (letting "+25" through a
+// grammar that declares it invalid) and doesn't reject non-digit bytes
+// like ',' or 'e' as a unit — it stops at the first invalid rune, which
+// would silently truncate rather than reject.
+func isAllASCIIDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// parseUSDCents converts a decimal USD string to integer cents without
+// any floating point (spec §6 forbids float arithmetic on a money
+// control — ParseFloat+Round, as costs.go's parseToCents uses, silently
+// accepts scientific notation ("1e3") and NaN/Inf, and rounds instead of
+// rejecting a third decimal place). Accepts an optional leading '$' and
+// surrounding whitespace; otherwise the trimmed string must match
+// ^\d+(\.\d{1,2})?$.
+func parseUSDCents(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "$")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errBudgetNotANumber
+	}
+
+	dollarsStr, fracStr, hasDot := strings.Cut(s, ".")
+	if dollarsStr == "" || !isAllASCIIDigits(dollarsStr) {
+		return 0, errBudgetNotANumber
+	}
+	if hasDot {
+		if fracStr == "" || !isAllASCIIDigits(fracStr) {
+			return 0, errBudgetNotANumber
+		}
+		if len(fracStr) > 2 {
+			return 0, errBudgetTooManyDecimals
+		}
+	}
+
+	dollars, err := strconv.ParseInt(dollarsStr, 10, 64)
+	if err != nil {
+		// Only reachable for a dollar string ParseInt itself can't hold
+		// (e.g. more digits than fit in int64) — isAllASCIIDigits already
+		// rejected every other malformed shape.
+		return 0, errBudgetNotANumber
+	}
+	if dollars > maxBudgetDollars {
+		return 0, errBudgetOutOfRange
+	}
+
+	// Right-pad the fraction to exactly 2 digits ("5" -> "50") so e.g.
+	// "25.5" and "25.50" both parse to 2550 cents.
+	frac := fracStr
+	for len(frac) < 2 {
+		frac += "0"
+	}
+	var fracCents int64
+	if frac != "" {
+		fracCents, err = strconv.ParseInt(frac, 10, 64)
+		if err != nil {
+			return 0, errBudgetNotANumber
+		}
+	}
+
+	// dollars <= maxBudgetDollars here, so dollars*100 cannot overflow;
+	// fracCents is at most 99. The final bound check below still catches
+	// e.g. "1000000.01", which passed the whole-dollar check above but
+	// pushes the total over the cap once the cents are folded in.
+	cents := dollars*100 + fracCents
+	if cents > maxBudgetCentsInput {
+		return 0, errBudgetOutOfRange
+	}
+	return cents, nil
+}
+
+// formatUSDCents renders integer cents as a plain decimal string for
+// display/pre-fill ("2550" -> "25.50"). Callers should never pass a
+// negative value (the setter and DB CHECK both reject them before
+// persistence), but %02d of a negative remainder renders "0.-5", not
+// "-0.05" — this guard exists to catch that class of bug rather than
+// display a malformed figure.
+func formatUSDCents(cents int64) string {
+	if cents < 0 {
+		return "-" + formatUSDCents(-cents)
+	}
+	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
 }
