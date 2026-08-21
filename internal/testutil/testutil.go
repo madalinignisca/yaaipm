@@ -60,6 +60,10 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 		"projects",
 		"invitations",
 		"org_memberships",
+		// References organizations; must go before it even though the FK
+		// is ON DELETE CASCADE, to match this list's "children first"
+		// convention (#64).
+		"org_budget_changes",
 		"organizations",
 		"webauthn_credentials",
 		"sessions",

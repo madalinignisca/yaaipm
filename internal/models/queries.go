@@ -371,7 +371,7 @@ const orgColumns = `id, name, slug, ai_margin_percent, currency_code,
 	business_name, vat_number, registration_number,
 	address_street, address_extra, postal_code, city, country,
 	contact_phones, contact_emails,
-	created_at, updated_at`
+	created_at, updated_at, monthly_budget_cents`
 
 // prefixColumns adds a table alias prefix to each column in a comma-separated list.
 // e.g. prefixColumns("o", "id, name") → "o.id, o.name"
@@ -390,7 +390,7 @@ func scanOrg(scanner interface{ Scan(dest ...any) error }, o *Organization) erro
 		&o.BusinessName, &o.VATNumber, &o.RegistrationNumber,
 		&o.AddressStreet, &o.AddressExtra, &o.PostalCode, &o.City, &o.Country,
 		&o.ContactPhones, &o.ContactEmails,
-		&o.CreatedAt, &o.UpdatedAt,
+		&o.CreatedAt, &o.UpdatedAt, &o.MonthlyBudgetCents,
 	)
 }
 
