@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/mail"
 	"github.com/madalin/forgedesk/internal/middleware"
@@ -488,6 +490,79 @@ func (h *OrgHandler) UpdateBusinessDetails(w http.ResponseWriter, r *http.Reques
 	); err != nil {
 		log.Printf("updating business details: %v", err)
 		http.Error(w, "Failed to update business details", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/orgs/"+slug+"/settings", http.StatusSeeOther)
+}
+
+// UpdateMonthlyBudget sets or clears an org's monthly AI debate budget
+// cap (spec §6, plan step 5). NOT staff-only, unlike UpdateAIMargin: the
+// budget is the client's own spend control, so org owner/admin may set
+// it for their own org. Staff/superadmin may set it for ANY org,
+// consistent with the margin precedent.
+//
+// The org is derived from the route slug ONLY — no org_id form field is
+// read, so there is nothing for a cross-org request to substitute.
+func (h *OrgHandler) UpdateMonthlyBudget(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	slug := r.PathValue("orgSlug")
+
+	// Distinct 404 (unknown slug) vs 500 (real DB failure) — UpdateAIMargin
+	// collapses these into one branch; that is a known gap, not the
+	// pattern to copy (plan step 5).
+	org, err := h.db.GetOrgBySlug(r.Context(), slug)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "Organization not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("looking up org %q for budget update: %v", slug, err)
+		http.Error(w, "Failed to load organization", http.StatusInternalServerError)
+		return
+	}
+
+	if !h.canManageOrgMembers(r, user, org.ID) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	raw := r.FormValue("monthly_budget_cents")
+	var capCents *int64
+	if trimmed := strings.TrimSpace(raw); trimmed != "" {
+		cents, parseErr := parseUSDCents(trimmed)
+		switch {
+		case errors.Is(parseErr, errBudgetTooManyDecimals):
+			http.Error(w, errBudgetTooManyDecimals.Error(), http.StatusBadRequest)
+			return
+		case errors.Is(parseErr, errBudgetOutOfRange):
+			http.Error(w, errBudgetOutOfRange.Error(), http.StatusBadRequest)
+			return
+		case parseErr != nil:
+			http.Error(w, errBudgetNotANumber.Error(), http.StatusBadRequest)
+			return
+		}
+		capCents = &cents
+	}
+	// Empty field (raw == "" after trim) leaves capCents nil — "leave
+	// blank for unlimited" per the helper text in the settings card.
+
+	switch err := h.db.UpdateOrgMonthlyBudget(r.Context(), org.ID, user.ID, capCents); {
+	case err == nil:
+		capDesc := "unlimited"
+		if capCents != nil {
+			capDesc = strconv.FormatInt(*capCents, 10) + " cents"
+		}
+		log.Printf("org %s monthly budget updated by user %s: %s", org.ID, user.ID, capDesc)
+	case errors.Is(err, models.ErrOrgNotFound):
+		// The org existed at the GetOrgBySlug above but was deleted
+		// before this write reached it — genuinely rare, but distinct
+		// from the parse-validation 400s above and from a generic 500.
+		http.Error(w, "Organization not found", http.StatusNotFound)
+		return
+	default:
+		log.Printf("updating monthly budget for org %s: %v", org.ID, err)
+		http.Error(w, "Failed to update budget", http.StatusInternalServerError)
 		return
 	}
 

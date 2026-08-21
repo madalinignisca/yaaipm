@@ -323,6 +323,7 @@ func main() {
 		r.Patch("/orgs/{orgSlug}/members/{userID}/role", orgH.UpdateMemberRole)
 		r.Post("/orgs/{orgSlug}/settings/business", orgH.UpdateBusinessDetails)
 		r.Post("/orgs/{orgSlug}/settings/margin", orgH.UpdateAIMargin)
+		r.Post("/orgs/{orgSlug}/settings/budget", orgH.UpdateMonthlyBudget)
 		r.Post("/orgs/{orgSlug}/settings/currency", orgH.UpdateCurrency)
 
 		// Projects
