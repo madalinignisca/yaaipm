@@ -815,6 +815,76 @@ func (db *DB) UpdateOrgCurrency(ctx context.Context, orgID, currencyCode string)
 	return nil
 }
 
+// ErrOrgNotFound is returned by UpdateOrgMonthlyBudget when the org row
+// doesn't exist (or was deleted between the caller's lookup and this
+// call) — distinct from a generic DB failure so the handler can 404
+// instead of 500.
+var ErrOrgNotFound = errors.New("organization not found")
+
+// ErrBudgetOutOfRange is returned by UpdateOrgMonthlyBudget when capCents
+// exceeds maxBudgetCents. The handler's parser already rejects this, but
+// a future or internal caller that bypasses the handler must not be able
+// to persist a value that overflows cap*microsPerCent at comparison time
+// (spec §6). The DB CHECK only guards the negative direction.
+var ErrBudgetOutOfRange = errors.New("monthly budget out of range")
+
+// maxBudgetCents is USD 1,000,000 in cents. Chosen so maxBudgetCents *
+// microsPerCent (10_000) is nowhere near int64 overflow (1e12 vs ~9.2e18).
+const maxBudgetCents = 100_000_000
+
+// UpdateOrgMonthlyBudget sets (non-nil) or clears (nil) an org's monthly
+// AI debate budget cap, recording the old->new transition in
+// org_budget_changes in the SAME transaction.
+//
+// Atomic on purpose: an unaudited change to a money control is worse
+// than a failed change. If the audit INSERT fails, the cap UPDATE must
+// not survive either — a silent, unrecorded budget change is exactly
+// the failure mode spec §8 exists to prevent.
+func (db *DB) UpdateOrgMonthlyBudget(ctx context.Context, orgID, actorUserID string, capCents *int64) error {
+	if capCents != nil && *capCents > maxBudgetCents {
+		return ErrBudgetOutOfRange
+	}
+
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning update org monthly budget transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// FOR UPDATE: takes a row lock so a concurrent update can't read the
+	// same pre-image, both producing an audit row that claims to be "the"
+	// transition from the same old value.
+	var oldCents *int64
+	err = tx.QueryRow(ctx,
+		`SELECT monthly_budget_cents FROM organizations WHERE id = $1 FOR UPDATE`,
+		orgID,
+	).Scan(&oldCents)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrOrgNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("locking org for budget update: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE organizations SET monthly_budget_cents = $1, updated_at = now() WHERE id = $2`,
+		capCents, orgID); err != nil {
+		return fmt.Errorf("updating org monthly budget: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO org_budget_changes (org_id, changed_by, old_cents, new_cents)
+		 VALUES ($1, $2, $3, $4)`,
+		orgID, actorUserID, oldCents, capCents); err != nil {
+		return fmt.Errorf("inserting org budget change audit row: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing update org monthly budget transaction: %w", err)
+	}
+	return nil
+}
+
 // ── Projects ──────────────────────────────────────────────────────
 
 // projectColumns lists the column order used by every project SELECT /
