@@ -913,7 +913,7 @@ func (db *DB) SumOrgDebateSpendMicros(ctx context.Context, orgID string, from, t
 	return sum, nil
 }
 
-// currentUTCMonthRange returns [start,end) of the UTC month containing
+// CurrentUTCMonthRange returns [start,end) of the UTC month containing
 // now — the same bucket IncrementProjectCostCents writes via
 // Format("2006-01") (spec §7).
 //
@@ -925,7 +925,7 @@ func (db *DB) SumOrgDebateSpendMicros(ctx context.Context, orgID string, from, t
 // Callers MUST pass `now` explicitly and never substitute time.Now()
 // internally, or the caller's captured instant and this function's
 // bucket can straddle midnight and disagree.
-func currentUTCMonthRange(now time.Time) (start, end time.Time) {
+func CurrentUTCMonthRange(now time.Time) (start, end time.Time) {
 	y, m, _ := now.UTC().Date()
 	start = time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
 	end = start.AddDate(0, 1, 0)

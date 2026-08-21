@@ -181,6 +181,12 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 
 	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
 
+	// Capture `now` ONCE and derive both the aggregate range and the
+	// displayed month label from it, so the two can never disagree
+	// across a midnight boundary between computing one and the other.
+	now := time.Now()
+	budgetFields := h.buildBudgetSettingsFields(r, org, now)
+
 	_ = h.engine.Render(w, r, "org_settings.html", render.PageData{
 		Title:       org.Name + " Settings",
 		User:        user,
@@ -188,15 +194,91 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 		Orgs:        middleware.GetOrgs(r),
 		Projects:    middleware.GetProjects(r),
 		CurrentPath: r.URL.Path,
-		Data: map[string]any{
+		Data: mergeMap(map[string]any{
 			"Members":       members,
 			"Invitations":   invitations,
 			"CanManage":     canManage,
 			"IsStaff":       auth.IsStaffOrAbove(user.Role),
 			"CurrentUserID": user.ID,
 			"OrgSlug":       org.Slug,
-		},
+		}, budgetFields),
 	})
+}
+
+// mergeMap combines two string-keyed maps into one new map (b's keys win
+// on conflict, though none are expected to overlap here). Kept tiny and
+// local rather than pulling in a generic "maps" helper package for a
+// single call site.
+func mergeMap(a, b map[string]any) map[string]any {
+	out := make(map[string]any, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}
+
+// budgetSettingsFields carries every Go-computed value the budget card
+// template needs. All money is pre-formatted as strings here so the
+// template never does float arithmetic or a new FuncMap entry (spec §6
+// forbids float on a money control).
+type budgetSettingsFields struct {
+	CanViewBudget          bool
+	BudgetIsUnlimited      bool
+	BudgetCapInput         string // value= for the <input>, empty when unlimited
+	BudgetCapDisplay       string // human "Unlimited" or "$X.XX"
+	BudgetSpendDisplay     string // "$X.XX" or "" when unavailable
+	BudgetSpendUnavailable bool
+	BudgetMonth            string // e.g. "August 2026"
+}
+
+// buildBudgetSettingsFields computes the budget card's display data.
+// Any org member (or staff) who reached OrgSettings at all may VIEW this
+// — the costs page is already member-visible and already shows debate
+// spend inside infraTotal, so this exposes no new granularity (spec §6).
+//
+// An aggregate failure here is NOT fatal to the page (unlike the
+// enforcement path in checkOrgBudget, which fails closed) — showing a
+// dash for spend is harmless; treating unknown spend as zero at the
+// enforcement gate is not. These two paths deliberately diverge.
+func (h *OrgHandler) buildBudgetSettingsFields(r *http.Request, org *models.Organization, now time.Time) map[string]any {
+	from, to := models.CurrentUTCMonthRange(now)
+
+	fields := budgetSettingsFields{
+		CanViewBudget: true,
+		BudgetMonth:   now.UTC().Format("January 2006"),
+	}
+
+	if org.MonthlyBudgetCents == nil {
+		fields.BudgetIsUnlimited = true
+		fields.BudgetCapDisplay = "Unlimited"
+	} else {
+		fields.BudgetCapInput = formatUSDCents(*org.MonthlyBudgetCents)
+		fields.BudgetCapDisplay = "$" + formatUSDCents(*org.MonthlyBudgetCents) + " USD"
+	}
+
+	spendMicros, err := h.db.SumOrgDebateSpendMicros(r.Context(), org.ID, from, to)
+	if err != nil {
+		log.Printf("org settings: summing debate spend for org %s: %v", org.ID, err)
+		fields.BudgetSpendUnavailable = true
+	} else {
+		// micros -> cents, half-up: (micros+5000)/10000. microsPerCent is
+		// 10_000, so half a cent is 5_000 micros.
+		spendCents := (spendMicros + 5000) / 10000
+		fields.BudgetSpendDisplay = "$" + formatUSDCents(spendCents) + " USD"
+	}
+
+	return map[string]any{
+		"CanViewBudget":          fields.CanViewBudget,
+		"BudgetIsUnlimited":      fields.BudgetIsUnlimited,
+		"BudgetCapInput":         fields.BudgetCapInput,
+		"BudgetCapDisplay":       fields.BudgetCapDisplay,
+		"BudgetSpendDisplay":     fields.BudgetSpendDisplay,
+		"BudgetSpendUnavailable": fields.BudgetSpendUnavailable,
+		"BudgetMonth":            fields.BudgetMonth,
+	}
 }
 
 // canManageOrgMembers checks if the current user has permission to manage members of the given org.

@@ -91,6 +91,8 @@ func TestFormatUSDCents(t *testing.T) {
 	}
 }
 
+func int64Ptr(v int64) *int64 { return &v }
+
 // seedBudgetTestOrg creates an org and returns its slug/ID plus a
 // membership-role setter so each role-matrix case can attach a fresh
 // user at the exact role under test without cross-contaminating others.
@@ -272,5 +274,122 @@ func TestUpdateMonthlyBudget_UnknownOrg(t *testing.T) {
 	rec := postBudget(t, r, cookie, "no-such-org-at-all", "10.00")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown org slug: status = %d, want 404", rec.Code)
+	}
+}
+
+// TestOrgSettingsPage_BudgetCard_MemberSeesReadOnly proves the budget
+// card is visible to a plain member (spec §6 — "any org member sees
+// their own org's cap and current spend") but the SET form is not,
+// unlike the staff-only margin card which a member never sees any part
+// of.
+func TestOrgSettingsPage_BudgetCard_MemberSeesReadOnly(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	createAuthenticatedUser(t, db, sessions, "first-sa6@test.com", "superadmin")
+	org := seedBudgetTestOrg(t, db, "Card Member Org", "card-member-org")
+
+	cookie := createAuthenticatedUser(t, db, sessions, "card-member@test.com", "client")
+	var userID string
+	if err := db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE email = 'card-member@test.com'`).Scan(&userID); err != nil {
+		t.Fatalf("look up user: %v", err)
+	}
+	if err := db.AddOrgMember(ctx, userID, org.ID, "member"); err != nil {
+		t.Fatalf("AddOrgMember: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/"+org.Slug+"/settings", http.NoBody)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET org settings: got %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Monthly AI Budget") {
+		t.Error("member should see the budget card")
+	}
+	if strings.Contains(body, `name="monthly_budget_cents"`) {
+		t.Error("member should NOT see the budget-setting form (read-only view only)")
+	}
+	if !strings.Contains(body, "Unlimited") {
+		t.Error("a fresh org has no cap set, so the card should read as unlimited")
+	}
+}
+
+// TestOrgSettingsPage_BudgetCard_OwnerSeesForm proves an owner (who CAN
+// manage the org) sees the actual input form, not just the read-only
+// figures.
+func TestOrgSettingsPage_BudgetCard_OwnerSeesForm(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	createAuthenticatedUser(t, db, sessions, "first-sa7@test.com", "superadmin")
+	org := seedBudgetTestOrg(t, db, "Card Owner Org", "card-owner-org")
+
+	cookie := createAuthenticatedUser(t, db, sessions, "card-owner@test.com", "client")
+	var userID string
+	if err := db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE email = 'card-owner@test.com'`).Scan(&userID); err != nil {
+		t.Fatalf("look up user: %v", err)
+	}
+	if err := db.AddOrgMember(ctx, userID, org.ID, "owner"); err != nil {
+		t.Fatalf("AddOrgMember: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/"+org.Slug+"/settings", http.NoBody)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET org settings: got %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `name="monthly_budget_cents"`) {
+		t.Error("owner should see the budget-setting form")
+	}
+	if !strings.Contains(body, "USD") {
+		t.Error("budget card must label the figure USD explicitly, never the org's display currency")
+	}
+}
+
+// TestOrgSettingsPage_BudgetCard_ShowsSetCapAndSpend proves a set cap
+// renders as a dollar figure (not raw cents) and the card shows a
+// current-spend figure derived in Go, not a template float.
+func TestOrgSettingsPage_BudgetCard_ShowsSetCapAndSpend(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	createAuthenticatedUser(t, db, sessions, "first-sa8@test.com", "superadmin")
+	org := seedBudgetTestOrg(t, db, "Card Cap Org", "card-cap-org")
+
+	cookie := createAuthenticatedUser(t, db, sessions, "card-cap-owner@test.com", "client")
+	var userID string
+	if err := db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE email = 'card-cap-owner@test.com'`).Scan(&userID); err != nil {
+		t.Fatalf("look up user: %v", err)
+	}
+	if err := db.AddOrgMember(ctx, userID, org.ID, "owner"); err != nil {
+		t.Fatalf("AddOrgMember: %v", err)
+	}
+	if err := db.UpdateOrgMonthlyBudget(ctx, org.ID, userID, int64Ptr(12345)); err != nil {
+		t.Fatalf("UpdateOrgMonthlyBudget: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/"+org.Slug+"/settings", http.NoBody)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET org settings: got %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "123.45") {
+		t.Errorf("expected cap 12345 cents to render as 123.45, body:\n%s", body)
+	}
+	// No rounds exist yet, so spend should render as 0.00, not "unavailable".
+	if !strings.Contains(body, "0.00") {
+		t.Error("expected zero current-month spend to render as 0.00")
 	}
 }

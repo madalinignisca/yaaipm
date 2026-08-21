@@ -231,7 +231,7 @@ func TestSumOrgDebateSpendMicros_NoRounds(t *testing.T) {
 
 	orgID, _, _, _ := seedFeatureTicket(t, db, "desc")
 	now := time.Now().UTC()
-	from, to := currentUTCMonthRange(now)
+	from, to := CurrentUTCMonthRange(now)
 
 	sum, err := db.SumOrgDebateSpendMicros(ctx, orgID, from, to)
 	if err != nil {
@@ -287,7 +287,7 @@ func TestSumOrgDebateSpendMicros_SumsAndFilters(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	from, to := currentUTCMonthRange(now)
+	from, to := CurrentUTCMonthRange(now)
 	inRange := from.Add(time.Hour)
 	beforeRange := from.Add(-time.Second) // excluded: at/before the lower edge minus epsilon
 	atOrAfterEnd := to                    // excluded: half-open upper bound, exactly "to"
@@ -325,7 +325,7 @@ func TestCurrentUTCMonthRange_HalfOpenAndUsesPassedNow(t *testing.T) {
 	// itself, or the caller's captured instant and the bucket could
 	// straddle midnight independently.
 	now := time.Date(2026, 8, 21, 15, 4, 5, 0, time.UTC)
-	from, to := currentUTCMonthRange(now)
+	from, to := CurrentUTCMonthRange(now)
 
 	wantFrom := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	wantTo := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
@@ -338,7 +338,7 @@ func TestCurrentUTCMonthRange_HalfOpenAndUsesPassedNow(t *testing.T) {
 
 	// December must roll over the year, not overflow month=13.
 	dec := time.Date(2026, 12, 15, 0, 0, 0, 0, time.UTC)
-	_, decTo := currentUTCMonthRange(dec)
+	_, decTo := CurrentUTCMonthRange(dec)
 	wantDecTo := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	if !decTo.Equal(wantDecTo) {
 		t.Errorf("December to = %v, want %v", decTo, wantDecTo)
