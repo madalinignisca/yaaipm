@@ -782,14 +782,28 @@ func TestOrgSettingsPage_NonMemberForbidden(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("non-member GET org settings: got %d, want 403", rec.Code)
+	// 404, not 403: authorizeOrgAccess deliberately collapses "not your
+	// org" into "no such org" so probing cannot enumerate organizations.
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("non-member GET org settings: got %d, want 404", rec.Code)
 	}
 	body := rec.Body.String()
 	for _, leaked := range []string{"insider@victim.test", "Victim Insider"} {
 		if strings.Contains(body, leaked) {
 			t.Errorf("response leaked %q across tenants", leaked)
 		}
+	}
+
+	// The response for a real-but-forbidden org must be indistinguishable
+	// from one for an org that does not exist — otherwise the status code
+	// itself confirms which slugs are real.
+	missReq := httptest.NewRequest(http.MethodGet, "/orgs/no-such-org-at-all/settings", http.NoBody)
+	missReq.AddCookie(outsider)
+	missRec := httptest.NewRecorder()
+	r.ServeHTTP(missRec, missReq)
+	if missRec.Code != rec.Code {
+		t.Errorf("org enumeration: existing-but-forbidden org returned %d but nonexistent org returned %d — these must match",
+			rec.Code, missRec.Code)
 	}
 }
 

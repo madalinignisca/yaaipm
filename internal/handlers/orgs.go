@@ -8,8 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 	"time"
 
 	"github.com/madalin/forgedesk/internal/auth"
@@ -141,31 +139,35 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Access gate. This MUST come before any org data is loaded: without
-	// it any authenticated user could read any org's settings by guessing
-	// a slug (slugs are slugify(name), so they are guessable), exposing
-	// the member roster across tenants.
+	// Access gate. MUST come before any org data is loaded: without it any
+	// authenticated user could read any org's settings by guessing a slug
+	// (slugs are slugify(name), so they are guessable), exposing the member
+	// roster across tenants.
 	//
-	// The membership lookup below does double duty — it decides both
-	// "may this user be here at all" and "may they manage". Those are
-	// different questions, and answering only the second was the bug:
-	// a non-member simply got canManage=false and the page still rendered.
-	canManage := auth.IsStaffOrAbove(user.Role)
-	if !canManage {
-		m, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID)
-		switch {
-		case errors.Is(memErr, pgx.ErrNoRows):
-			// Not a member of this org.
-			h.engine.RenderError(w, http.StatusForbidden, "Access denied")
-			return
-		case memErr != nil:
-			// Infrastructure failure — distinct from "not a member" so a
-			// database problem is never reported as an authorization one.
-			log.Printf("org settings: membership lookup for user %s org %s: %v", user.ID, org.ID, memErr)
-			h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organization")
+	// Uses the shared authorizeOrgAccess helper rather than an inline
+	// membership check so this page inherits the documented convention:
+	// "not a member" and "no such org" both surface as 404, so probing
+	// cannot distinguish an org that exists from one that does not.
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, org.ID); authErr != nil {
+		if errors.Is(authErr, errCrossTenant) {
+			h.engine.RenderError(w, http.StatusNotFound, "Organization not found")
 			return
 		}
-		canManage = auth.CanManageOrg(m.Role)
+		// Real infrastructure failure — never report a DB fault as an
+		// authorization decision.
+		log.Printf("org settings authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organization")
+		return
+	}
+
+	// Separate question from "may they be here": may they EDIT. The bug
+	// this fix closes was answering only this one and letting the page
+	// render regardless.
+	canManage := auth.IsStaffOrAbove(user.Role)
+	if !canManage {
+		if m, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); memErr == nil {
+			canManage = auth.CanManageOrg(m.Role)
+		}
 	}
 
 	members, err := h.db.ListOrgMembers(r.Context(), org.ID)
