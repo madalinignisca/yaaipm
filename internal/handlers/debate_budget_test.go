@@ -79,11 +79,18 @@ func TestCheckOrgBudget_UnderCapPasses(t *testing.T) {
 	if err := db.UpdateOrgMonthlyBudget(context.Background(), org.ID, ticket.CreatedBy, int64PtrDebate(10_000)); err != nil {
 		t.Fatalf("UpdateOrgMonthlyBudget: %v", err)
 	}
+
+	// Seed REAL spend strictly below the cap. Without this the test only
+	// proves "a nonzero cap permits zero spend", which an implementation
+	// that never reads spend at all would also pass (Debate 3). The point
+	// is that a genuine sum is computed and compared.
+	seedSpendForTicket(t, db, ticket, 4_000*microsPerCentDebate, time.Now().UTC())
+
 	org = loadTicketOrg(t, db, ticket)
 
 	h := NewDebateHandler(db, nil, nil, nil, DefaultDebateConfig())
 	if err := h.checkOrgBudget(context.Background(), org); err != nil {
-		t.Errorf("checkOrgBudget under cap = %v, want nil", err)
+		t.Errorf("checkOrgBudget under cap (4000c spend vs 10000c cap) = %v, want nil", err)
 	}
 }
 
@@ -128,7 +135,13 @@ func TestCheckOrgBudget_AtOrOverCapBlocks(t *testing.T) {
 // TestCheckOrgBudget_OverflowAtMaxBound proves a cap at the 100M-cent
 // bound with large seeded costs still compares correctly and blocks —
 // not wrap, not a false 503 (Debate 2's overflow case).
-func TestCheckOrgBudget_OverflowAtMaxBound(t *testing.T) {
+// TestCheckOrgBudget_AtMaxBoundStillCompares checks the largest cap the
+// system permits still compares correctly. Debate 3 correctly pointed out
+// that this does NOT exercise integer overflow: maxCap*microsPerCent is
+// 1e12, comfortably inside int64. That is the point — the bound exists so
+// overflow is unreachable. TestUpdateOrgMonthlyBudget_RejectsOutOfRange
+// and the DB CHECK are what keep a larger value from ever being stored.
+func TestCheckOrgBudget_AtMaxBoundStillCompares(t *testing.T) {
 	_, db, sessions := setupDebateTestEnv(t)
 	ticket, _ := seedAuthedFeatureTicket(t, db, sessions)
 	org := loadTicketOrg(t, db, ticket)
@@ -146,6 +159,24 @@ func TestCheckOrgBudget_OverflowAtMaxBound(t *testing.T) {
 	err := h.checkOrgBudget(context.Background(), org)
 	if !errors.Is(err, errBudgetExceeded) {
 		t.Errorf("checkOrgBudget at max bound with overshoot = %v, want errBudgetExceeded", err)
+	}
+}
+
+// TestOrgMonthlyBudget_DBRejectsOutOfRange proves the storage layer will
+// not accept a cap the enforcement path could not safely multiply. The Go
+// setter already rejects it, so this asserts the CHECK independently —
+// the guard that still holds for a direct SQL write or a data import,
+// which is the only way such a value could realistically appear.
+func TestOrgMonthlyBudget_DBRejectsOutOfRange(t *testing.T) {
+	_, db, sessions := setupDebateTestEnv(t)
+	ticket, _ := seedAuthedFeatureTicket(t, db, sessions)
+	org := loadTicketOrg(t, db, ticket)
+
+	for _, bad := range []int64{-1, 100_000_001} {
+		if _, err := db.Pool.Exec(context.Background(),
+			`UPDATE organizations SET monthly_budget_cents = $1 WHERE id = $2`, bad, org.ID); err == nil {
+			t.Errorf("DB accepted out-of-range cap %d; the CHECK must reject it", bad)
+		}
 	}
 }
 
@@ -370,7 +401,13 @@ func TestCreateRound_Rollover(t *testing.T) {
 	startDebate(t, r, ticket, cookie)
 
 	// All of last month's spend, well past the cap — must NOT count.
-	lastMonth := time.Now().UTC().AddDate(0, -1, 0)
+	// Derive the previous month from THIS month's boundary, never
+	// AddDate(0,-1,0) on today: on the 29th-31st that normalizes forward
+	// and can land back inside the current month (e.g. 31 March -> 3
+	// March), so the "previous month" spend would silently count and the
+	// test would pass for the wrong reason on ~4 days of every month.
+	monthStart, _ := models.CurrentUTCMonthRange(time.Now().UTC())
+	lastMonth := monthStart.AddDate(0, 0, -1)
 	seedSpendForTicket(t, db, ticket, 10_000*microsPerCentDebate, lastMonth)
 
 	rec := postCreateRound(t, r, ticket, cookie)

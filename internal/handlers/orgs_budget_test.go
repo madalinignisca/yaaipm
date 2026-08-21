@@ -107,7 +107,7 @@ func seedBudgetTestOrg(t *testing.T, db *models.DB, name, slug string) *models.O
 
 func postBudget(t *testing.T, r *chi.Mux, cookie *http.Cookie, slug, amount string) *httptest.ResponseRecorder {
 	t.Helper()
-	form := url.Values{"monthly_budget_cents": {amount}}
+	form := url.Values{"monthly_budget_usd": {amount}}
 	req := httptest.NewRequest(http.MethodPost, "/orgs/"+slug+"/settings/budget", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if cookie != nil {
@@ -313,7 +313,7 @@ func TestOrgSettingsPage_BudgetCard_MemberSeesReadOnly(t *testing.T) {
 	if !strings.Contains(body, "Monthly AI Budget") {
 		t.Error("member should see the budget card")
 	}
-	if strings.Contains(body, `name="monthly_budget_cents"`) {
+	if strings.Contains(body, `name="monthly_budget_usd"`) {
 		t.Error("member should NOT see the budget-setting form (read-only view only)")
 	}
 	if !strings.Contains(body, "Unlimited") {
@@ -349,7 +349,7 @@ func TestOrgSettingsPage_BudgetCard_OwnerSeesForm(t *testing.T) {
 		t.Fatalf("GET org settings: got %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `name="monthly_budget_cents"`) {
+	if !strings.Contains(body, `name="monthly_budget_usd"`) {
 		t.Error("owner should see the budget-setting form")
 	}
 	if !strings.Contains(body, "USD") {

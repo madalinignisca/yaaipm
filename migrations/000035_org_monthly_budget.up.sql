@@ -18,12 +18,17 @@
 -- the opposite -- that a negative cap would unblock everything. It would
 -- not. Corrected in Debate 2.)
 --
--- Only that direction is pinned in schema; the USD 1M upper bound lives in
--- the parser AND the model setter, so a caller bypassing the handler still
--- cannot persist a value that overflows `cap * microsPerCent`.
+-- BOTH directions are pinned in schema, not just the negative one. The Go
+-- setter and the HTTP parser also bound the value, but neither guards a
+-- direct SQL write or a data import: enforcement computes
+-- `cap * microsPerCent` (x10,000), so a stored cap above ~9.2e14 overflows
+-- int64 to a negative, and `spend >= negative` is always true — the org
+-- would be silently blocked forever with no way to see why. 100000000
+-- cents is USD 1M; x10,000 = 1e12, far inside int64.
 ALTER TABLE organizations
     ADD COLUMN monthly_budget_cents BIGINT
-        CHECK (monthly_budget_cents IS NULL OR monthly_budget_cents >= 0);
+        CHECK (monthly_budget_cents IS NULL
+               OR (monthly_budget_cents >= 0 AND monthly_budget_cents <= 100000000));
 
 -- Cap changes are audited (spec §8). No existing table fits: ticket_activities
 -- is ticket_id NOT NULL with a closed action CHECK. This is a money control,

@@ -263,7 +263,14 @@ func (h *OrgHandler) buildBudgetSettingsFields(r *http.Request, org *models.Orga
 	} else {
 		// micros -> cents, half-up: (micros+5000)/10000. microsPerCent is
 		// 10_000, so half a cent is 5_000 micros.
-		spendCents := (spendMicros + 5000) / 10000
+		// Quotient/remainder rather than (micros+5000)/10000: the additive
+		// form overflows int64 for an aggregate near MaxInt64 and would
+		// render a negative amount. Unreachable at real spend, but a
+		// display path should not be the thing that wraps.
+		spendCents := spendMicros / 10000
+		if spendMicros%10000 >= 5000 {
+			spendCents++
+		}
 		fields.BudgetSpendDisplay = "$" + formatUSDCents(spendCents) + " USD"
 	}
 
@@ -606,7 +613,7 @@ func (h *OrgHandler) UpdateMonthlyBudget(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	raw := r.FormValue("monthly_budget_cents")
+	raw := r.FormValue("monthly_budget_usd")
 	var capCents *int64
 	if trimmed := strings.TrimSpace(raw); trimmed != "" {
 		cents, parseErr := parseUSDCents(trimmed)
@@ -794,8 +801,16 @@ func parseUSDCents(s string) (int64, error) {
 // "-0.05" — this guard exists to catch that class of bug rather than
 // display a malformed figure.
 func formatUSDCents(cents int64) string {
+	// Negatives should never reach here — spend and caps are both
+	// non-negative by construction. Handle them anyway because the naive
+	// form renders -5 cents as "0.-5": %02d of a negative remainder keeps
+	// the sign. Formatting the magnitude and prefixing the sign is the
+	// only version that cannot emit garbage.
+	sign := ""
+	abs := cents
 	if cents < 0 {
-		return "-" + formatUSDCents(-cents)
+		sign = "-"
+		abs = -cents
 	}
-	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
+	return fmt.Sprintf("%s%d.%02d", sign, abs/100, abs%100)
 }

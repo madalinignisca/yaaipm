@@ -822,7 +822,7 @@ func (db *DB) UpdateOrgCurrency(ctx context.Context, orgID, currencyCode string)
 var ErrOrgNotFound = errors.New("organization not found")
 
 // ErrBudgetOutOfRange is returned by UpdateOrgMonthlyBudget when capCents
-// exceeds maxBudgetCents. The handler's parser already rejects this, but
+// is negative or exceeds maxBudgetCents. The handler's parser already rejects this, but
 // a future or internal caller that bypasses the handler must not be able
 // to persist a value that overflows cap*microsPerCent at comparison time
 // (spec §6). The DB CHECK only guards the negative direction.
@@ -841,7 +841,10 @@ const maxBudgetCents = 100_000_000
 // not survive either — a silent, unrecorded budget change is exactly
 // the failure mode spec §8 exists to prevent.
 func (db *DB) UpdateOrgMonthlyBudget(ctx context.Context, orgID, actorUserID string, capCents *int64) error {
-	if capCents != nil && *capCents > maxBudgetCents {
+	// Both directions, and with a distinct sentinel: a negative cap would
+	// otherwise reach the DB and come back as an opaque constraint
+	// violation, which the handler cannot tell apart from an infra fault.
+	if capCents != nil && (*capCents < 0 || *capCents > maxBudgetCents) {
 		return ErrBudgetOutOfRange
 	}
 
