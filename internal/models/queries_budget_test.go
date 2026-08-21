@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -200,5 +201,146 @@ func TestOrgMonthlyBudgetCents_NegativeCheckConstraint(t *testing.T) {
 		`UPDATE organizations SET monthly_budget_cents = -1 WHERE id = $1`, orgID)
 	if err == nil {
 		t.Fatal("raw UPDATE with monthly_budget_cents = -1 succeeded, want CHECK constraint violation")
+	}
+}
+
+// seedRoundAt inserts a raw feature_debate_rounds row with an explicit
+// created_at and cost figures, bypassing InsertDebateRoundTx entirely so
+// the aggregate tests can place rounds precisely on either side of the
+// month boundary — something no public API lets a caller do (rounds are
+// always created "now").
+func seedRoundAt(t *testing.T, db *DB, debateID, triggeredBy string, roundNum int,
+	costMicros, scorerCostMicros *int64, status string, createdAt time.Time,
+) {
+	t.Helper()
+	if _, err := db.Pool.Exec(context.Background(),
+		`INSERT INTO feature_debate_rounds (
+			debate_id, round_number, provider, model, triggered_by,
+			input_text, output_text, status, cost_micros, scorer_cost_micros, created_at
+		) VALUES ($1, $2, 'claude', 'claude-test', $3, 'in', 'out', $4, $5, $6, $7)`,
+		debateID, roundNum, triggeredBy, status, costMicros, scorerCostMicros, createdAt,
+	); err != nil {
+		t.Fatalf("seedRoundAt: %v", err)
+	}
+}
+
+func TestSumOrgDebateSpendMicros_NoRounds(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := NewDB(pool)
+	ctx := context.Background()
+
+	orgID, _, _, _ := seedFeatureTicket(t, db, "desc")
+	now := time.Now().UTC()
+	from, to := currentUTCMonthRange(now)
+
+	sum, err := db.SumOrgDebateSpendMicros(ctx, orgID, from, to)
+	if err != nil {
+		t.Fatalf("SumOrgDebateSpendMicros: %v", err)
+	}
+	if sum != 0 {
+		t.Fatalf("sum = %d, want 0 for an org with no rounds at all", sum)
+	}
+}
+
+// TestSumOrgDebateSpendMicros_SumsAndFilters is the main aggregate test:
+// sums both cost columns including a NULL scorer cost, excludes another
+// org's spend, excludes rounds outside [from,to) on BOTH edges, and
+// counts every round status (a rejected suggestion still cost money).
+func TestSumOrgDebateSpendMicros_SumsAndFilters(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := NewDB(pool)
+	ctx := context.Background()
+
+	orgID, userID, projID, ticketID := seedFeatureTicket(t, db, "desc")
+	deb, err := db.StartDebate(ctx, ticketID, projID, orgID, userID)
+	if err != nil {
+		t.Fatalf("StartDebate: %v", err)
+	}
+
+	// seedFeatureTicket keys its user's email off t.Name() alone, so a
+	// second call within the same test would collide on the unique
+	// email constraint — seed the "other org" fixture by hand instead.
+	otherUser, err := db.CreateUser(ctx, t.Name()+"-other@example.com",
+		"$argon2id$v=19$m=65536,t=3,p=4$dGVzdHNhbHQ$dGVzdGhhc2g", "Other Org User", "client")
+	if err != nil {
+		t.Fatalf("CreateUser (other org): %v", err)
+	}
+	otherOrg, err := db.CreateOrgWithOwnerTx(ctx, otherUser.ID, "Other Org "+t.Name(), "other-org-"+t.Name(), OrgRoleOwner)
+	if err != nil {
+		t.Fatalf("CreateOrgWithOwnerTx (other org): %v", err)
+	}
+	otherProj, err := db.CreateProject(ctx, otherOrg.ID, "Other Project", "other-proj-"+t.Name())
+	if err != nil {
+		t.Fatalf("CreateProject (other org): %v", err)
+	}
+	otherTicket := &Ticket{
+		ProjectID: otherProj.ID, Type: "feature", Title: "Other feature",
+		DescriptionMarkdown: "other desc", Status: "backlog", Priority: "medium",
+		CreatedBy: otherUser.ID,
+	}
+	if err := db.CreateTicket(ctx, otherTicket); err != nil {
+		t.Fatalf("CreateTicket (other org): %v", err)
+	}
+	otherDeb, err := db.StartDebate(ctx, otherTicket.ID, otherProj.ID, otherOrg.ID, otherUser.ID)
+	if err != nil {
+		t.Fatalf("StartDebate (other org): %v", err)
+	}
+
+	now := time.Now().UTC()
+	from, to := currentUTCMonthRange(now)
+	inRange := from.Add(time.Hour)
+	beforeRange := from.Add(-time.Second) // excluded: at/before the lower edge minus epsilon
+	atOrAfterEnd := to                    // excluded: half-open upper bound, exactly "to"
+
+	// In range, refiner cost only (scorer NULL) — NULL + cost must not
+	// drop the round from the sum.
+	seedRoundAt(t, db, deb.ID, userID, 1, int64Ptr(1_000_000), nil, "accepted", inRange)
+	// In range, both refiner and scorer cost, rejected status — status
+	// must not gate inclusion.
+	seedRoundAt(t, db, deb.ID, userID, 2, int64Ptr(500_000), int64Ptr(250_000), "rejected", inRange)
+	// In range, in_review status.
+	seedRoundAt(t, db, deb.ID, userID, 3, int64Ptr(100_000), nil, "in_review", inRange)
+
+	// Out of range: previous month (lower edge excluded).
+	seedRoundAt(t, db, deb.ID, userID, 4, int64Ptr(9_999_999), nil, "accepted", beforeRange)
+	// Out of range: next month (upper edge excluded, half-open).
+	seedRoundAt(t, db, deb.ID, userID, 5, int64Ptr(9_999_999), nil, "accepted", atOrAfterEnd)
+
+	// Different org entirely: must not leak into this org's sum.
+	seedRoundAt(t, db, otherDeb.ID, otherUser.ID, 1, int64Ptr(9_999_999), nil, "accepted", inRange)
+
+	sum, err := db.SumOrgDebateSpendMicros(ctx, orgID, from, to)
+	if err != nil {
+		t.Fatalf("SumOrgDebateSpendMicros: %v", err)
+	}
+	want := int64(1_000_000 + 500_000 + 250_000 + 100_000)
+	if sum != want {
+		t.Fatalf("sum = %d, want %d", sum, want)
+	}
+}
+
+func TestCurrentUTCMonthRange_HalfOpenAndUsesPassedNow(t *testing.T) {
+	// A fixed instant, not time.Now() — the function must derive its
+	// boundaries from the passed `now`, never read the wall clock
+	// itself, or the caller's captured instant and the bucket could
+	// straddle midnight independently.
+	now := time.Date(2026, 8, 21, 15, 4, 5, 0, time.UTC)
+	from, to := currentUTCMonthRange(now)
+
+	wantFrom := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	wantTo := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	if !from.Equal(wantFrom) {
+		t.Errorf("from = %v, want %v", from, wantFrom)
+	}
+	if !to.Equal(wantTo) {
+		t.Errorf("to = %v, want %v", to, wantTo)
+	}
+
+	// December must roll over the year, not overflow month=13.
+	dec := time.Date(2026, 12, 15, 0, 0, 0, 0, time.UTC)
+	_, decTo := currentUTCMonthRange(dec)
+	wantDecTo := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	if !decTo.Equal(wantDecTo) {
+		t.Errorf("December to = %v, want %v", decTo, wantDecTo)
 	}
 }

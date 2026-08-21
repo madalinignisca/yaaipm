@@ -885,6 +885,53 @@ func (db *DB) UpdateOrgMonthlyBudget(ctx context.Context, orgID, actorUserID str
 	return nil
 }
 
+// SumOrgDebateSpendMicros totals raw provider spend for one org's debate
+// rounds in [from, to). Refiner AND scorer cost, all round statuses — a
+// rejected suggestion still cost money.
+//
+// Enforcement source of truth (spec §3), NOT project_costs:
+// IncrementProjectCostCents runs after commit and is explicitly
+// non-fatal, so one failed rollup would permanently undercount and
+// silently lift the cap. cost_micros/scorer_cost_micros are written
+// inside the round transaction itself.
+//
+// Returns 0,nil when there are no rounds; callers MUST treat a non-nil
+// error as "unknown", never as zero — see checkOrgBudget's fail-closed
+// contract in internal/handlers/debate.go.
+func (db *DB) SumOrgDebateSpendMicros(ctx context.Context, orgID string, from, to time.Time) (int64, error) {
+	var sum int64
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(COALESCE(r.cost_micros,0) + COALESCE(r.scorer_cost_micros,0)), 0)::BIGINT
+		   FROM feature_debate_rounds r
+		   JOIN feature_debates d ON d.id = r.debate_id
+		  WHERE d.org_id = $1 AND r.created_at >= $2 AND r.created_at < $3`,
+		orgID, from, to,
+	).Scan(&sum)
+	if err != nil {
+		return 0, fmt.Errorf("summing org debate spend: %w", err)
+	}
+	return sum, nil
+}
+
+// currentUTCMonthRange returns [start,end) of the UTC month containing
+// now — the same bucket IncrementProjectCostCents writes via
+// Format("2006-01") (spec §7).
+//
+// No error return: constructing the boundaries directly from now with
+// time.Date(...) in UTC cannot fail, whereas a Format-then-Parse
+// round-trip would introduce an impossible error path callers had to
+// handle for no benefit.
+//
+// Callers MUST pass `now` explicitly and never substitute time.Now()
+// internally, or the caller's captured instant and this function's
+// bucket can straddle midnight and disagree.
+func currentUTCMonthRange(now time.Time) (start, end time.Time) {
+	y, m, _ := now.UTC().Date()
+	start = time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+	end = start.AddDate(0, 1, 0)
+	return start, end
+}
+
 // ── Projects ──────────────────────────────────────────────────────
 
 // projectColumns lists the column order used by every project SELECT /
