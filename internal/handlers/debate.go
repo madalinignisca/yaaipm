@@ -51,6 +51,68 @@ const (
 	roundStatusRejected = "rejected"
 )
 
+// microsPerCent converts organizations.monthly_budget_cents (USD cents)
+// to the same unit feature_debate_rounds.cost_micros is recorded in, so
+// the comparison in checkOrgBudget never has to round.
+const microsPerCent = 10_000
+
+var (
+	// errBudgetExceeded means the org's current-month debate spend has
+	// reached or passed its cap — CreateRound must refuse the round.
+	errBudgetExceeded = errors.New("org monthly budget reached")
+	// errBudgetUnavailable means the spend aggregate could not be read.
+	// Callers MUST fail closed (spec §3): treating "unknown" as zero
+	// would turn a transient DB error into unlimited spend.
+	errBudgetUnavailable = errors.New("org monthly spend could not be determined")
+)
+
+// checkOrgBudget is the enforcement gate for issue #64. Returns nil when
+// the org is uncapped or under cap; errBudgetExceeded at/over cap;
+// errBudgetUnavailable when the aggregate could not be read.
+//
+// Compares in MICROS with no rounding: only DISPLAY figures (the org
+// settings card) round to cents. The cap is bounded to 100_000_000
+// cents at the model layer, so cap*microsPerCent (max ~1e12) is nowhere
+// near int64 overflow.
+func (h *DebateHandler) checkOrgBudget(ctx context.Context, org *models.Organization) error {
+	if org.MonthlyBudgetCents == nil {
+		return nil
+	}
+
+	from, to := models.CurrentUTCMonthRange(time.Now())
+	spendMicros, err := h.db.SumOrgDebateSpendMicros(ctx, org.ID, from, to)
+	if err != nil {
+		return errBudgetUnavailable
+	}
+
+	if spendMicros >= *org.MonthlyBudgetCents*microsPerCent {
+		return errBudgetExceeded
+	}
+	return nil
+}
+
+// budgetExceededMessage picks role-appropriate copy for a tripped
+// budget cap (spec §8). Does ONE GetOrgMembership lookup, and only when
+// the cap has actually tripped, so the hot (under-cap) path never pays
+// for it. A lookup error falls back to the least-informative CLIENT
+// wording — the safe default when role can't be confirmed.
+func (h *DebateHandler) budgetExceededMessage(ctx context.Context, dctx debateContext) string {
+	const actionable = "Monthly AI budget reached for this organization — raise it in organization settings to continue."
+	const clientSafe = "Your organization's monthly budget has been reached. It resets at the start of next month."
+
+	if auth.IsStaffOrAbove(dctx.user.Role) {
+		return actionable
+	}
+	m, err := h.db.GetOrgMembership(ctx, dctx.user.ID, dctx.org.ID)
+	if err != nil {
+		return clientSafe
+	}
+	if auth.CanManageOrg(m.Role) {
+		return actionable
+	}
+	return clientSafe
+}
+
 // DebateConfig groups the per-deployment tuning knobs for the debate
 // flow. Defaults come from DefaultDebateConfig; production wiring in
 // cmd/server/main.go can override from env or leave defaults in place.
@@ -404,6 +466,29 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		if dailyCount, dcErr := h.db.CountUserRoundsLast24h(r.Context(), dctx.user.ID); dcErr == nil && dailyCount >= h.cfg.ClientDailyRoundCap {
 			h.renderDebateError(w, r, http.StatusTooManyRequests,
 				"You've reached the daily suggestion limit — try again tomorrow or ask us if you need more.")
+			return
+		}
+	}
+
+	// Org monthly budget (#64). Deliberately OUTSIDE the
+	// !IsStaffOrAbove block above: spec §5 blocks CreateRound with no
+	// role qualifier, and §8 gives staff their own "raise it in
+	// organization settings" wording, which only makes sense if staff
+	// hit the block too. Placed after the existing fuses and before the
+	// reservation tx so a blocked request makes no AI call and mutates
+	// no debate row.
+	if budgetErr := h.checkOrgBudget(r.Context(), dctx.org); budgetErr != nil {
+		switch {
+		case errors.Is(budgetErr, errBudgetExceeded):
+			h.renderDebateError(w, r, http.StatusTooManyRequests,
+				h.budgetExceededMessage(r.Context(), dctx))
+			return
+		case errors.Is(budgetErr, errBudgetUnavailable):
+			// 503, NOT 429: "we couldn't verify your budget" is not a
+			// rate limit and must not tell a client to wait until next
+			// month when the real problem is an infra fault.
+			h.renderDebateError(w, r, http.StatusServiceUnavailable,
+				"We couldn't verify your organization's AI budget — please try again shortly.")
 			return
 		}
 	}
