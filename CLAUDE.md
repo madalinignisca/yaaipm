@@ -88,8 +88,19 @@ go run ./cmd/orchestrator                  # Agent dispatcher (separate process)
 sh scripts/bundle.sh                       # Rebuild JS bundle after editing static/js/
 bash scripts/css.sh                        # Rebuild tw.css after editing tw-input.css or templates
 bash scripts/css.sh --watch                # Watch mode for local dev
+bash scripts/lint.sh                       # Lint at the EXACT version CI uses
+bash scripts/lint.sh ./internal/... --fix  # Scope a run / apply fixes
 migrate -database $DATABASE_URL -path migrations up  # Run migrations
 ```
+
+**Linting:** always use `bash scripts/lint.sh`, never a system-installed `golangci-lint`.
+The version lives in `.golangci-version` and is read by BOTH that script and
+`.github/workflows/lint.yml`, so local results match CI by construction. The script
+downloads the pinned build into `bin/` (gitignored, SHA256-verified, cached) exactly like
+`scripts/css.sh` does for Tailwind. Bumping the linter = edit `.golangci-version`, add the
+new digest to `CHECKSUMS` in `scripts/lint.sh`, ship as its own PR. This exists because CI
+used to pin a floating `v2.11` while the VM had `2.11.1`: the two disagreed about real
+findings and a green local lint stopped predicting a green CI (issue #120).
 
 **CSS build:** Tailwind v4 + DaisyUI v5.5.19. `scripts/css.sh` downloads the tailwindcss standalone
 binary and the DaisyUI `.mjs` bundles into `bin/` (gitignored, SHA256-verified, cached across runs)
