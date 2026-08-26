@@ -843,3 +843,79 @@ func TestOrgSettingsPage_MemberAllowed(t *testing.T) {
 		t.Errorf("member GET org settings: got %d, want 200", rec.Code)
 	}
 }
+
+// A non-member must not be able to tell whether an org exists. OrgPage
+// was correctly gated on membership, but answered 403 for a real org and
+// 404 for a missing one — so the status code alone confirmed which slugs
+// were real. Slugs are slugify(name), so that turns a guessing game into
+// an enumeration of the client list (issue #127).
+func TestOrgPage_NonMemberCannotDistinguishExistence(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	if _, err := db.CreateOrg(ctx, "Real Org", "real-org"); err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	// First registered user is auto-promoted to superadmin, so burn one
+	// before creating the client under test.
+	createAuthenticatedUser(t, db, sessions, "first-sa-orgpage@test.com", "superadmin")
+	outsider := createAuthenticatedUser(t, db, sessions, "outsider-orgpage@test.com", "client")
+
+	get := func(slug string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/orgs/"+slug, http.NoBody)
+		req.AddCookie(outsider)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	existing := get("real-org")
+	missing := get("no-such-org-anywhere")
+
+	if existing.Code != http.StatusNotFound {
+		t.Errorf("non-member GET existing org: got %d, want 404", existing.Code)
+	}
+	if existing.Code != missing.Code {
+		t.Errorf("enumeration oracle: existing-but-forbidden org returned %d, nonexistent returned %d — these must match",
+			existing.Code, missing.Code)
+	}
+	if strings.Contains(existing.Body.String(), "Real Org") {
+		t.Error("response leaked the org name to a non-member")
+	}
+}
+
+// The gate must not lock out the people the page is for.
+func TestOrgPage_MemberStillAllowed(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	createAuthenticatedUser(t, db, sessions, "first-sa-orgpage2@test.com", "superadmin")
+	memberCookie := createAuthenticatedUser(t, db, sessions, "member-orgpage@test.com", "client")
+
+	var userID string
+	if err := db.Pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE email = 'member-orgpage@test.com'`).Scan(&userID); err != nil {
+		t.Fatalf("look up member: %v", err)
+	}
+	org, err := db.CreateOrg(ctx, "Member Org Page", "member-org-page")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	// Weakest membership on purpose: the gate checks membership exists,
+	// not management rights.
+	if _, err := db.Pool.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, 'member')`,
+		userID, org.ID); err != nil {
+		t.Fatalf("add membership: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/member-org-page", http.NoBody)
+	req.AddCookie(memberCookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("member GET org page: got %d, want 200", rec.Code)
+	}
+}
