@@ -54,17 +54,33 @@ func (h *OrgHandler) OrgPage(w http.ResponseWriter, r *http.Request) {
 
 	org, err := h.db.GetOrgBySlug(r.Context(), slug)
 	if err != nil {
-		h.engine.RenderError(w, http.StatusNotFound, "Organization not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			h.engine.RenderError(w, http.StatusNotFound, "Organization not found")
+			return
+		}
+		// A lookup failure is infrastructure, not a missing org. Reporting
+		// it as 404 hides real outages behind a routine-looking response.
+		log.Printf("org page: looking up org %q: %v", slug, err)
+		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organization")
 		return
 	}
 
-	// Check access
-	if !auth.IsStaffOrAbove(user.Role) {
-		_, err := h.db.GetOrgMembership(r.Context(), user.ID, org.ID)
-		if err != nil {
-			h.engine.RenderError(w, http.StatusForbidden, "Access denied")
+	// Access gate. Uses authorizeOrgAccess rather than an inline
+	// membership check so this page inherits the documented convention:
+	// "not a member" and "no such org" BOTH surface as 404 (issue #127).
+	// Answering 403 here for a real org and 404 for a missing one made the
+	// status code an existence oracle — and since slugs are slugify(name),
+	// that turns guessing into enumerating the client list.
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, org.ID); authErr != nil {
+		if errors.Is(authErr, errCrossTenant) {
+			h.engine.RenderError(w, http.StatusNotFound, "Organization not found")
 			return
 		}
+		// Distinct from the cross-tenant case on purpose: a database fault
+		// must never be reported as an authorization decision (issue #128).
+		log.Printf("org page authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organization")
+		return
 	}
 
 	projects := middleware.GetProjects(r)
