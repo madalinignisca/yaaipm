@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
@@ -56,10 +57,17 @@ func (h *ProjectHandler) getOrgAndProject(r *http.Request, user *models.User) (*
 		return nil, nil, err
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		if _, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); memErr != nil {
-			return nil, nil, memErr
+	// Returns errCrossTenant for a genuine non-member and the underlying
+	// error otherwise, so callers CAN tell them apart. Today every caller
+	// still renders 404 for both, which is safe — but the distinction now
+	// exists in the returned error instead of being lost here, and an
+	// infrastructure fault is logged where it happens rather than
+	// vanishing into a "Not found" page (#128).
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, org.ID); authErr != nil {
+		if !errors.Is(authErr, errCrossTenant) {
+			log.Printf("project authz for user %s org %s: %v", user.ID, org.ID, authErr)
 		}
+		return nil, nil, authErr
 	}
 
 	proj, err := h.db.GetProject(r.Context(), org.ID, projSlug)
@@ -205,12 +213,13 @@ func (h *ProjectHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		mem, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID)
-		if memErr != nil || !auth.CanManageOrg(mem.Role) {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		log.Printf("create project authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
 	}
 
 	slug := slugify(name)

@@ -181,13 +181,14 @@ func (h *OrgHandler) OrgSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Separate question from "may they be here": may they EDIT. The bug
-	// this fix closes was answering only this one and letting the page
-	// render regardless.
-	canManage := auth.IsStaffOrAbove(user.Role)
-	if !canManage {
-		if m, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); memErr == nil {
-			canManage = auth.CanManageOrg(m.Role)
-		}
+	// #122 closed was answering only this one and letting the page render
+	// regardless. Uses the shared helper so the same predicate backs every
+	// manage decision; a lookup failure degrades to read-only rather than
+	// erroring the page, since the access gate above already succeeded.
+	canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID)
+	if authErr != nil {
+		log.Printf("org settings: resolving manage rights for user %s org %s: %v", user.ID, org.ID, authErr)
+		canManage = false
 	}
 
 	members, err := h.db.ListOrgMembers(r.Context(), org.ID)
@@ -301,25 +302,21 @@ func (h *OrgHandler) buildBudgetSettingsFields(r *http.Request, org *models.Orga
 	}
 }
 
-// canManageOrgMembers checks if the current user has permission to manage members of the given org.
-func (h *OrgHandler) canManageOrgMembers(r *http.Request, user *models.User, orgID string) bool {
-	if auth.IsStaffOrAbove(user.Role) {
-		return true
-	}
-	m, err := h.db.GetOrgMembership(r.Context(), user.ID, orgID)
-	if err != nil {
-		return false
-	}
-	return auth.CanManageOrg(m.Role)
-}
-
 func (h *OrgHandler) renderMemberList(w http.ResponseWriter, r *http.Request, org *models.Organization, user *models.User) {
 	members, err := h.db.ListOrgMembers(r.Context(), org.ID)
 	if err != nil {
 		http.Error(w, "Failed to load members", http.StatusInternalServerError)
 		return
 	}
-	canManage := h.canManageOrgMembers(r, user, org.ID)
+	// Display flag, not a gate — the caller already passed an access check.
+	// On a lookup failure fall back to read-only: hiding buttons is a safe
+	// degradation, where rendering them would invite a request that then
+	// fails. Logged so it does not look like a permissions change.
+	canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID)
+	if authErr != nil {
+		log.Printf("member list: resolving manage rights for user %s org %s: %v", user.ID, org.ID, authErr)
+		canManage = false
+	}
 	if err := h.engine.RenderPartial(w, "member_list.html", map[string]any{
 		"Members":       members,
 		"CanManage":     canManage,
@@ -340,7 +337,12 @@ func (h *OrgHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.canManageOrgMembers(r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("org manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -429,7 +431,12 @@ func (h *OrgHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.canManageOrgMembers(r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("org manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -486,7 +493,12 @@ func (h *OrgHandler) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.canManageOrgMembers(r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("org manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -573,7 +585,12 @@ func (h *OrgHandler) UpdateBusinessDetails(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if !h.canManageOrgMembers(r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("org manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -624,7 +641,12 @@ func (h *OrgHandler) UpdateMonthlyBudget(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !h.canManageOrgMembers(r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("org manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}

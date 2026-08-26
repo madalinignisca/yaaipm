@@ -96,6 +96,11 @@ func (h *AssistantHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 
 	// Verify user has access to the project
 	if err := h.checkProjectAccess(r.Context(), user, projectID); err != nil {
+		if !errors.Is(err, errCrossTenant) {
+			log.Printf("assistant project authz for user %s project %s: %v", user.ID, projectID, err)
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -361,15 +366,10 @@ func (h *AssistantHandler) checkProjectAccess(ctx context.Context, user *models.
 	if user.Role == roleSuperadmin || user.Role == roleStaff {
 		return nil
 	}
-	proj, err := h.db.GetProjectByID(ctx, projectID)
-	if err != nil {
-		return fmt.Errorf("project not found")
-	}
-	_, err = h.db.GetOrgMembership(ctx, user.ID, proj.OrgID)
-	if err != nil {
-		return fmt.Errorf("no access to project")
-	}
-	return nil
+	// Delegates to the shared gate so a database fault propagates as
+	// itself instead of being flattened into "no access" and rendered as
+	// 403 Forbidden (#128). errCrossTenant still means a genuine denial.
+	return authorizeProjectAccess(ctx, h.db, user, projectID)
 }
 
 // DeleteConversation deletes a conversation (staff/superadmin only).
@@ -945,13 +945,21 @@ func (e *toolExecutor) checkProjectAccess(ctx context.Context, projectID string)
 	if e.user.Role == roleSuperadmin || e.user.Role == roleStaff {
 		return nil
 	}
+	// Same gate as the handler path (#128): an infrastructure failure must
+	// not reach the model as "you don't have access", which would make the
+	// assistant confidently tell a user they lack permissions they have.
 	proj, err := e.db.GetProjectByID(ctx, projectID)
 	if err != nil {
-		return fmt.Errorf("project not found")
+		if isRowMiss(err) {
+			return errCrossTenant
+		}
+		return err
 	}
-	_, err = e.db.GetOrgMembership(ctx, e.userID, proj.OrgID)
-	if err != nil {
-		return fmt.Errorf("you don't have access to this project")
+	if _, memErr := e.db.GetOrgMembership(ctx, e.userID, proj.OrgID); memErr != nil {
+		if isRowMiss(memErr) {
+			return errCrossTenant
+		}
+		return memErr
 	}
 	return nil
 }

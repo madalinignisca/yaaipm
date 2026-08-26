@@ -307,7 +307,12 @@ func (h *InviteHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !canManageOrg(h.db, r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("invitation manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -347,7 +352,12 @@ func (h *InviteHandler) ResendInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !canManageOrg(h.db, r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("invitation manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -391,16 +401,4 @@ func (h *InviteHandler) ResendInvitation(w http.ResponseWriter, r *http.Request)
 	}); err != nil {
 		log.Printf("rendering invitation list partial: %v", err)
 	}
-}
-
-// canManageOrg is a shared helper to check org management permission.
-func canManageOrg(db *models.DB, r *http.Request, user *models.User, orgID string) bool {
-	if auth.IsStaffOrAbove(user.Role) {
-		return true
-	}
-	m, err := db.GetOrgMembership(r.Context(), user.ID, orgID)
-	if err != nil {
-		return false
-	}
-	return auth.CanManageOrg(m.Role)
 }
