@@ -48,6 +48,37 @@ func authorizeOrgAccess(ctx context.Context, db *models.DB, user *models.User, o
 	return nil
 }
 
+// authorizeOrgManage reports whether the user may MANAGE the given org —
+// invite and remove members, change roles, edit org settings — as opposed
+// to merely reading it (authorizeOrgAccess).
+//
+// The (bool, error) shape is the point. Its two predecessors,
+// OrgHandler.canManageOrgMembers and the byte-identical package function
+// canManageOrg in invitations.go, returned a bare bool and mapped ANY
+// error from the membership lookup to false. Callers then rendered that
+// as 403 Forbidden, so a transient database failure was reported to the
+// user as a permission denial and never surfaced as an infrastructure
+// fault in the logs (issue #128).
+//
+// Now: (false, nil) means a genuine denial, and a non-nil error means the
+// question could not be answered — callers must render 5xx and log it,
+// never 403. Staff and superadmin short-circuit to true without a query,
+// matching every other gate in this package.
+func authorizeOrgManage(ctx context.Context, db *models.DB, user *models.User, orgID string) (bool, error) {
+	if auth.IsStaffOrAbove(user.Role) {
+		return true, nil
+	}
+	m, err := db.GetOrgMembership(ctx, user.ID, orgID)
+	if err != nil {
+		if isRowMiss(err) {
+			// Not a member at all — a real answer, not a failure.
+			return false, nil
+		}
+		return false, err
+	}
+	return auth.CanManageOrg(m.Role), nil
+}
+
 // authorizeProjectAccess loads the project and verifies the user is
 // authorized to act on its owning org. Used by write handlers that take a
 // project_id from the request body (e.g. CreateTicket).

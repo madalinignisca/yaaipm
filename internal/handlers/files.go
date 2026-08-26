@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -133,6 +134,11 @@ func (h *FileHandler) UploadImage(w http.ResponseWriter, r *http.Request) {
 	// Verify project access
 	orgID, err := h.checkProjectAccess(r, user, projectID)
 	if err != nil {
+		if !errors.Is(err, errCrossTenant) {
+			log.Printf("file project authz for user %s project %s: %v", user.ID, projectID, err)
+			jsonError(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
 		jsonError(w, "Access denied", http.StatusForbidden)
 		return
 	}
@@ -203,6 +209,11 @@ func (h *FileHandler) GenerateImage(w http.ResponseWriter, r *http.Request) {
 
 	orgID, err := h.checkProjectAccess(r, user, req.ProjectID)
 	if err != nil {
+		if !errors.Is(err, errCrossTenant) {
+			log.Printf("file project authz for user %s project %s: %v", user.ID, req.ProjectID, err)
+			jsonError(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
 		jsonError(w, "Access denied", http.StatusForbidden)
 		return
 	}
@@ -276,6 +287,11 @@ func (h *FileHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	orgID, err := h.checkProjectAccess(r, user, ticket.ProjectID)
 	if err != nil {
+		if !errors.Is(err, errCrossTenant) {
+			log.Printf("file project authz for user %s project %s: %v", user.ID, ticket.ProjectID, err)
+			jsonError(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
 		jsonError(w, "Access denied", http.StatusForbidden)
 		return
 	}
@@ -365,6 +381,11 @@ func (h *FileHandler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.checkProjectAccess(r, user, ticket.ProjectID); err != nil {
+		if !errors.Is(err, errCrossTenant) {
+			log.Printf("file project authz for user %s project %s: %v", user.ID, ticket.ProjectID, err)
+			jsonError(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
 		jsonError(w, "Access denied", http.StatusForbidden)
 		return
 	}
@@ -403,12 +424,18 @@ func (h *FileHandler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 func (h *FileHandler) checkProjectAccess(r *http.Request, user *models.User, projectID string) (string, error) {
 	proj, err := h.db.GetProjectByID(r.Context(), projectID)
 	if err != nil {
-		return "", fmt.Errorf("project not found")
-	}
-	if user.Role != roleSuperadmin && user.Role != roleStaff {
-		if _, err := h.db.GetOrgMembership(r.Context(), user.ID, proj.OrgID); err != nil {
-			return "", fmt.Errorf("no access")
+		if isRowMiss(err) {
+			return "", errCrossTenant
 		}
+		return "", err
+	}
+	// Was a hand-rolled staff check plus an inline membership lookup that
+	// flattened every error into fmt.Errorf("no access") — so a database
+	// fault reached the user as 403 Forbidden and never appeared in the
+	// logs as infrastructure (#128). authorizeOrgAccess keeps the two
+	// apart and uses the canonical IsStaffOrAbove predicate.
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, proj.OrgID); authErr != nil {
+		return "", authErr
 	}
 	return proj.OrgID, nil
 }
