@@ -277,7 +277,16 @@
     <div class="card bg-base-100 border border-base-300 shadow-sm">
         <div class="card-body p-6 gap-3">
             <h2 class="text-lg font-semibold">Pending Invitations</h2>
-            <div class="divide-y divide-base-300" id="invitation-list">
+            {{/* hx-get/hx-trigger are what make the invite form's
+                 htmx.trigger('#invitation-list', 'refresh') do anything —
+                 without them the event fires into nothing and the list
+                 stays stale until a reload (#92). The event name here and
+                 the one in the form's hx-on::after-request must match. */}}
+            <div class="divide-y divide-base-300"
+                 id="invitation-list"
+                 hx-get="/orgs/{{.OrgSlug}}/invitations/list"
+                 hx-trigger="refresh"
+                 hx-swap="innerHTML">
                 {{template "invitation_list.html" .}}
             </div>
         </div>
