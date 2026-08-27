@@ -43,7 +43,9 @@ type Config struct {
 	// every accepted round plus the background retry sweep, so each
 	// provider defaults to its cheapest priced model rather than reusing
 	// the refiner's — except Gemini, whose refiner model is already
-	// flash-class, so the scorer follows GEMINI_MODEL.
+	// flash-class, so the scorer follows GEMINI_MODEL. Claude defaulted to
+	// Sonnet only because no cheap Claude tier was priced yet; it is Haiku
+	// now (issue #119), which is 1/3 the input and 1/5 the output price.
 	ScorerModelGemini           string
 	ScorerModelOpenAI           string
 	ScorerModelClaude           string
@@ -212,8 +214,8 @@ func Load() (*Config, error) {
 		// the refiner model defaults above are literals for the same
 		// reason. Constants named in comments so a grep finds both.
 		ScorerModelGemini: envOrDefault("SCORER_MODEL_GEMINI", geminiModel),
-		ScorerModelOpenAI: envOrDefault("SCORER_MODEL_OPENAI", "gpt-5-mini"),        // ai.ModelGPT5Mini
-		ScorerModelClaude: envOrDefault("SCORER_MODEL_CLAUDE", "claude-sonnet-4-6"), // ai.ModelClaudeSonnet46
+		ScorerModelOpenAI: envOrDefault("SCORER_MODEL_OPENAI", "gpt-5-mini"),       // ai.ModelGPT5Mini
+		ScorerModelClaude: envOrDefault("SCORER_MODEL_CLAUDE", "claude-haiku-4-5"), // ai.ModelClaudeHaiku45
 
 		AnthropicInputPrice:         envInt64("ANTHROPIC_INPUT_PRICE", 300),
 		AnthropicOutputPrice:        envInt64("ANTHROPIC_OUTPUT_PRICE", 1500),
