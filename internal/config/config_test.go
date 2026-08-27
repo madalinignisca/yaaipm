@@ -175,8 +175,12 @@ func TestLoad_ScorerModels(t *testing.T) {
 		if cfg.ScorerModelOpenAI != "gpt-5-mini" {
 			t.Errorf("ScorerModelOpenAI = %q, want %q", cfg.ScorerModelOpenAI, "gpt-5-mini")
 		}
-		if cfg.ScorerModelClaude != "claude-sonnet-4-6" {
-			t.Errorf("ScorerModelClaude = %q, want %q", cfg.ScorerModelClaude, "claude-sonnet-4-6")
+		// Haiku, not Sonnet (#119): scoring is a small structured task on
+		// every accepted round, and Haiku is 1/3 the input and 1/5 the
+		// output price of Sonnet. Sonnet was only ever the default because
+		// no cheap Claude tier was priced in the table yet.
+		if cfg.ScorerModelClaude != "claude-haiku-4-5" {
+			t.Errorf("ScorerModelClaude = %q, want %q", cfg.ScorerModelClaude, "claude-haiku-4-5")
 		}
 	})
 

@@ -18,6 +18,14 @@ func TestComputeCostMicros_KnownModels(t *testing.T) {
 		// is that these now compute a non-zero cost.
 		{"gpt-5.4 1k/1k", ModelGPT54, 1000, 1000, 2500 + 15000},
 		{"gemini-3-flash-preview 1k/1k", ModelGemini3FlashPreview, 1000, 1000, 500 + 3000},
+		// Opus 4.6 was priced at $15/$75 per 1M — the RETIRED Opus 4.1/4.0
+		// rate. Anthropic cut Opus pricing at 4.5 and the entry was never
+		// updated, so every Opus call was recorded at 3x its real cost.
+		// Verified against platform.claude.com/docs/en/about-claude/pricing
+		// on 2026-08-26: Claude Opus 4.6 is $5/MTok in, $25/MTok out.
+		{"claude opus 4.6 1k/1k", ModelClaudeOpus46, 1000, 1000, 5000 + 25000},
+		// Haiku 4.5, added for #119: $1/MTok in, $5/MTok out, same source.
+		{"claude haiku 4.5 1k/1k", ModelClaudeHaiku45, 1000, 1000, 1000 + 5000},
 	}
 	for _, c := range cases {
 		got := ComputeCostMicros(c.model, c.inputTok, c.outTok)
@@ -132,4 +140,46 @@ func TestCostCentsDelta_AccumulatesToBoundedError(t *testing.T) {
 	}
 	// Property: no matter where we stop, |total - totalMicros/10000| < 1
 	// (guaranteed by the delta formula: each delta = floor(new) - floor(old)).
+}
+
+// TestPricingTable_VerifiedRates pins every rate against the figure that
+// was read from Anthropic's published pricing page, so a future edit that
+// mistypes a digit fails here rather than silently mis-billing a client.
+//
+// This exists because the Opus entry was wrong for months and nothing
+// caught it: HasPricing only asserts a model HAS an entry, never that the
+// entry is CORRECT. A missing price fails loudly (issue #108's startup
+// guard); a stale price fails silently and bills someone the wrong amount.
+//
+// Rates verified 2026-08-26 against
+// https://platform.claude.com/docs/en/about-claude/pricing
+// Re-verify when bumping any model, and update the date above.
+func TestPricingTable_VerifiedRates(t *testing.T) {
+	// USD per 1M tokens, as published.
+	perMillion := map[string]struct{ in, out float64 }{
+		ModelClaudeSonnet46: {3, 15},
+		ModelClaudeOpus46:   {5, 25},
+		ModelClaudeHaiku45:  {1, 5},
+	}
+	for model, want := range perMillion {
+		// The table stores micros (millionths of USD) per 1k tokens, so
+		// USD-per-1M and micros-per-1k are numerically identical:
+		// $5/1M = 5,000,000 micros / 1000 blocks = 5000 micros per 1k.
+		wantIn := int64(want.in * 1000)
+		wantOut := int64(want.out * 1000)
+
+		rate, ok := pricingTable[model]
+		if !ok {
+			t.Errorf("%s missing from pricingTable", model)
+			continue
+		}
+		if rate.inputMicrosPer1k != wantIn {
+			t.Errorf("%s input = %d micros/1k, want %d ($%.2f per 1M)",
+				model, rate.inputMicrosPer1k, wantIn, want.in)
+		}
+		if rate.outputMicrosPer1k != wantOut {
+			t.Errorf("%s output = %d micros/1k, want %d ($%.2f per 1M)",
+				model, rate.outputMicrosPer1k, wantOut, want.out)
+		}
+	}
 }

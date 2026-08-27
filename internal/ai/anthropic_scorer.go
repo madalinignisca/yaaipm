@@ -42,9 +42,11 @@ type AnthropicScorer struct {
 // The model should be one of the ai.Model* constants so the pricing table
 // lookup finds a rate; main.go binds it to SCORER_MODEL_CLAUDE.
 //
-// Note this is the most expensive of the three scorers: the pricing table
-// has no cheap Claude tier, so the default is claude-sonnet-4-6 rather
-// than a Haiku-class model.
+// Defaults to claude-haiku-4-5 (issue #119). It was briefly Sonnet
+// because the pricing table had no cheap Claude tier priced yet, which
+// made Claude the expensive scorer by a wide margin; Haiku is 1/3 the
+// input and 1/5 the output price and is the right tier for a small
+// structured scoring call.
 func NewAnthropicScorer(c *AnthropicClient, model string) *AnthropicScorer {
 	return &AnthropicScorer{client: c, model: model}
 }
