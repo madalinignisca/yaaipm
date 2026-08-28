@@ -316,6 +316,7 @@ func main() {
 		r.Post("/orgs", orgH.CreateOrg)
 		r.Get("/orgs/{orgSlug}", orgH.OrgPage)
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
+		r.Get("/orgs/{orgSlug}/invitations/list", inviteH.InvitationList)
 		r.Post("/orgs/{orgSlug}/invitations", orgH.InviteMember)
 		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
 		r.Post("/orgs/{orgSlug}/invitations/{invitationID}/resend", inviteH.ResendInvitation)

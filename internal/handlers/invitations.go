@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/mail"
 	"github.com/madalin/forgedesk/internal/middleware"
@@ -296,6 +298,59 @@ func (h *InviteHandler) DeclineInvitation(w http.ResponseWriter, r *http.Request
 }
 
 // RevokeInvitation revokes a pending invitation (org admin action).
+// InvitationList renders the pending-invitations partial for one org.
+//
+// Exists so the invite form's htmx.trigger('#invitation-list', 'refresh')
+// has something to call: the container previously had no hx-get, so the
+// event fired into nothing and the list stayed stale until a manual
+// reload (#92).
+//
+// Manager-gated, not merely member-gated: pending invitations carry
+// invitee email addresses, and the template already renders this section
+// behind CanManage. An endpoint that returns the same markup has to
+// enforce the same rule — a template guard is not access control.
+func (h *InviteHandler) InvitationList(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	slug := r.PathValue("orgSlug")
+
+	org, err := h.db.GetOrgBySlug(r.Context(), slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "Organization not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("invitation list: looking up org %q: %v", slug, err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		log.Printf("invitation list authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	invitations, err := h.db.ListOrgInvitations(r.Context(), org.ID)
+	if err != nil {
+		log.Printf("invitation list: loading invitations for org %s: %v", org.ID, err)
+		http.Error(w, "Failed to load invitations", http.StatusInternalServerError)
+		return
+	}
+
+	// CanManage is unconditionally true: the gate above already refused
+	// anyone who is not a manager, so reaching here proves it.
+	if err := h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
+		"Invitations": invitations,
+		"OrgSlug":     org.Slug,
+		"CanManage":   true,
+	}); err != nil {
+		log.Printf("rendering invitation list partial: %v", err)
+	}
+}
+
 func (h *InviteHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 	orgSlug := r.PathValue("orgSlug")

@@ -87,6 +87,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
 		r.Post("/orgs/{orgSlug}/settings/business", orgH.UpdateBusinessDetails)
 		r.Post("/orgs/{orgSlug}/settings/budget", orgH.UpdateMonthlyBudget)
+		r.Get("/orgs/{orgSlug}/invitations/list", inviteH.InvitationList)
 		r.Post("/orgs/{orgSlug}/invitations", orgH.InviteMember)
 		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
 		r.Post("/orgs/{orgSlug}/projects", projH.CreateProject)
