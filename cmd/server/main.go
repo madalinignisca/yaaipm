@@ -243,8 +243,9 @@ func main() {
 		log.Printf("WARNING: DEBATE_REAL_AI=1 — debate refiners and scorers make REAL, billable provider calls (%d providers, %d scorers)", len(debateRefiners), len(debateScorers))
 	}
 
-	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
-	authLimiter := middleware.NewRateLimiter(0.5, 5)
+	// Rate limiter for auth endpoints. Defaults to 0.5 req/s burst 5; see
+	// config.AuthRateLimitRPS for why it is tunable at all.
+	authLimiter := middleware.NewRateLimiter(cfg.AuthRateLimitRPS, cfg.AuthRateLimitBurst)
 
 	r := chi.NewRouter()
 
