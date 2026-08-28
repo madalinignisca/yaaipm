@@ -1650,6 +1650,9 @@ func (db *DB) ListCommentsWithAuthors(ctx context.Context, ticketID string) ([]C
 	var comments []CommentWithAuthor
 	for rows.Next() {
 		var cw CommentWithAuthor
+		// Scanned into a local rather than a struct field: the comments
+		// table has user_id/agent_name but no name, so the author's name
+		// exists only for the lifetime of this joined row.
 		var userName *string
 		if err := rows.Scan(&cw.ID, &cw.TicketID, &cw.UserID, &cw.AgentName,
 			&cw.BodyMarkdown, &cw.CreatedAt, &userName); err != nil {
