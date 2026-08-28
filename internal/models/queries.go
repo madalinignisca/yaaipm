@@ -1626,6 +1626,41 @@ func (db *DB) ListComments(ctx context.Context, ticketID string) ([]Comment, err
 	return comments, rows.Err()
 }
 
+// ListCommentsWithAuthors returns a ticket's comments for rendering, each
+// carrying a resolved display name.
+//
+// The plain ListComments above is deliberately kept for the AI-context
+// builders (orchestrator, assistant): they hand raw user_id/agent_name to a
+// third-party LLM and must NOT start shipping real people's names into
+// provider prompts just because the ticket page needed them.
+//
+// LEFT JOIN, not JOIN: agent comments have user_id IS NULL, and an inner
+// join would silently drop every bot comment from the page.
+func (db *DB) ListCommentsWithAuthors(ctx context.Context, ticketID string) ([]CommentWithAuthor, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT c.id, c.ticket_id, c.user_id, c.agent_name, c.body_markdown, c.created_at, u.name
+		 FROM comments c
+		 LEFT JOIN users u ON u.id = c.user_id
+		 WHERE c.ticket_id = $1 ORDER BY c.created_at`, ticketID)
+	if err != nil {
+		return nil, fmt.Errorf("listing comments with authors: %w", err)
+	}
+	defer rows.Close()
+
+	var comments []CommentWithAuthor
+	for rows.Next() {
+		var cw CommentWithAuthor
+		var userName *string
+		if err := rows.Scan(&cw.ID, &cw.TicketID, &cw.UserID, &cw.AgentName,
+			&cw.BodyMarkdown, &cw.CreatedAt, &userName); err != nil {
+			return nil, fmt.Errorf("scanning comment with author: %w", err)
+		}
+		cw.AuthorName = CommentAuthorName(cw.AgentName, userName)
+		comments = append(comments, cw)
+	}
+	return comments, rows.Err()
+}
+
 // ── Activities ────────────────────────────────────────────────────
 
 func (db *DB) CreateActivity(ctx context.Context, ticketID string, userID, agentName *string, action, detailsJSON string) error {

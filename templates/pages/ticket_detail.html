@@ -308,21 +308,15 @@
             <h3 class="text-base font-semibold">Comments</h3>
             <div id="comments" class="flex flex-col gap-4">
                 {{$cr := .CommentReactions}}
+                {{/* Delegated to components/comment.html rather than
+                     inlined: this loop and the partial used for HTMX-posted
+                     comments used to be near-duplicates kept in sync by
+                     hand, and they drifted — the loop hardcoded a generic
+                     "User" byline while the partial showed the real name,
+                     so a comment was renamed by a page reload (#95). One
+                     copy means they cannot disagree again. */}}
                 {{range .Comments}}
-                <div class="border-l-2 border-base-300 pl-4">
-                    <div class="flex items-center gap-2 text-xs mb-1">
-                        <span class="font-medium">{{if .AgentName}}ForgeDesk Bot{{else}}User{{end}}</span>
-                        <span class="text-base-content/50">·</span>
-                        <span class="text-base-content/60">{{formatDateTime .CreatedAt}}</span>
-                    </div>
-                    {{/* comment-body class retained alongside prose so the
-                         #37 partial-render regression test has a stable
-                         landmark independent of Tailwind refactors. Also
-                         matches the comment.html partial used for HTMX-
-                         posted comments after initial load. */}}
-                    <div class="comment-body prose prose-sm max-w-none">{{markdown .BodyMarkdown}}</div>
-                    {{template "reactions.html" dict "TargetType" "comment" "TargetID" .ID "Groups" (index $cr .ID)}}
-                </div>
+                {{template "comment.html" dict "Comment" .Comment "AuthorName" .AuthorName "CommentReactions" (index $cr .Comment.ID)}}
                 {{end}}
             </div>
 

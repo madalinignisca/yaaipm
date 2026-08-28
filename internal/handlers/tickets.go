@@ -55,7 +55,7 @@ type ticketDetailData struct {
 	Ticket           *models.Ticket
 	CommentReactions map[string][]models.ReactionGroup
 	Children         []models.Ticket
-	Comments         []models.Comment
+	Comments         []models.CommentWithAuthor
 	Attachments      []models.TicketAttachment
 	TicketReactions  []models.ReactionGroup
 	IsStaff          bool
@@ -85,7 +85,7 @@ func (h *TicketHandler) TicketDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	children, _ := h.db.ListTicketsByParent(r.Context(), ticket.ID)
-	comments, _ := h.db.ListComments(r.Context(), ticket.ID)
+	comments, _ := h.db.ListCommentsWithAuthors(r.Context(), ticket.ID)
 	attachments, _ := h.db.ListAttachmentsByTicket(r.Context(), ticket.ID)
 
 	// Load reactions for ticket

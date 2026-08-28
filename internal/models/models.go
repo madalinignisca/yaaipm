@@ -117,6 +117,38 @@ type Comment struct {
 	BodyMarkdown string    `db:"body_markdown"`
 }
 
+// CommentWithAuthor is a Comment plus the single name to display for its
+// author. It is a distinct type rather than a joined `AuthorName` field on
+// Comment (the convention used by BriefRevision/AIMessage above) so the
+// compiler stops an author-less []Comment from reaching a render path: the
+// bug this fixes (#95) was precisely two render paths disagreeing about the
+// author, and a zero-value string would have shown a blank byline instead
+// of failing loudly.
+type CommentWithAuthor struct {
+	Comment
+	AuthorName string
+}
+
+// CommentAuthorName resolves the one name shown for a comment. Both render
+// paths call it so neither can drift from the other again.
+//
+// Agent comments collapse to a single generic label on purpose: the client
+// role must not see which agent produced the work (CLAUDE.md: "client
+// (per-org, no agent internals visible)"), so agent_name is never rendered.
+//
+// No agent and no user name means the author row is gone — a deleted user.
+// "User" is the honest fallback; an empty byline would look like a bug.
+func CommentAuthorName(agentName, userName *string) string {
+	switch {
+	case agentName != nil:
+		return "ForgeDesk Bot"
+	case userName != nil && *userName != "":
+		return *userName
+	default:
+		return "User"
+	}
+}
+
 type TicketActivity struct {
 	CreatedAt   time.Time `db:"created_at"`
 	UserID      *string   `db:"user_id"`

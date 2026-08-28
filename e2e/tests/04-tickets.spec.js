@@ -131,6 +131,41 @@ test.describe('Tickets & Comments', () => {
     }
   });
 
+  // #95: the ticket page rendered stored comments with a hardcoded "User"
+  // byline while the HTMX partial for a just-posted comment showed the real
+  // name, so reloading renamed the author. Only a browser sees both states,
+  // which is why this assertion lives here and not in a handler test.
+  //
+  // Deliberately written without the `if (await ...isVisible())` guard used
+  // by the tests above: a guard like that turns a missing ticket into a
+  // silent pass, and this test exists to catch a rendering regression.
+  test('comment author name survives a reload', async ({ page }) => {
+    test.skip(!projectId, 'Project ID not found');
+
+    await fullLogin(page, { ...testUser, totpSecret });
+    await page.goto('/orgs/ticket-org/projects/ticket-project/features');
+
+    await page.click('a:has-text("E2E Epic Feature")');
+    await page.waitForLoadState('networkidle');
+
+    const body = 'Comment authored by a named user';
+    await page.fill('textarea[name="body"]', body);
+    await page.click('button:has-text("Comment")');
+    await page.waitForTimeout(1000);
+
+    // Freshly posted, via the HTMX partial.
+    const bylines = page.locator('#comments span.font-medium');
+    await expect(bylines.filter({ hasText: testUser.name })).toHaveCount(1);
+
+    // Same comment after a full server-side re-render. Before #95 this
+    // flipped to the generic "User".
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await expect(page.locator('body')).toContainText(body);
+    await expect(bylines.filter({ hasText: testUser.name })).toHaveCount(1);
+    await expect(bylines.filter({ hasText: /^User$/ })).toHaveCount(0);
+  });
+
   test('update ticket status', async ({ page }) => {
     test.skip(!projectId, 'Project ID not found');
 
