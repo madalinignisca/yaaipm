@@ -903,17 +903,52 @@ func (db *DB) UpdateOrgMonthlyBudget(ctx context.Context, orgID, actorUserID str
 // contract in internal/handlers/debate.go.
 func (db *DB) SumOrgDebateSpendMicros(ctx context.Context, orgID string, from, to time.Time) (int64, error) {
 	var sum int64
+	// Reads the append-only ledger, NOT feature_debate_rounds. Undo hard-deletes
+	// rounds, so summing them let a user reclaim headroom for money already paid
+	// to the provider (#129). Both callers — the cap check in debate.go and the
+	// org settings spend display — go through here, so they cannot disagree.
 	err := db.Pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(COALESCE(r.cost_micros,0) + COALESCE(r.scorer_cost_micros,0)), 0)::BIGINT
-		   FROM feature_debate_rounds r
-		   JOIN feature_debates d ON d.id = r.debate_id
-		  WHERE d.org_id = $1 AND r.created_at >= $2 AND r.created_at < $3`,
+		`SELECT COALESCE(SUM(cost_micros), 0)::BIGINT
+		   FROM debate_spend
+		  WHERE org_id = $1 AND incurred_at >= $2 AND incurred_at < $3`,
 		orgID, from, to,
 	).Scan(&sum)
 	if err != nil {
 		return 0, fmt.Errorf("summing org debate spend: %w", err)
 	}
 	return sum, nil
+}
+
+// RecordDebateSpendTx appends one charge to the spend ledger.
+//
+// MUST be called inside the same transaction that records the cost, so the
+// ledger cannot commit without the thing it is charging for, or vice versa.
+//
+// org_id is resolved by sub-select from the debate rather than passed in: the
+// caller already holds the debate row and this keeps the two from drifting.
+//
+// There is deliberately NO uniqueness or upsert here. Every call represents a
+// separate provider call that was really billed — notably the effort scorer,
+// which the retry sweep runs again on a round it already scored. Collapsing
+// those would silently discard real charges, which is the same class of bug
+// this table exists to fix.
+func (db *DB) RecordDebateSpendTx(
+	ctx context.Context, tx pgx.Tx, debateID, roundID, kind string, costMicros int64,
+) error {
+	if costMicros <= 0 {
+		return nil // nothing was billed; no ledger entry to make
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO debate_spend (org_id, debate_id, round_id, kind, cost_micros)
+		 SELECT d.org_id, d.id, $2, $3, $4
+		   FROM feature_debates d
+		  WHERE d.id = $1`,
+		debateID, roundID, kind, costMicros,
+	)
+	if err != nil {
+		return fmt.Errorf("recording debate spend: %w", err)
+	}
+	return nil
 }
 
 // CurrentUTCMonthRange returns [start,end) of the UTC month containing
@@ -2742,6 +2777,12 @@ func (db *DB) InsertDebateRoundTx(
 		return nil, 0, err
 	}
 
+	// Same transaction as the round INSERT: the charge and the record of it
+	// commit together or not at all (#129).
+	if spendErr := db.RecordDebateSpendTx(ctx, tx, in.DebateID, r.ID, "round", in.CostMicros); spendErr != nil {
+		return nil, 0, spendErr
+	}
+
 	newTotalMicros := oldTotalMicros + in.CostMicros
 	if _, err = tx.Exec(ctx, `
 		UPDATE feature_debates
@@ -2956,11 +2997,24 @@ func (db *DB) UpdateEffortScoreCondTx(
 // for the call, and the canonical per-round audit trail must reflect
 // that).
 func (db *DB) UpdateScorerCostMicros(ctx context.Context, tx pgx.Tx, roundID string, cost int64) error {
-	_, err := tx.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`UPDATE feature_debate_rounds SET scorer_cost_micros = $1 WHERE id = $2`,
 		cost, roundID,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+
+	// The column above is a SET, so a re-score overwrites the previous
+	// attempt's cost and the earlier charge disappears. Every scorer call is
+	// separately billed, so the ledger gets its own row per call and the month
+	// total counts all of them (#129).
+	var debateID string
+	if err := tx.QueryRow(ctx,
+		`SELECT debate_id FROM feature_debate_rounds WHERE id = $1`, roundID,
+	).Scan(&debateID); err != nil {
+		return fmt.Errorf("resolving debate for scorer spend: %w", err)
+	}
+	return db.RecordDebateSpendTx(ctx, tx, debateID, roundID, "scorer", cost)
 }
 
 // StaleEffortDebate is one debate claimed by the effort-score retry
