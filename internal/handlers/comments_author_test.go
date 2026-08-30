@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -15,12 +16,19 @@ import (
 	"github.com/madalin/forgedesk/internal/testutil"
 )
 
-// authorSpan is the exact markup both render paths must produce for a
-// comment's author. Asserting on the span rather than the bare name keeps
-// these tests from passing on an incidental occurrence of "User" or a
-// person's name elsewhere on the ticket page.
-func authorSpan(name string) string {
-	return `<span class="font-medium">` + name + `</span>`
+// authorSpanRE matches the byline both render paths must produce for a
+// comment's author. Matching the `comment-author` landmark rather than the
+// bare name keeps these tests from passing on an incidental occurrence of
+// "User" or a person's name elsewhere on the ticket page — and matching the
+// landmark rather than the full class attribute keeps them from breaking when
+// a Tailwind class is added alongside it, which is exactly what happened when
+// the E2E landmarks landed (#136).
+func authorSpanRE(name string) *regexp.Regexp {
+	return regexp.MustCompile(`comment-author[^>]*>\s*` + regexp.QuoteMeta(name) + `\s*<`)
+}
+
+func containsAuthor(body, name string) bool {
+	return authorSpanRE(name).MatchString(body)
 }
 
 // TestTicketDetailShowsCommentAuthorNames locks in #95: the ticket detail
@@ -72,19 +80,19 @@ func TestTicketDetailShowsCommentAuthorNames(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	if !strings.Contains(body, authorSpan("Alice Author")) {
+	if !containsAuthor(body, "Alice Author") {
 		t.Errorf("ticket page did not show the human comment author's real name")
 	}
 	// Agent comments stay behind a single generic label on purpose: clients
 	// must not see which agent (claude/gemini/codex/mistral) produced a
 	// comment. This is the one case where a generic name is correct.
-	if !strings.Contains(body, authorSpan("ForgeDesk Bot")) {
+	if !containsAuthor(body, "ForgeDesk Bot") {
 		t.Errorf("ticket page did not label the agent comment as ForgeDesk Bot")
 	}
-	if strings.Contains(body, authorSpan("User")) {
+	if containsAuthor(body, "User") {
 		t.Errorf("ticket page still renders the hardcoded generic \"User\" author")
 	}
-	if strings.Contains(body, authorSpan("claude")) {
+	if containsAuthor(body, "claude") {
 		t.Errorf("ticket page leaked the underlying agent name to the client")
 	}
 }
@@ -118,7 +126,7 @@ func TestCreateCommentPartialShowsAuthorName(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), authorSpan(user.Name)) {
+	if !containsAuthor(rec.Body.String(), user.Name) {
 		t.Errorf("HTMX comment partial did not show the author name %q: %s", user.Name, rec.Body.String())
 	}
 }
@@ -138,7 +146,10 @@ func TestTicketDetailDelegatesCommentMarkup(t *testing.T) {
 	if !strings.Contains(string(src), `{{template "comment.html"`) {
 		t.Errorf("ticket_detail.html must render comments via the comment.html partial")
 	}
-	if strings.Contains(string(src), "comment-body") {
+	// Match the class in an actual class attribute, not any mention of the
+	// name: the file legitimately refers to comment-body in a comment
+	// explaining the shared-landmark convention.
+	if regexp.MustCompile(`class="[^"]*comment-body`).MatchString(string(src)) {
 		t.Errorf("ticket_detail.html still carries its own copy of the comment markup; it belongs only in components/comment.html")
 	}
 }

@@ -49,15 +49,38 @@ jobs:
         working-directory: e2e
         run: npx playwright install --with-deps chromium
 
-      # Runs the fake-backed debate spec only. It self-registers the first
-      # user (registration is first-user-only), so it must run against the
-      # fresh CI database on its own — do not add other self-registering
-      # specs to this invocation.
+      # One spec per database. Every spec still self-registers its FIRST user,
+      # and registration is first-user-only (internal/handlers/auth.go), so two
+      # specs cannot share a stack. Additional users *within* a spec now come
+      # from the invite flow via inviteAndRegisterUser (#136), which is not
+      # gated that way — so a spec needing several roles is fine, two specs
+      # sharing a database is not. Give each its own run and reset in between.
       - name: Run fake-backed debate e2e
         working-directory: e2e
         env:
           BASE_URL: http://localhost:8081
         run: npx playwright test 12-debate-fake.spec.js
+
+      - name: Reset the stack for the next spec
+        run: |
+          docker compose -f docker-compose.test.yml down -v
+          docker compose -f docker-compose.test.yml up -d
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/health || true)
+            if [ "$code" = "200" ]; then echo "app healthy"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::app did not become healthy on :8081 after reset"
+          docker compose -f docker-compose.test.yml logs app
+          exit 1
+
+      # Migrated to the seeded-session + invite pattern in #136. Before that it
+      # reported "15 skipped, exit 0" while executing nothing.
+      - name: Run ticket-detail e2e
+        working-directory: e2e
+        env:
+          BASE_URL: http://localhost:8081
+        run: npx playwright test 06-ticket-detail.spec.js
 
       - name: Upload Playwright artifacts on failure
         if: failure()
