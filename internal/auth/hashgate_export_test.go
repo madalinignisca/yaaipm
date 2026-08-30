@@ -1,6 +1,9 @@
 package auth
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // setHashConcurrencyForTest rebuilds the gate with a known ceiling and puts a
 // WORKING gate back afterwards.
@@ -25,4 +28,13 @@ func setHashConcurrencyForTest(t *testing.T, n int) (restore func()) {
 		hashSlots = prev
 		hashMu.Unlock()
 	}
+}
+
+// setMaxHashWaitForTest shortens the independent wait bound so tests need not
+// sit through the production value.
+func setMaxHashWaitForTest(t *testing.T, d time.Duration) (restore func()) {
+	t.Helper()
+	prev := maxHashWait
+	maxHashWait = d
+	return func() { maxHashWait = prev }
 }

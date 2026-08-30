@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 // ErrHashingBusy is returned when every hashing slot is occupied and the
@@ -23,6 +24,22 @@ const (
 	// this and argonMemoryBytes is the floor the pod must be able to hold.
 	defaultHashConcurrency = 2
 )
+
+// maxHashWait bounds how long a caller waits for a slot.
+//
+// This is load-bearing, not a nicety. Production request contexts carry NO
+// deadline: http.Server's ReadTimeout and WriteTimeout are CONNECTION
+// deadlines and do not cancel r.Context(), and there is no timeout middleware
+// in the chain. A request context ends only when the client disconnects.
+//
+// Without an independent bound, a saturated gate would park every handler
+// goroutine on the channel send until a slot freed — turning the crash this
+// file prevents into an unbounded queue, which is the same denial of service
+// wearing different clothes. The shed below would be unreachable in
+// production and reachable only in tests that inject a deadline of their own.
+//
+// A package variable rather than a constant so tests can shorten it.
+var maxHashWait = 2 * time.Second
 
 // hashSlots bounds how many Argon2id computations run at once.
 //
@@ -100,12 +117,45 @@ func acquireHashSlot(ctx context.Context) (release func(), err error) {
 		return nil, ErrHashingBusy
 	}
 
+	// Bound the wait ourselves as well as honoring the caller's context: see
+	// maxHashWait for why the caller alone is not enough.
+	waitCtx, cancel := context.WithTimeout(ctx, maxHashWait)
+	defer cancel()
+
 	gate := hashGate()
 	select {
 	case gate <- struct{}{}:
 		var once sync.Once
 		return func() { once.Do(func() { <-gate }) }, nil
-	case <-ctx.Done():
+	case <-waitCtx.Done():
 		return nil, ErrHashingBusy
+	}
+}
+
+// SaturateForTest fills every slot and returns a release. It exists because
+// handler tests in other packages must be able to produce a genuinely
+// saturated gate: the only alternative was canceling the request context,
+// which makes the database lookup fail first and so never reaches the
+// credential-verification branch that the enumeration symmetry depends on.
+//
+// Named and documented as test-only rather than hidden behind a build tag so
+// that its single purpose is obvious at the call site.
+func SaturateForTest() (release func()) {
+	gate := hashGate()
+	held := 0
+	for {
+		select {
+		case gate <- struct{}{}:
+			held++
+		default:
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					for range held {
+						<-gate
+					}
+				})
+			}
+		}
 	}
 }

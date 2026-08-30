@@ -228,3 +228,37 @@ func TestVerifyRecoveryCodeDoesNotRejectValidCodeWhenBusy(t *testing.T) {
 		t.Error("a valid recovery code was silently reported invalid because the server was busy")
 	}
 }
+
+// TestShedsWithoutAnyCallerDeadline is the test that would have caught the
+// real hole: everything above injects a deadline or a cancellation, and
+// PRODUCTION REQUESTS HAVE NEITHER.
+//
+// http.Server's ReadTimeout and WriteTimeout are connection deadlines and do
+// not cancel r.Context(), and no timeout middleware is installed, so a request
+// context ends only when the client disconnects. If the gate relied solely on
+// the caller's context, a saturated gate would queue every connected client
+// forever instead of shedding — the crash traded for a hang.
+//
+// context.Background() here stands in for exactly that: a caller that will
+// never time itself out.
+func TestShedsWithoutAnyCallerDeadline(t *testing.T) {
+	restoreGate := setHashConcurrencyForTest(t, 1)
+	defer restoreGate()
+	restoreWait := setMaxHashWaitForTest(t, 80*time.Millisecond)
+	defer restoreWait()
+
+	release, err := acquireHashSlot(context.Background())
+	if err != nil {
+		t.Fatalf("acquiring the only slot: %v", err)
+	}
+	defer release()
+
+	start := time.Now()
+	// No deadline, no cancellation — the shape of every real request.
+	if _, err := acquireHashSlot(context.Background()); !errors.Is(err, ErrHashingBusy) {
+		t.Fatalf("acquire with no caller deadline = %v, want ErrHashingBusy", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("waited %v; the gate must bound the wait itself, not rely on the caller", elapsed)
+	}
+}

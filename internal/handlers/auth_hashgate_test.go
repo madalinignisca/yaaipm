@@ -110,3 +110,57 @@ func TestShedIfHashingBusyMapping(t *testing.T) {
 		}
 	})
 }
+
+// TestLoginShedsForBothBranchesUnderRealSaturation closes the hole both
+// reviewers flagged.
+//
+// The two tests above cancel the request context, which makes GetUserByEmail
+// fail first — so they only ever reach the unknown-account branch, and
+// deleting the shed from the credential-verification branch left the suite
+// green. That regression would re-open exactly the enumeration oracle this
+// change exists to keep closed: a known account answering 200 "Invalid email
+// or password" while an unknown one answers 503.
+//
+// Here the gate is genuinely saturated and the request carries no deadline,
+// which is the shape of a real one.
+func TestLoginShedsForBothBranchesUnderRealSaturation(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	createAuthenticatedUser(t, db, sessions, "both-branches@test.com", "client")
+
+	release := auth.SaturateForTest()
+	defer release()
+
+	cases := []struct {
+		name  string
+		email string
+	}{
+		{"registered account", "both-branches@test.com"},
+		{"unregistered account", "no-such-user@test.com"},
+	}
+
+	codes := map[string]int{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			form := url.Values{"email": {tc.email}, "password": {"TestPassword123!"}}
+			req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			codes[tc.name] = rec.Code
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Errorf("saturated login = %d, want 503; body: %s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "Invalid email or password") {
+				t.Errorf("a busy server claimed the credentials were wrong")
+			}
+		})
+	}
+
+	// The point of shedding on both branches: a saturated server must not
+	// become an oracle for which addresses are registered.
+	if codes["registered account"] != codes["unregistered account"] {
+		t.Errorf("registered=%d unregistered=%d: saturation leaks whether an account exists",
+			codes["registered account"], codes["unregistered account"])
+	}
+}
