@@ -68,6 +68,15 @@ type Config struct {
 	GeminiImageImageOutPrice    int64
 	SMTPSSL                     bool
 	S3ForcePathStyle            bool
+
+	// Auth rate limiting. Defaults match what was hardcoded before this was
+	// configurable (0.5 req/s, burst 5) so production behavior is unchanged
+	// unless someone opts in. It is configurable because the E2E suite drives
+	// register -> login -> 2FA-setup back to back per user, which exhausts a
+	// burst of 5 and gets the TOTP verify POST throttled; the suite then fails
+	// in a way that looks nothing like rate limiting (issue #136).
+	AuthRateLimitRPS   float64
+	AuthRateLimitBurst int
 }
 
 func envInt64(key string, fallback int64) int64 {
@@ -77,6 +86,42 @@ func envInt64(key string, fallback int64) int64 {
 		}
 	}
 	return fallback
+}
+
+// authRateLimitRPS reads the auth rate limit in requests/second. Non-numeric, zero and
+// negative values fall back to the default rather than being honored: these
+// tune a security control, and "0" must never be a way to silently switch off
+// rate limiting via a typo in a Secret.
+// Production auth rate-limit bounds. Named constants rather than literals at
+// the call site so the value a misconfiguration falls back to is greppable.
+const (
+	defaultAuthRateLimitRPS   = 0.5
+	defaultAuthRateLimitBurst = 5
+)
+
+func authRateLimitRPS() float64 {
+	if v := strings.TrimSpace(os.Getenv("AUTH_RATE_LIMIT_RPS")); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultAuthRateLimitRPS
+}
+
+// constant. Keeping it a parameter rather than hardcoding the default inside
+// keeps the default visible at the call site next to the env var name.
+//
+
+// authRateLimitBurst reads the auth rate limiter burst size. Same reasoning: a
+// non-positive burst would be a denial of service against ourselves, so it
+// falls back rather than applying.
+func authRateLimitBurst() int {
+	if v := strings.TrimSpace(os.Getenv("AUTH_RATE_LIMIT_BURST")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultAuthRateLimitBurst
 }
 
 // envTrimmed reads an env var and strips leading/trailing whitespace. Use for
@@ -174,6 +219,8 @@ func Load() (*Config, error) {
 		AESKey:               aesKey,
 		ListenAddr:           listenAddr,
 		BaseURL:              baseURL,
+		AuthRateLimitRPS:     authRateLimitRPS(),
+		AuthRateLimitBurst:   authRateLimitBurst(),
 		SMTPHost:             os.Getenv("SMTP_HOST"),
 		SMTPPort:             smtpPort,
 		SMTPUsername:         smtpUsername,
