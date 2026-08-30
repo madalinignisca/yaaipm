@@ -42,6 +42,13 @@ spec:
               port: 8080
             initialDelaySeconds: 3
             periodSeconds: 10
+          env:
+            # Argon2id holds ~64 MB per hash. Give Go a collection target below the
+            # cgroup limit so it reclaims before the OOM killer fires, rather than
+            # after (#142). This is headroom, not the bound — the bound is
+            # AUTH_HASH_CONCURRENCY.
+            - name: GOMEMLIMIT
+              value: "200MiB"
           resources:
             requests:
               cpu: 50m

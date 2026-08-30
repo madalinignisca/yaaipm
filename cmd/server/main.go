@@ -243,6 +243,11 @@ func main() {
 		log.Printf("WARNING: DEBATE_REAL_AI=1 — debate refiners and scorers make REAL, billable provider calls (%d providers, %d scorers)", len(debateRefiners), len(debateScorers))
 	}
 
+	// Bound concurrent Argon2id work so memory cannot scale with request
+	// concurrency. The rate limiter is per-IP, so it alone cannot cap this
+	// (#142).
+	auth.SetHashConcurrency(cfg.AuthHashConcurrency)
+
 	// Rate limiter for auth endpoints. Defaults to 0.5 req/s burst 5; see
 	// config.AuthRateLimitRPS for why it is tunable at all.
 	authLimiter := middleware.NewRateLimiter(cfg.AuthRateLimitRPS, cfg.AuthRateLimitBurst)

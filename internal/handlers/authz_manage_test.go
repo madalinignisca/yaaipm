@@ -25,7 +25,7 @@ func TestAuthorizeOrgManage(t *testing.T) {
 		t.Fatalf("CreateOrg: %v", err)
 	}
 
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	mk := func(email, platformRole, orgRole string) *models.User {
 		t.Helper()
 		u, uErr := db.CreateUser(ctx, email, hash, "U", platformRole)

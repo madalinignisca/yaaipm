@@ -49,7 +49,7 @@ func seedOrgProject(t *testing.T, db *models.DB, email, role string) (*models.Or
 	t.Helper()
 	ctx := context.Background()
 
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	user, err := db.CreateUser(ctx, email, hash, "Test User", role)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)

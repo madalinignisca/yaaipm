@@ -58,7 +58,7 @@ func seedOrgWithInvitation(t *testing.T, db *models.DB, slug string) *models.Org
 	if err != nil {
 		t.Fatalf("CreateOrg: %v", err)
 	}
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	inviter, err := db.CreateUser(ctx, "inviter-"+slug+"@test.com", hash, "Inviter", "client")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)

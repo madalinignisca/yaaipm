@@ -155,7 +155,7 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use email from invitation, not from form
-	hash, err := auth.HashPassword(password)
+	hash, err := auth.HashPassword(r.Context(), password)
 	if err != nil {
 		log.Printf("hashing password: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -33,10 +34,10 @@ func GenerateRecoveryCodes() ([]string, error) {
 }
 
 // HashRecoveryCodes hashes each recovery code with Argon2id.
-func HashRecoveryCodes(codes []string) ([]string, error) {
+func HashRecoveryCodes(ctx context.Context, codes []string) ([]string, error) {
 	hashed := make([]string, len(codes))
 	for i, code := range codes {
-		h, err := HashPassword(code)
+		h, err := HashPassword(ctx, code)
 		if err != nil {
 			return nil, fmt.Errorf("hashing recovery code: %w", err)
 		}
@@ -68,12 +69,16 @@ func DecryptRecoveryCodes(ciphertext []byte, aesKey string) ([]string, error) {
 }
 
 // VerifyRecoveryCode checks a recovery code against the stored hashes. Returns the index if found, -1 otherwise.
-func VerifyRecoveryCode(code string, hashedCodes []string) int {
+//
+// This is the heaviest Argon2id path in the codebase: it verifies against every
+// unused stored hash, so a single call can run up to ten 64 MB computations
+// (#142). They are sequential, and each one passes through the hashing gate.
+func VerifyRecoveryCode(ctx context.Context, code string, hashedCodes []string) int {
 	for i, hashed := range hashedCodes {
 		if hashed == "" {
 			continue // already used
 		}
-		ok, _ := VerifyPassword(code, hashed)
+		ok, _ := VerifyPassword(ctx, code, hashed)
 		if ok {
 			return i
 		}
