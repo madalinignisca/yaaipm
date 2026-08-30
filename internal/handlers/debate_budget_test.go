@@ -251,14 +251,30 @@ func seedSpendForTicket(t *testing.T, db *models.DB, ticket *models.Ticket, cost
 		t.Fatalf("computing next round_number: %v", err)
 	}
 
-	if _, err := db.Pool.Exec(ctx,
+	var roundID string
+	if err := db.Pool.QueryRow(ctx,
 		`INSERT INTO feature_debate_rounds (
 			debate_id, round_number, provider, model, triggered_by,
 			input_text, output_text, status, cost_micros, created_at
-		) VALUES ($1, $2, 'claude', 'claude-test', $3, 'in', 'out', 'accepted', $4, $5)`,
+		) VALUES ($1, $2, 'claude', 'claude-test', $3, 'in', 'out', 'accepted', $4, $5)
+		RETURNING id`,
 		deb.ID, roundNum, ticket.CreatedBy, costMicros, createdAt,
-	); err != nil {
+	).Scan(&roundID); err != nil {
 		t.Fatalf("seeding spend round: %v", err)
+	}
+
+	// Enforcement reads the append-only spend ledger, not the round row: undo
+	// deletes rounds, and deleting user content must not delete the record of
+	// money already paid (#129). Real round creation writes both in one
+	// transaction, so a fixture that wrote only the round would describe a
+	// state the application cannot produce, and these cap tests would be
+	// asserting against a figure the running system never sees.
+	if _, err := db.Pool.Exec(ctx,
+		`INSERT INTO debate_spend (org_id, debate_id, round_id, kind, cost_micros, incurred_at)
+		 SELECT d.org_id, d.id, $2, 'round', $3, $4 FROM feature_debates d WHERE d.id = $1`,
+		deb.ID, roundID, costMicros, createdAt,
+	); err != nil {
+		t.Fatalf("seeding spend ledger: %v", err)
 	}
 }
 
@@ -434,14 +450,25 @@ func TestCreateRound_ScorerCostCountsTowardCap(t *testing.T) {
 	}
 	// Zero refiner cost, ALL of it scorer cost — this must still trip
 	// the cap, proving the aggregate isn't refiner-cost-only.
-	if _, err := db.Pool.Exec(context.Background(),
+	var scorerRoundID string
+	if err := db.Pool.QueryRow(context.Background(),
 		`INSERT INTO feature_debate_rounds (
 			debate_id, round_number, provider, model, triggered_by,
 			input_text, output_text, status, cost_micros, scorer_cost_micros, created_at
-		) VALUES ($1, 1, 'claude', 'claude-test', $2, 'in', 'out', 'accepted', 0, $3, now())`,
+		) VALUES ($1, 1, 'claude', 'claude-test', $2, 'in', 'out', 'accepted', 0, $3, now())
+		RETURNING id`,
 		deb.ID, ticket.CreatedBy, 100*microsPerCentDebate,
-	); err != nil {
+	).Scan(&scorerRoundID); err != nil {
 		t.Fatalf("seeding scorer-cost round: %v", err)
+	}
+	// The ledger is what enforcement reads; a scorer charge is its own entry
+	// there because a round can be scored more than once (#129).
+	if _, err := db.Pool.Exec(context.Background(),
+		`INSERT INTO debate_spend (org_id, debate_id, round_id, kind, cost_micros)
+		 SELECT d.org_id, d.id, $2, 'scorer', $3 FROM feature_debates d WHERE d.id = $1`,
+		deb.ID, scorerRoundID, 100*microsPerCentDebate,
+	); err != nil {
+		t.Fatalf("seeding scorer spend ledger: %v", err)
 	}
 
 	rec := postCreateRound(t, r, ticket, cookie)

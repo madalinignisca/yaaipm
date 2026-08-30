@@ -72,3 +72,71 @@ func TestUndoDoesNotReclaimBudgetHeadroom(t *testing.T) {
 		)
 	}
 }
+
+// TestRepeatedScorerChargesAreBothCounted pins the second leak found while
+// fixing #129, same root cause.
+//
+// applyScoreResult is shared by the accept path and the background retry
+// sweep (its own comment says so), and both route the cost through
+// UpdateScorerCostMicros, which does `SET scorer_cost_micros = $1`. When the
+// sweep re-scores a round — which is the entire point of the retry machinery,
+// complete with effort_retry_attempts and exponential backoff — a second real
+// provider call is billed and its cost REPLACES the first. N calls paid, one
+// recorded.
+//
+// The assertion is a truth about money, not about the schema: if the provider
+// billed twice, the month must count both.
+func TestRepeatedScorerChargesAreBothCounted(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := NewDB(pool)
+	ctx := context.Background()
+
+	orgID, userID, projID, ticketID := seedFeatureTicket(t, db, "desc")
+	deb, err := db.StartDebate(ctx, ticketID, projID, orgID, userID)
+	if err != nil {
+		t.Fatalf("StartDebate: %v", err)
+	}
+
+	now := time.Now().UTC()
+	from, to := CurrentUTCMonthRange(now)
+	seedRoundAt(t, db, deb.ID, userID, 1, int64Ptr(1_000_000), nil, "accepted", from.Add(time.Hour))
+
+	var roundID string
+	if scanErr := db.Pool.QueryRow(ctx,
+		`SELECT id FROM feature_debate_rounds WHERE debate_id = $1 AND round_number = 1`,
+		deb.ID,
+	).Scan(&roundID); scanErr != nil {
+		t.Fatalf("looking up round: %v", scanErr)
+	}
+
+	// Two scorer calls on the same round: the accept-path score, then a
+	// retry-sweep re-score. Both were really billed.
+	const firstCharge = int64(200_000)
+	const secondCharge = int64(300_000)
+	for _, charge := range []int64{firstCharge, secondCharge} {
+		tx, txErr := db.Pool.Begin(ctx)
+		if txErr != nil {
+			t.Fatalf("Begin: %v", txErr)
+		}
+		if uErr := db.UpdateScorerCostMicros(ctx, tx, roundID, charge); uErr != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("UpdateScorerCostMicros(%d): %v", charge, uErr)
+		}
+		if cErr := tx.Commit(ctx); cErr != nil {
+			t.Fatalf("Commit: %v", cErr)
+		}
+	}
+
+	spent, err := db.SumOrgDebateSpendMicros(ctx, orgID, from, to)
+	if err != nil {
+		t.Fatalf("SumOrgDebateSpendMicros: %v", err)
+	}
+
+	want := int64(1_000_000) + firstCharge + secondCharge
+	if spent != want {
+		t.Errorf(
+			"spend = %d, want %d: the first scorer charge of %d micros was overwritten by the second and is uncounted",
+			spent, want, firstCharge,
+		)
+	}
+}

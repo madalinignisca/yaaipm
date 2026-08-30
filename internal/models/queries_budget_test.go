@@ -213,14 +213,41 @@ func seedRoundAt(t *testing.T, db *DB, debateID, triggeredBy string, roundNum in
 	costMicros, scorerCostMicros *int64, status string, createdAt time.Time,
 ) {
 	t.Helper()
-	if _, err := db.Pool.Exec(context.Background(),
+	ctx := context.Background()
+	var roundID string
+	if err := db.Pool.QueryRow(ctx,
 		`INSERT INTO feature_debate_rounds (
 			debate_id, round_number, provider, model, triggered_by,
 			input_text, output_text, status, cost_micros, scorer_cost_micros, created_at
-		) VALUES ($1, $2, 'claude', 'claude-test', $3, 'in', 'out', $4, $5, $6, $7)`,
+		) VALUES ($1, $2, 'claude', 'claude-test', $3, 'in', 'out', $4, $5, $6, $7)
+		RETURNING id`,
 		debateID, roundNum, triggeredBy, status, costMicros, scorerCostMicros, createdAt,
-	); err != nil {
+	).Scan(&roundID); err != nil {
 		t.Fatalf("seedRoundAt: %v", err)
+	}
+
+	// Mirror what real round creation does: a billed round also appends to the
+	// spend ledger, which is what enforcement reads (#129). Seeding only the
+	// round row would describe a state the application cannot produce, and the
+	// aggregate tests would be measuring a fiction. incurred_at tracks
+	// created_at so the month-boundary cases still land where they intend.
+	seedSpendAt(t, db, debateID, roundID, "round", costMicros, createdAt)
+	seedSpendAt(t, db, debateID, roundID, "scorer", scorerCostMicros, createdAt)
+}
+
+// seedSpendAt appends one ledger charge, skipping the no-charge case so a NULL
+// cost column does not become a zero-value row.
+func seedSpendAt(t *testing.T, db *DB, debateID, roundID, kind string, costMicros *int64, incurredAt time.Time) {
+	t.Helper()
+	if costMicros == nil || *costMicros <= 0 {
+		return
+	}
+	if _, err := db.Pool.Exec(context.Background(),
+		`INSERT INTO debate_spend (org_id, debate_id, round_id, kind, cost_micros, incurred_at)
+		 SELECT d.org_id, d.id, $2, $3, $4, $5 FROM feature_debates d WHERE d.id = $1`,
+		debateID, roundID, kind, *costMicros, incurredAt,
+	); err != nil {
+		t.Fatalf("seedSpendAt(%s): %v", kind, err)
 	}
 }
 
