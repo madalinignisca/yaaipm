@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -73,15 +74,26 @@ func DecryptRecoveryCodes(ciphertext []byte, aesKey string) ([]string, error) {
 // This is the heaviest Argon2id path in the codebase: it verifies against every
 // unused stored hash, so a single call can run up to ten 64 MB computations
 // (#142). They are sequential, and each one passes through the hashing gate.
-func VerifyRecoveryCode(ctx context.Context, code string, hashedCodes []string) int {
+// It returns (-1, ErrHashingBusy) when the gate is saturated rather than
+// reporting "no match". Reporting no-match would tell a user their genuine
+// recovery code is wrong — on the very path they reach after losing their
+// authenticator, and the codes are single-use, so they might burn several
+// believing they had failed. A busy server must say it is busy.
+//
+// Other errors (a malformed stored hash) stay non-fatal: one corrupt entry
+// must not stop the remaining codes from being checked.
+func VerifyRecoveryCode(ctx context.Context, code string, hashedCodes []string) (int, error) {
 	for i, hashed := range hashedCodes {
 		if hashed == "" {
 			continue // already used
 		}
-		ok, _ := VerifyPassword(ctx, code, hashed)
+		ok, err := VerifyPassword(ctx, code, hashed)
+		if errors.Is(err, ErrHashingBusy) {
+			return -1, err
+		}
 		if ok {
-			return i
+			return i, nil
 		}
 	}
-	return -1
+	return -1, nil
 }

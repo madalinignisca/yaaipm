@@ -355,6 +355,45 @@ func (h *AuthHandler) Verify2FAPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// tryRecoveryCode checks a submitted code against the user's stored recovery
+// codes, consuming it and completing 2FA on a match.
+//
+// Returns consumed=true when it has already written a response (the code
+// matched), and shed=true when the request was shed because password hashing
+// was at capacity. Extracted from Verify2FA to keep that handler flat.
+func (h *AuthHandler) tryRecoveryCode(
+	w http.ResponseWriter, r *http.Request,
+	user *models.User, sess *auth.Session, code string,
+) (consumed, shed bool) {
+	if user.RecoveryCodes == nil {
+		return false, false
+	}
+
+	hashedCodes, err := auth.DecryptRecoveryCodes(user.RecoveryCodes, h.aesKey)
+	if err != nil {
+		return false, false
+	}
+
+	idx, verifyErr := auth.VerifyRecoveryCode(r.Context(), code, hashedCodes)
+	// Shed rather than fall through to "invalid code": this is the path
+	// someone reaches after losing their authenticator, and recovery codes are
+	// single-use, so a false rejection could burn several of them (#142).
+	if h.shedIfHashingBusy(w, r, verifyErr) {
+		return false, true
+	}
+	if idx < 0 {
+		return false, false
+	}
+
+	hashedCodes[idx] = "" // consume
+	if encCodes, encErr := auth.EncryptRecoveryCodes(hashedCodes, h.aesKey); encErr == nil {
+		_ = h.db.ConsumeRecoveryCode(r.Context(), user.ID, encCodes)
+	}
+	_ = h.sessions.MarkTwoFactorVerified(r.Context(), sess.ID)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+	return true, false
+}
+
 func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 	sess := h.getSessionFromCookie(r)
 	if sess == nil {
@@ -392,21 +431,8 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try recovery code
-	if user.RecoveryCodes != nil {
-		hashedCodes, err := auth.DecryptRecoveryCodes(user.RecoveryCodes, h.aesKey)
-		if err == nil {
-			idx := auth.VerifyRecoveryCode(r.Context(), code, hashedCodes)
-			if idx >= 0 {
-				hashedCodes[idx] = "" // consume
-				encCodes, err := auth.EncryptRecoveryCodes(hashedCodes, h.aesKey)
-				if err == nil {
-					_ = h.db.ConsumeRecoveryCode(r.Context(), user.ID, encCodes)
-				}
-				_ = h.sessions.MarkTwoFactorVerified(r.Context(), sess.ID)
-				http.Redirect(w, r, "/", http.StatusSeeOther)
-				return
-			}
-		}
+	if consumed, shed := h.tryRecoveryCode(w, r, user, sess, code); shed || consumed {
+		return
 	}
 
 	_ = h.engine.Render(w, r, "verify_2fa.html", render.PageData{

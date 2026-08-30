@@ -180,3 +180,51 @@ func TestPasswordFunctionsGoThroughTheGate(t *testing.T) {
 		t.Errorf("VerifyPassword with a saturated gate = %v, want ErrHashingBusy (it is not gated)", err)
 	}
 }
+
+// TestVerifyRecoveryCodeDoesNotRejectValidCodeWhenBusy pins a defect the
+// hashing gate introduced.
+//
+// VerifyRecoveryCode used to discard the error from VerifyPassword, which was
+// harmless while that call could not fail. Once a saturated gate could return
+// ErrHashingBusy, a discarded error read as "not a match" — so a VALID
+// recovery code would be reported invalid. That is the path a user reaches
+// after losing their authenticator, and the codes are single-use, so a false
+// rejection can cost them several of them.
+func TestVerifyRecoveryCodeDoesNotRejectValidCodeWhenBusy(t *testing.T) {
+	restore := setHashConcurrencyForTest(t, 1)
+	defer restore()
+
+	valid := "TESTCODE1"
+	hashed, err := HashPassword(context.Background(), valid)
+	if err != nil {
+		t.Fatalf("hashing recovery code: %v", err)
+	}
+	codes := []string{hashed}
+
+	// Sanity: it matches when the gate is free.
+	if idx, vErr := VerifyRecoveryCode(context.Background(), valid, codes); idx != 0 || vErr != nil {
+		t.Fatalf("unsaturated: idx=%d err=%v, want 0 / nil", idx, vErr)
+	}
+
+	// Saturate, then check the same valid code.
+	release, err := acquireHashSlot(context.Background())
+	if err != nil {
+		t.Fatalf("acquiring the only slot: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	idx, vErr := VerifyRecoveryCode(ctx, valid, codes)
+	if !errors.Is(vErr, ErrHashingBusy) {
+		t.Errorf("saturated verify returned err=%v, want ErrHashingBusy", vErr)
+	}
+	if idx >= 0 {
+		t.Errorf("saturated verify returned idx=%d; must not claim a match it could not check", idx)
+	}
+	// The crucial part: the caller must be able to tell "busy" from "invalid".
+	if vErr == nil && idx == -1 {
+		t.Error("a valid recovery code was silently reported invalid because the server was busy")
+	}
+}

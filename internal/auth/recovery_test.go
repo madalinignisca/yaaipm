@@ -82,7 +82,7 @@ func TestVerifyRecoveryCodeFound(t *testing.T) {
 	hashed, _ := HashRecoveryCodes(context.Background(), codes)
 
 	// Verify the 5th code
-	idx := VerifyRecoveryCode(context.Background(), codes[4], hashed)
+	idx, _ := VerifyRecoveryCode(context.Background(), codes[4], hashed)
 	if idx != 4 {
 		t.Fatalf("expected index 4, got %d", idx)
 	}
@@ -92,7 +92,7 @@ func TestVerifyRecoveryCodeNotFound(t *testing.T) {
 	codes, _ := GenerateRecoveryCodes()
 	hashed, _ := HashRecoveryCodes(context.Background(), codes)
 
-	idx := VerifyRecoveryCode(context.Background(), "INVALIDX", hashed)
+	idx, _ := VerifyRecoveryCode(context.Background(), "INVALIDX", hashed)
 	if idx != -1 {
 		t.Fatalf("expected -1 for invalid code, got %d", idx)
 	}
@@ -105,7 +105,7 @@ func TestVerifyRecoveryCodeConsumed(t *testing.T) {
 	// "Consume" a code by clearing its hash
 	hashed[3] = ""
 
-	idx := VerifyRecoveryCode(context.Background(), codes[3], hashed)
+	idx, _ := VerifyRecoveryCode(context.Background(), codes[3], hashed)
 	if idx != -1 {
 		t.Fatalf("consumed code should return -1, got %d", idx)
 	}
