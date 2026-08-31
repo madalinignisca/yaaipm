@@ -24,7 +24,8 @@
                 <a href="/" class="text-lg font-semibold tracking-tight">ForgeDesk</a>
             </div>
 
-            <nav class="flex-1 overflow-y-auto px-3 py-4 flex flex-col gap-1 text-sm">
+            {{/* sidebar-nav: stable E2E landmark (#136), see comment-body (#37). */}}
+            <nav class="sidebar-nav flex-1 overflow-y-auto px-3 py-4 flex flex-col gap-1 text-sm">
                 {{if .Orgs}}
                 {{if and .User (or (eq .User.Role "superadmin") (eq .User.Role "staff"))}}
                 {{if gt (len .Orgs) 1}}

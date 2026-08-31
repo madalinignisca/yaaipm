@@ -207,6 +207,7 @@ async function fullLogin(page, { email, password, totpSecret }) {
 }
 
 module.exports = {
+  awaitNextTOTPWindow,
   rootSession,
   inviteAndRegisterUser,
   useSession,
@@ -240,4 +241,19 @@ function rootSession() {
     throw new Error('root session file contains no cookies');
   }
   return state;
+}
+
+/**
+ * Wait until the current TOTP window rolls over.
+ *
+ * ValidateTOTPOnce (migration 000027) refuses a code already used inside its
+ * 30-second step, so two logins seconds apart fail on the second — for a reason
+ * that looks nothing like the thing under test. Tests that genuinely must sign
+ * in twice call this between them (#136).
+ */
+async function awaitNextTOTPWindow(page) {
+  const period = 30_000;
+  const msIntoWindow = Date.now() % period;
+  // +1s of slack so we are comfortably inside the next step, not on its edge.
+  await page.waitForTimeout(period - msIntoWindow + 1000);
 }

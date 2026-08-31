@@ -1,10 +1,20 @@
-// Sessions come from global setup: the app allows exactly one registration
-// ever (first-user-only), and logging in per test would replay a TOTP code
-// inside its 30s step, which ValidateTOTPOnce rejects (#136).
-let rootCookies = [];
-
 const { test, expect } = require('@playwright/test');
-const { useSession, rootSession, generateTOTP } = require('./helpers');
+const {
+  useSession,
+  rootSession,
+  inviteAndRegisterUser,
+  loginUser,
+  verify2FA,
+  awaitNextTOTPWindow,
+  generateTOTP,
+} = require('./helpers');
+
+// This spec CHANGES a password and an email, and the application invalidates
+// every session for a user whose password changes. Doing that to the shared
+// root identity would sign every other spec out mid-run, so this one gets a
+// throwaway account of its own via the invite flow (#136).
+let ownCookies = [];
+let ownTotpSecret = '';
 
 const testUser = {
   name: 'Account Settings User',
@@ -13,23 +23,34 @@ const testUser = {
 };
 const newPassword = 'NewPassword456!!';
 const newEmail = 'e2e-account-new@forgedesk.test';
-let totpSecret = '';
+// The root session carries its own TOTP secret; nothing here needs to derive
+// one. The guards that referenced a never-assigned local are gone — they made
+// every test in this file skip silently (#136).
+
 
 test.describe.serial('Account Settings', () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
-    // Shared root session: see the note at the top of this file (#136).
+    await useSession(page, rootSession().cookies);
 
-    rootCookies = rootSession().cookies;
+    // An org to invite into, then the disposable account this spec mutates.
+    await page.request.post('/orgs', { form: { name: 'Account Settings Org' } });
+    const own = await inviteAndRegisterUser(page, {
+      orgSlug: 'account-settings-org',
+      email: testUser.email,
+      name: testUser.name,
+      password: testUser.password,
+      role: 'member',
+    });
+    ownCookies = own.cookies;
+    ownTotpSecret = own.secret;
 
-    await useSession(page, rootCookies);
     await page.close();
   });
 
   test('account settings page renders', async ({ page }) => {
-    test.skip(!totpSecret, 'TOTP secret not available');
 
-    await useSession(page, rootCookies);
+    await useSession(page, ownCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -43,9 +64,8 @@ test.describe.serial('Account Settings', () => {
   });
 
   test('change password - wrong old password shows error', async ({ page }) => {
-    test.skip(!totpSecret, 'TOTP secret not available');
 
-    await useSession(page, rootCookies);
+    await useSession(page, ownCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -64,9 +84,8 @@ test.describe.serial('Account Settings', () => {
   });
 
   test('change password - too short new password shows error', async ({ page }) => {
-    test.skip(!totpSecret, 'TOTP secret not available');
 
-    await useSession(page, rootCookies);
+    await useSession(page, ownCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -84,9 +103,8 @@ test.describe.serial('Account Settings', () => {
   });
 
   test('change password - success', async ({ page }) => {
-    test.skip(!totpSecret, 'TOTP secret not available');
 
-    await useSession(page, rootCookies);
+    await useSession(page, ownCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -103,11 +121,10 @@ test.describe.serial('Account Settings', () => {
   });
 
   test('login with new password works', async ({ page }) => {
-    test.skip(!totpSecret, 'TOTP secret not available');
 
     // Login with the new password
     await loginUser(page, { email: testUser.email, password: newPassword });
-    await verify2FA(page, totpSecret);
+    await verify2FA(page, ownTotpSecret);
 
     // Should reach a page that is not login or verify-2fa
     await page.waitForURL(url => !url.href.includes('verify-2fa') && !url.href.includes('login'), { timeout: 5000 });
@@ -116,10 +133,9 @@ test.describe.serial('Account Settings', () => {
   });
 
   test('change email - success', async ({ page }) => {
-    test.skip(!totpSecret, 'TOTP secret not available');
 
     // Login with the new password (changed in the previous test)
-    await useSession(page, rootCookies);
+    await useSession(page, ownCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -133,10 +149,13 @@ test.describe.serial('Account Settings', () => {
   });
 
   test('login with new email works', async ({ page }) => {
-    test.skip(!totpSecret, 'TOTP secret not available');
+    // The previous test already signed in; reusing its TOTP code inside the
+    // same 30s step is refused as a replay, which would fail here for a reason
+    // that has nothing to do with the email change (#136).
+    await awaitNextTOTPWindow(page);
 
     await loginUser(page, { email: newEmail, password: newPassword });
-    await verify2FA(page, totpSecret);
+    await verify2FA(page, ownTotpSecret);
 
     await page.waitForURL(url => !url.href.includes('verify-2fa') && !url.href.includes('login'), { timeout: 5000 });
     const currentUrl = page.url();

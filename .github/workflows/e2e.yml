@@ -68,7 +68,9 @@ jobs:
             04-tickets.spec.js \
             05-admin.spec.js \
             06-ticket-detail.spec.js \
+            07-org-management.spec.js \
             09-rbac-journeys.spec.js \
+            11-debate.spec.js \
             12-debate-fake.spec.js
 
       - name: App logs on failure
