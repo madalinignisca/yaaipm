@@ -102,3 +102,38 @@ func TestShippedTextPrefersTheEdit(t *testing.T) {
 		t.Error("an empty edit was treated as the shipped text; that would blank the document")
 	}
 }
+
+// TestCheckConstraintRejectsWhitespaceOnlyEdit guards the database backstop.
+//
+// The handler refuses a blank edit first; this CHECK is what catches anything
+// that bypasses it. It nearly did not: btrim(x) with ONE argument strips only
+// SPACES, so a tab- or newline-only value survived it and read as non-empty —
+// leaving the backstop weaker than the guard it backs up, precisely in the case
+// it exists for. The explicit character set fixes that, and this test pins it.
+func TestCheckConstraintRejectsWhitespaceOnlyEdit(t *testing.T) {
+	db := NewDB(testutil.SetupTestDB(t))
+	ctx := context.Background()
+
+	orgID, userID, projID, ticketID := seedFeatureTicket(t, db, "seed")
+	deb, err := db.StartDebate(ctx, ticketID, projID, orgID, userID)
+	if err != nil {
+		t.Fatalf("StartDebate: %v", err)
+	}
+	roundID := seedAcceptedRound(t, db, deb.ID, userID, 1, "ai text", nil)
+
+	for name, blank := range map[string]string{
+		"spaces":  "   ",
+		"tab":     "\t",
+		"newline": "\n",
+		"mixed":   " \t\n\r ",
+		"empty":   "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := db.Pool.Exec(ctx,
+				`UPDATE feature_debate_rounds SET edited_text = $1 WHERE id = $2`, blank, roundID)
+			if err == nil {
+				t.Errorf("the database accepted a whitespace-only edit (%q); shipping it would blank the brief", blank)
+			}
+		})
+	}
+}

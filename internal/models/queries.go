@@ -2962,7 +2962,7 @@ func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, 
 	var newCurrentText string
 	if scanErr := tx.QueryRow(ctx, `
 		SELECT COALESCE(
-			(SELECT COALESCE(NULLIF(btrim(edited_text), ''), output_text) FROM feature_debate_rounds
+			(SELECT COALESCE(NULLIF(btrim(edited_text, E' \t\n\r\f\v'), ''), output_text) FROM feature_debate_rounds
 			  WHERE debate_id = $1 AND status = 'accepted'
 			  ORDER BY round_number DESC LIMIT 1),
 			(SELECT seed_description FROM feature_debates WHERE id = $1)
@@ -3139,7 +3139,7 @@ func (db *DB) ClaimStaleEffortScores(
 		    -- does not affect the FOR UPDATE SKIP LOCKED semantics that
 		    -- keep two replicas from double-billing the same debate.
 		    (SELECT p.scorer_provider FROM projects p WHERE p.id = fd.project_id),
-		    (SELECT COALESCE(NULLIF(btrim(r.edited_text), ''), r.output_text) FROM feature_debate_rounds r
+		    (SELECT COALESCE(NULLIF(btrim(r.edited_text, E' \t\n\r\f\v'), ''), r.output_text) FROM feature_debate_rounds r
 		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
 		      ORDER BY r.round_number DESC LIMIT 1)`,
 		now, now.Add(-minAge), limit, baseBackoff.Seconds(), maxBackoff.Seconds(),

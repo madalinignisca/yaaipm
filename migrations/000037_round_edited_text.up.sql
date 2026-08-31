@@ -13,6 +13,10 @@
 --
 -- The CHECK stops an empty edit from silently emptying the brief; the handler
 -- rejects it first, and this is the backstop.
+-- btrim(x) with ONE argument strips only SPACES, so a tab- or newline-only
+-- value survives it and reads as non-empty. Go's strings.TrimSpace rejects
+-- those, so the explicit character set is what keeps this backstop as strict
+-- as the handler it backs up (#66).
 ALTER TABLE feature_debate_rounds
   ADD COLUMN edited_text TEXT
-  CHECK (edited_text IS NULL OR btrim(edited_text) <> '');
+  CHECK (edited_text IS NULL OR btrim(edited_text, E' \t\n\r\f\v') <> '');
