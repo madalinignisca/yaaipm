@@ -739,7 +739,32 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	round, err := h.acceptRoundUnderLock(r.Context(), deb.ID, roundID)
+	// Optional user correction of the AI's text (#66). Absent field means
+	// "accepted as-is"; a present-but-blank one is a validation error, not a
+	// silent no-op, because shipping it would empty the brief.
+	//
+	// ParseForm explicitly: r.Form is nil until something parses, and Has() on
+	// a nil map returns false without complaining — so without this the edit
+	// would be silently ignored on every request.
+	if parseErr := r.ParseForm(); parseErr != nil {
+		h.renderWorkspaceUpdate(w, r, dctx, "Could not read the submitted form.")
+		return
+	}
+	var editedText *string
+	if r.Form.Has("edited_text") {
+		// Browsers normalise textarea newlines to CRLF on submit, while the
+		// stored text uses LF. Without folding them back, text the user never
+		// touched would differ from output_text and EVERY accept would record a
+		// spurious edit — wrong data that looks fine until someone queries it.
+		v := strings.ReplaceAll(r.FormValue("edited_text"), "\r\n", "\n")
+		editedText = &v
+	}
+
+	round, err := h.acceptRoundUnderLock(r.Context(), deb.ID, roundID, editedText)
+	if errors.Is(err, models.ErrEmptyEdit) {
+		h.renderWorkspaceUpdate(w, r, dctx, "The edited text is empty — nothing was accepted.")
+		return
+	}
 	if err != nil {
 		h.writeAcceptError(w, r, err)
 		return
@@ -758,11 +783,16 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 	// while the result is still associated with this round's ID. The
 	// direct-pass path guarantees scorer input == round output.
 	//
+	// ShippedText(), not OutputText: when the user corrected the AI's text, the
+	// effort estimate must describe what will actually be built (#66). The
+	// no-reread rationale above is unchanged — the value is still passed by
+	// value, just the right value.
+	//
 	// The provider lookup happens inside the goroutine, not here: it is a
 	// database round-trip and the accept response must not wait on it.
 	if len(h.scorers) > 0 {
 		go h.scoreAfterAccept(context.WithoutCancel(r.Context()),
-			deb.ID, round.ID, dctx.ticket.ProjectID, round.OutputText)
+			deb.ID, round.ID, dctx.ticket.ProjectID, round.ShippedText())
 	}
 
 	h.renderWorkspaceUpdate(w, r, dctx, "")
@@ -771,7 +801,9 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 // acceptRoundUnderLock runs the accept transaction: lock debate row,
 // lock round row, verify status == 'active' at the debate level,
 // update round + current_text, commit.
-func (h *DebateHandler) acceptRoundUnderLock(ctx context.Context, debateID, roundID string) (*models.DebateRound, error) {
+func (h *DebateHandler) acceptRoundUnderLock(
+	ctx context.Context, debateID, roundID string, editedText *string,
+) (*models.DebateRound, error) {
 	tx, err := h.db.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -791,7 +823,7 @@ func (h *DebateHandler) acceptRoundUnderLock(ctx context.Context, debateID, roun
 		return nil, models.ErrDebateNotActive
 	}
 
-	round, err := h.db.AcceptRoundTx(ctx, tx, debateID, roundID)
+	round, err := h.db.AcceptRoundTx(ctx, tx, debateID, roundID, editedText)
 	if err != nil {
 		return nil, err
 	}
@@ -982,6 +1014,9 @@ func (h *DebateHandler) retryOneEffortScore(ctx context.Context, d models.StaleE
 		return
 	}
 
+	// d.OutputText here is already the SHIPPED text — ClaimStaleEffortScores
+	// coalesces the edit in its query, so the retry path and the immediate
+	// path score the same thing (#66).
 	res, err := scorer.Score(callCtx, d.OutputText)
 	if err != nil {
 		log.Printf("debate RetryStaleEffortScores: scorer %q failed for debate %s round %s: %v",
@@ -1376,7 +1411,9 @@ func (h *DebateHandler) ShowVersion(w http.ResponseWriter, r *http.Request) {
 			if rd.Status == roundStatusAccepted {
 				label++
 				if rd.ID == roundID {
-					viewing = &ViewingVersion{Label: label, Text: rd.OutputText, RestoreFrom: rd.RoundNumber + 1}
+					// ShippedText(): history must show what the document
+					// actually was, not the AI draft behind an edit (#66).
+					viewing = &ViewingVersion{Label: label, Text: rd.ShippedText(), RestoreFrom: rd.RoundNumber + 1}
 					break
 				}
 			}

@@ -22,10 +22,13 @@ const DebateStatusActive = "active"
 // Task 7+) use errors.Is to route each distinct case to the correct
 // HTTP status per the spec §3.3 error discipline table.
 var (
-	ErrDebateNotActive     = errors.New("debate not active")
-	ErrInFlightAIRequest   = errors.New("AI request already in flight")
-	ErrSeedFrozen          = errors.New("seed frozen after first round")
-	ErrStaleAIInput        = errors.New("current_text changed during AI call")
+	ErrDebateNotActive   = errors.New("debate not active")
+	ErrInFlightAIRequest = errors.New("AI request already in flight")
+	ErrSeedFrozen        = errors.New("seed frozen after first round")
+	ErrStaleAIInput      = errors.New("current_text changed during AI call")
+	// ErrEmptyEdit: accepting a blank edit would set current_text to nothing
+	// and destroy the brief (#66).
+	ErrEmptyEdit           = errors.New("edited text is empty")
 	ErrInReviewRoundExists = errors.New("an in-review round already exists")
 	ErrDescriptionLocked   = errors.New("ticket description locked: active debate exists")
 	ErrRoundNotInReview    = errors.New("round is not in review state")
@@ -2550,7 +2553,7 @@ func (db *DB) GetLatestRound(ctx context.Context, debateID string) (*DebateRound
 	r := &DebateRound{}
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, debate_id, round_number, provider, model, triggered_by,
-		       feedback, input_text, output_text, diff_unified, status,
+		       feedback, input_text, output_text, edited_text, diff_unified, status,
 		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
 		       created_at, decided_at
 		  FROM feature_debate_rounds
@@ -2558,7 +2561,7 @@ func (db *DB) GetLatestRound(ctx context.Context, debateID string) (*DebateRound
 		 ORDER BY round_number DESC LIMIT 1`, debateID,
 	).Scan(
 		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
-		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.EditedText, &r.DiffUnified, &r.Status,
 		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
 		&r.CreatedAt, &r.DecidedAt,
 	)
@@ -2572,7 +2575,7 @@ func (db *DB) GetLatestRound(ctx context.Context, debateID string) (*DebateRound
 func (db *DB) GetDebateRounds(ctx context.Context, debateID string) ([]DebateRound, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT id, debate_id, round_number, provider, model, triggered_by,
-		       feedback, input_text, output_text, diff_unified, status,
+		       feedback, input_text, output_text, edited_text, diff_unified, status,
 		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
 		       created_at, decided_at
 		  FROM feature_debate_rounds
@@ -2587,7 +2590,7 @@ func (db *DB) GetDebateRounds(ctx context.Context, debateID string) ([]DebateRou
 		var r DebateRound
 		if err := rows.Scan(
 			&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
-			&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+			&r.Feedback, &r.InputText, &r.OutputText, &r.EditedText, &r.DiffUnified, &r.Status,
 			&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
 			&r.CreatedAt, &r.DecidedAt,
 		); err != nil {
@@ -2756,7 +2759,7 @@ func (db *DB) InsertDebateRoundTx(
 			 input_tokens, output_tokens, cost_micros)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_review', $10, $11, $12)
 		RETURNING id, debate_id, round_number, provider, model, triggered_by,
-		          feedback, input_text, output_text, diff_unified, status,
+		          feedback, input_text, output_text, edited_text, diff_unified, status,
 		          input_tokens, output_tokens, cost_micros, scorer_cost_micros,
 		          created_at, decided_at`,
 		in.DebateID, maxRound+1, in.Provider, in.Model, in.TriggeredBy, feedbackParam,
@@ -2764,7 +2767,7 @@ func (db *DB) InsertDebateRoundTx(
 		in.InputTokens, in.OutputTokens, in.CostMicros,
 	).Scan(
 		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
-		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.EditedText, &r.DiffUnified, &r.Status,
 		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
 		&r.CreatedAt, &r.DecidedAt,
 	)
@@ -2806,13 +2809,13 @@ func (db *DB) getRoundWithTx(ctx context.Context, tx pgx.Tx, roundID string) (*D
 	r := &DebateRound{}
 	err := tx.QueryRow(ctx, `
 		SELECT id, debate_id, round_number, provider, model, triggered_by,
-		       feedback, input_text, output_text, diff_unified, status,
+		       feedback, input_text, output_text, edited_text, diff_unified, status,
 		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
 		       created_at, decided_at
 		  FROM feature_debate_rounds WHERE id = $1`, roundID,
 	).Scan(
 		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
-		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.EditedText, &r.DiffUnified, &r.Status,
 		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
 		&r.CreatedAt, &r.DecidedAt,
 	)
@@ -2833,7 +2836,17 @@ func (db *DB) getRoundWithTx(ctx context.Context, tx pgx.Tx, roundID string) (*D
 // Returns pgx.ErrNoRows if the round doesn't exist under this debate,
 // ErrRoundNotInReview if the round is not in_review (already accepted
 // or rejected — stale client view).
-func (db *DB) AcceptRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID string) (*DebateRound, error) {
+// AcceptRoundTx accepts a round, optionally recording a user edit of the AI's
+// text, and makes the SHIPPED text the debate's current version.
+//
+// editedText is the raw submission; it is stored only when it differs from
+// output_text, so opening the edit tab and changing nothing is not an edit
+// (#66). No staleness token is needed: output_text is written once at insert
+// and never updated, so the status check below is the only "has this round
+// moved on" question there is.
+func (db *DB) AcceptRoundTx(
+	ctx context.Context, tx pgx.Tx, debateID, roundID string, editedText *string,
+) (*DebateRound, error) {
 	var status, outputText string
 	err := tx.QueryRow(ctx, `
 		SELECT status, output_text FROM feature_debate_rounds
@@ -2850,18 +2863,35 @@ func (db *DB) AcceptRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID st
 		return nil, ErrRoundNotInReview
 	}
 
+	// Normalise before deciding: blank is not an edit, and neither is the AI's
+	// own text handed back unchanged.
+	var toStore *string
+	if editedText != nil {
+		trimmed := strings.TrimSpace(*editedText)
+		if trimmed == "" {
+			return nil, ErrEmptyEdit
+		}
+		if *editedText != outputText {
+			toStore = editedText
+		}
+	}
+
 	if _, err = tx.Exec(ctx, `
 		UPDATE feature_debate_rounds
-		   SET status = 'accepted', decided_at = now()
-		 WHERE id = $1`, roundID,
+		   SET status = 'accepted', decided_at = now(), edited_text = $2
+		 WHERE id = $1`, roundID, toStore,
 	); err != nil {
 		return nil, err
 	}
 
+	shipped := outputText
+	if toStore != nil {
+		shipped = *toStore
+	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE feature_debates
 		   SET current_text = $1, updated_at = now()
-		 WHERE id = $2`, outputText, debateID,
+		 WHERE id = $2`, shipped, debateID,
 	); err != nil {
 		return nil, err
 	}
@@ -2932,7 +2962,7 @@ func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, 
 	var newCurrentText string
 	if scanErr := tx.QueryRow(ctx, `
 		SELECT COALESCE(
-			(SELECT output_text FROM feature_debate_rounds
+			(SELECT COALESCE(NULLIF(btrim(edited_text), ''), output_text) FROM feature_debate_rounds
 			  WHERE debate_id = $1 AND status = 'accepted'
 			  ORDER BY round_number DESC LIMIT 1),
 			(SELECT seed_description FROM feature_debates WHERE id = $1)
@@ -3109,7 +3139,7 @@ func (db *DB) ClaimStaleEffortScores(
 		    -- does not affect the FOR UPDATE SKIP LOCKED semantics that
 		    -- keep two replicas from double-billing the same debate.
 		    (SELECT p.scorer_provider FROM projects p WHERE p.id = fd.project_id),
-		    (SELECT r.output_text FROM feature_debate_rounds r
+		    (SELECT COALESCE(NULLIF(btrim(r.edited_text), ''), r.output_text) FROM feature_debate_rounds r
 		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
 		      ORDER BY r.round_number DESC LIMIT 1)`,
 		now, now.Add(-minAge), limit, baseBackoff.Seconds(), maxBackoff.Seconds(),
