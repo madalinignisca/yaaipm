@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA } = require('./helpers');
+const { rootSession } = require('./helpers');
 
 const testUser = {
   name: 'Debate Tester',
@@ -28,20 +28,13 @@ test.describe('Feature Debate Mode', () => {
   // so Refine calls return canned output without hitting a real provider.
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
-    await registerUser(page, testUser);
-    // Pause after registration so the auth rate limiter (0.5 req/s, burst 5)
-    // doesn't block the TOTP setup verify POST — registration + login + 2FA
-    // setup collectively hit 7 rate-limited endpoints in ~3 seconds.
-    await page.waitForTimeout(4000);
-    await loginUser(page, testUser);
-    const result = await setup2FA(page);
-    const totpSecret = result.secret;
-
-    // Capture authenticated cookies immediately after 2FA setup. The session
-    // is fully verified (setup2FA calls Mark2FASetupComplete + MarkTwoFactorVerified).
-    // We share these cookies with every subsequent test page to skip the
-    // per-test fullLogin — avoids TOTP replay rejection inside one 30s window.
-    authCookies = await page.context().cookies();
+    // Shared root session from global setup. The app permits exactly one
+    // registration ever, so a spec cannot make its own user; the old dance also
+    // needed a 4s pause to dodge the auth rate limiter (#136). Sharing cookies
+    // rather than logging in per test also avoids TOTP replay rejection inside
+    // one 30s window.
+    authCookies = rootSession().cookies;
+    await page.context().addCookies(authCookies);
 
     // Org + project boilerplate (via page.request, which also carries auth cookies).
     await page.request.post('/orgs', { form: { name: 'Debate Org' } });

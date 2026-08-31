@@ -1,20 +1,23 @@
 {{define "project_tabs"}}
+{{/* tab-link is a stable E2E landmark kept alongside the DaisyUI
+     classes, same convention as comment-body (#37). It had drifted out
+     of the markup while the suite could not run (#136). */}}
 <div role="tablist" class="tabs tabs-bordered border-b border-base-300 mb-6 -mx-6 px-6">
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/brief"
-       role="tab" class="tab {{if eq .Tab "brief"}}tab-active{{end}}">Brief</a>
+       role="tab" class="tab-link tab {{if eq .Tab "brief"}}tab-active{{end}}">Brief</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/features"
-       role="tab" class="tab {{if eq .Tab "features"}}tab-active{{end}}">Features</a>
+       role="tab" class="tab-link tab {{if eq .Tab "features"}}tab-active{{end}}">Features</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/bugs"
-       role="tab" class="tab {{if eq .Tab "bugs"}}tab-active{{end}}">Bugs</a>
+       role="tab" class="tab-link tab {{if eq .Tab "bugs"}}tab-active{{end}}">Bugs</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/gantt"
-       role="tab" class="tab {{if eq .Tab "gantt"}}tab-active{{end}}">Timeline</a>
+       role="tab" class="tab-link tab {{if eq .Tab "gantt"}}tab-active{{end}}">Timeline</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/costs"
-       role="tab" class="tab {{if eq .Tab "costs"}}tab-active{{end}}">Costs</a>
+       role="tab" class="tab-link tab {{if eq .Tab "costs"}}tab-active{{end}}">Costs</a>
     {{if .IsStaff}}
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/archived"
-       role="tab" class="tab {{if eq .Tab "archived"}}tab-active{{end}}">Archived</a>
+       role="tab" class="tab-link tab {{if eq .Tab "archived"}}tab-active{{end}}">Archived</a>
     <a href="/orgs/{{.Org.Slug}}/projects/{{.Project.Slug}}/settings"
-       role="tab" class="tab {{if eq .Tab "settings"}}tab-active{{end}}">Settings</a>
+       role="tab" class="tab-link tab {{if eq .Tab "settings"}}tab-active{{end}}">Settings</a>
     {{end}}
 </div>
 {{end}}
