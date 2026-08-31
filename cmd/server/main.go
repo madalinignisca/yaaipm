@@ -103,6 +103,16 @@ func main() {
 		}
 	}
 
+	// Say so when storage is OFF, not only when it is on. The absence of a
+	// startup line is not something anyone reads, which is how a deployment ran
+	// for months offering upload controls whose routes were never registered
+	// (#153).
+	engine.StorageEnabled = s3Client != nil
+	if s3Client == nil {
+		log.Printf("S3 storage DISABLED (no S3_ENDPOINT/S3_BUCKET) — " +
+			"file upload and attachment routes are not registered, and the UI hides them")
+	}
+
 	// Handlers
 	secureCookie := strings.HasPrefix(cfg.BaseURL, "https")
 	mailer := mail.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, cfg.SMTPSSL)
