@@ -83,7 +83,6 @@ test.describe('Feature Debate Mode', () => {
   }
 
   test('empty state renders Start button on fresh feature', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     // New UI: empty-state card with "Refine with AI" start button.
@@ -92,7 +91,6 @@ test.describe('Feature Debate Mode', () => {
   });
 
   test('non-feature ticket type is rejected from the debate route', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     // Verify the positive case: a feature ticket's debate page is accessible.
     // The non-feature type guard is exercised at the handler level; creating a
@@ -102,7 +100,6 @@ test.describe('Feature Debate Mode', () => {
   });
 
   test('golden path: start → suggest → accept → approve', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
 
@@ -209,7 +206,6 @@ test.describe('Feature Debate Mode', () => {
   });
 
   test('abandon path: start → suggest → dismiss → abandon → ticket unchanged', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
 

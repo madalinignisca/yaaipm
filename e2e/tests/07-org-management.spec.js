@@ -4,7 +4,7 @@
 let rootCookies = [];
 
 const { test, expect } = require('@playwright/test');
-const { useSession, rootSession } = require('./helpers');
+const { useSession, rootSession, setup2FA } = require('./helpers');
 
 // --- Test users ---
 const superadminUser = {
@@ -28,9 +28,12 @@ const adminUser = {
 const ORG_NAME = 'OrgMgmt Test Org';
 const ORG_SLUG = 'orgmgmt-test-org';
 
-let superadminTotpSecret = '';
-let memberTotpSecret = '';
-let adminTotpSecret = '';
+// Sessions for the two users this spec creates through the invite UI. They are
+// captured at registration rather than re-logged-in per test: a second login
+// inside the same 30s window replays a TOTP code, which ValidateTOTPOnce
+// rejects (#136).
+let memberCookies = [];
+let adminCookies = [];
 let inviteURL = '';
 
 test.describe('Organization Management', () => {
@@ -108,10 +111,12 @@ test.describe('Organization Management', () => {
     // Page should contain "Members" heading
     await expect(page.locator('body')).toContainText('Members');
 
-    // The member list should show the superadmin user
+    // The creator is whoever the shared session belongs to, not this spec's
+    // old private superadmin (#136).
+    const creator = rootSession().user;
     const memberList = page.locator('#member-list');
-    await expect(memberList).toContainText(superadminUser.name);
-    await expect(memberList).toContainText(superadminUser.email);
+    await expect(memberList).toContainText(creator.name);
+    await expect(memberList).toContainText(creator.email);
 
     // The creator should be shown as "owner"
     await expect(memberList).toContainText('owner');
@@ -272,13 +277,16 @@ test.describe('Organization Management', () => {
     // Should be redirected to 2FA setup
     await page.waitForURL('**/setup-2fa', { timeout: 10000 });
 
-    // Complete 2FA setup
+    // Complete 2FA setup, then keep the session: the tests below need to act
+    // AS this member, not as the owner who invited them.
     const result = await setup2FA(page);
-    memberTotpSecret = result.secret;
+    expect(result.secret).toBeTruthy();
+    memberCookies = await page.context().cookies();
   });
 
   test('member can access org page after joining', async ({ page }) => {
-    await useSession(page, rootCookies);
+    // As the MEMBER. Running this as the owner would assert nothing about membership.
+    await useSession(page, memberCookies);
 
     // Navigate to the org page
     await page.goto(`/orgs/${ORG_SLUG}`);
@@ -419,11 +427,13 @@ test.describe('Organization Management', () => {
     // Complete 2FA setup
     await page.waitForURL('**/setup-2fa', { timeout: 10000 });
     const result = await setup2FA(page);
-    adminTotpSecret = result.secret;
+    expect(result.secret).toBeTruthy();
+    adminCookies = await page.context().cookies();
   });
 
   test('org admin can access settings and sees invite form and member list', async ({ page }) => {
-    await useSession(page, rootCookies);
+    // As the ORG ADMIN — the whole point is that a non-owner admin can do this.
+    await useSession(page, adminCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -431,30 +441,37 @@ test.describe('Organization Management', () => {
     // Admin should see the Members section
     await expect(page.locator('body')).toContainText('Members');
 
-    // Admin should see the Invite Member form
-    await expect(page.locator('input[name="email"]')).toBeVisible();
-    await expect(page.locator('select[name="role"]')).toBeVisible();
-    await expect(page.locator('button:has-text("Invite")')).toBeVisible();
+    // Admin should see the Invite Member form. Scope the role select to that
+    // form: an admin also sees a per-member role select in the member list, so
+    // a bare select[name="role"] matches both.
+    const inviteForm = page.locator('form').filter({ has: page.locator('button:has-text("Invite")') });
+    await expect(inviteForm.locator('input[name="email"]')).toBeVisible();
+    await expect(inviteForm.locator('select[name="role"]')).toBeVisible();
+    await expect(inviteForm.locator('button:has-text("Invite")')).toBeVisible();
 
     // Admin should see the Pending Invitations section
     await expect(page.locator('body')).toContainText('Pending Invitations');
 
-    // The member list should include the superadmin (owner) and the admin user
+    // The member list should include the owner (the shared root user) and the
+    // admin this spec invited.
     const memberList = page.locator('#member-list');
-    await expect(memberList).toContainText(superadminUser.name);
+    await expect(memberList).toContainText(rootSession().user.name);
     await expect(memberList).toContainText(adminUser.name);
   });
 
   test('org admin can invite new members', async ({ page }) => {
-    await useSession(page, rootCookies);
+    // As the ORG ADMIN, not the owner.
+    await useSession(page, adminCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
 
-    // Re-invite the removed member user to verify admin has invite capability
-    await page.fill('input[name="email"]', memberUser.email);
-    await page.selectOption('select[name="role"]', 'member');
-    await page.click('button:has-text("Invite")');
+    // Re-invite the removed member user to verify admin has invite capability.
+    // Scoped to the invite form for the same reason as the test above.
+    const inviteForm = page.locator('form').filter({ has: page.locator('button:has-text("Invite")') });
+    await inviteForm.locator('input[name="email"]').fill(memberUser.email);
+    await inviteForm.locator('select[name="role"]').selectOption('member');
+    await inviteForm.locator('button:has-text("Invite")').click();
     await page.waitForLoadState('networkidle');
 
     // Verify success

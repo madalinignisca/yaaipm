@@ -3,7 +3,10 @@
 {{$orgSlug := .OrgSlug}}
 
 {{range .Members}}
-<div class="flex items-center justify-between py-3 px-4 border-b border-base-300 last:border-b-0"
+{{/* member-row is a stable E2E landmark kept alongside the Tailwind classes,
+     same convention as comment-body (#37); the suite scopes per-member
+     assertions to it. It had drifted out while nothing could run (#136). */}}
+<div class="member-row flex items-center justify-between py-3 px-4 border-b border-base-300 last:border-b-0"
      id="member-{{.User.ID}}">
     <div class="min-w-0">
         <p class="font-medium text-sm truncate">{{.User.Name}}</p>
