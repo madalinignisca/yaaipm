@@ -189,6 +189,10 @@
     </div>
 
     {{/* Attachments */}}
+    {{/* Storage-gated (#153). With no object store configured, main.go does not
+         register the upload routes at all, so offering these controls means
+         offering something that 404s. */}}
+    {{if $.StorageEnabled}}
     <div class="card bg-base-100 border border-base-300 shadow-sm">
         <div class="card-body p-6 gap-3">
             <div class="flex items-center justify-between flex-wrap gap-3">
@@ -311,6 +315,8 @@
         </div>
     </div>
 
+    {{end}}
+
     {{/* Comments */}}
     <div class="card bg-base-100 border border-base-300 shadow-sm">
         <div class="card-body p-6 gap-4">
@@ -344,7 +350,10 @@
     </div>
 </div>
 
-{{template "image_modal" .}}
+{{/* $ , not . : inside {{with .Data}} a bare .StorageEnabled is a
+     missing field, which aborts execution and SILENTLY TRUNCATES everything
+     after it (#153, same trap as PR #80). */}}
+{{if $.StorageEnabled}}{{template "image_modal" $}}{{end}}
 
 <script>
 var _imageGenProjectID = '{{.Ticket.ProjectID}}';
@@ -369,6 +378,7 @@ function ticketEditor() {
                             'bold', 'italic', 'heading', '|',
                             'unordered-list', 'ordered-list', '|',
                             'link',
+                            {{if $.StorageEnabled}}
                             {
                                 name: 'insert-image',
                                 action: function(editor) {
@@ -380,6 +390,7 @@ function ticketEditor() {
                                 className: 'fa fa-image',
                                 title: 'Insert Image',
                             },
+                            {{end}}
                             '|', 'code', 'quote', '|',
                             'preview', 'side-by-side', '|',
                             'guide'

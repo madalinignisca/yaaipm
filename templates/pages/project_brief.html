@@ -133,7 +133,7 @@
     {{end}}
 </div>
 
-{{template "image_modal" .}}
+{{if $.StorageEnabled}}{{template "image_modal" $}}{{end}}
 
 <script>
 var _imageGenProjectID = '{{.Project.ID}}';
@@ -157,6 +157,7 @@ function briefEditor() {
                             'bold', 'italic', 'heading', '|',
                             'unordered-list', 'ordered-list', '|',
                             'link',
+                            {{if $.StorageEnabled}}
                             {
                                 name: 'insert-image',
                                 action: function(editor) {
@@ -168,6 +169,7 @@ function briefEditor() {
                                 className: 'fa fa-image',
                                 title: 'Insert Image',
                             },
+                            {{end}}
                             '|', 'code', 'quote', '|',
                             'preview', 'side-by-side', '|',
                             'guide'
