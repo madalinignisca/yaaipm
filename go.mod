@@ -4,10 +4,10 @@ go 1.25.0
 
 require (
 	filippo.io/csrf v0.2.1
-	github.com/alecthomas/chroma/v2 v2.2.0
-	github.com/anthropics/anthropic-sdk-go v1.26.0
+	github.com/alecthomas/chroma/v2 v2.23.1
+	github.com/anthropics/anthropic-sdk-go v1.29.0
 	github.com/aws/aws-sdk-go-v2 v1.41.5
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.10
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.13
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/google/uuid v1.6.0
@@ -18,12 +18,12 @@ require (
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/sergi/go-diff v1.4.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	github.com/yuin/goldmark v1.7.16
+	github.com/yuin/goldmark v1.8.2
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/text v0.39.0
 	golang.org/x/time v0.15.0
-	google.golang.org/genai v1.48.0
+	google.golang.org/genai v1.52.1
 )
 
 require (
@@ -42,7 +42,7 @@ require (
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/dlclark/regexp2 v1.7.0 // indirect
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.8 // indirect

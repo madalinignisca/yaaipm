@@ -59,7 +59,7 @@ func (s *AnthropicScorer) Model() string { return s.model }
 // without a network round-trip.
 func buildAnthropicScoreParams(model, text string) anthropic.MessageNewParams {
 	return anthropic.MessageNewParams{
-		Model:       anthropic.Model(model),
+		Model:       model,
 		MaxTokens:   scorerMaxTokens,
 		Temperature: anthropic.Float(scorerTemperature),
 		System: []anthropic.TextBlockParam{
