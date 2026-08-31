@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA } = require('./helpers');
+const { rootSession } = require('./helpers');
 
 // Fake-backed debate coverage that complements 11-debate.spec.js. Spec 11
 // drives the happy path (start → suggest → accept → approve, dismiss,
@@ -24,14 +24,11 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   test.use({ timeout: 120000 });
 
   test.beforeAll(async ({ browser }) => {
-    const page = await browser.newPage();
-    await registerUser(page, testUser);
-    // Pause so the auth rate limiter (0.5 req/s, burst 5) doesn't block the
-    // TOTP verify POST — registration + login + 2FA hit several limited routes.
-    await page.waitForTimeout(4000);
-    await loginUser(page, testUser);
-    await setup2FA(page);
-    authCookies = await page.context().cookies();
+    const page = await browser.newPage();    // Shared root session from global setup: the app permits exactly one
+    // registration ever, and the old per-spec register/login/2FA dance also
+    // needed a 4s pause to dodge the auth rate limiter (#136).
+    authCookies = rootSession().cookies;
+    await page.context().addCookies(authCookies);
 
     await page.request.post('/orgs', { form: { name: 'Debate Fake Org' } });
     await page.request.post('/orgs/debate-fake-org/projects', { form: { name: 'Debate Fake Project' } });

@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA } = require('./helpers');
+const { rootSession } = require('./helpers');
 
 // Opt-in real-AI smoke for Feature Debate Mode (issue #81, Part B).
 //
@@ -31,12 +31,11 @@ test.describe('Feature Debate Mode — real AI smoke', () => {
   test.skip(!REAL, 'real-AI smoke is opt-in — set DEBATE_REAL_AI=1 and run against an app with live provider keys');
 
   test.beforeAll(async ({ browser }) => {
-    const page = await browser.newPage();
-    await registerUser(page, testUser);
-    await page.waitForTimeout(4000);
-    await loginUser(page, testUser);
-    await setup2FA(page);
-    authCookies = await page.context().cookies();
+    const page = await browser.newPage();    // Shared root session from global setup: the app permits exactly one
+    // registration ever, and the old per-spec register/login/2FA dance also
+    // needed a 4s pause to dodge the auth rate limiter (#136).
+    authCookies = rootSession().cookies;
+    await page.context().addCookies(authCookies);
 
     await page.request.post('/orgs', { form: { name: 'Debate Real Org' } });
     await page.request.post('/orgs/debate-real-org/projects', { form: { name: 'Debate Real Project' } });

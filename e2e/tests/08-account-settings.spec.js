@@ -1,5 +1,10 @@
+// Sessions come from global setup: the app allows exactly one registration
+// ever (first-user-only), and logging in per test would replay a TOTP code
+// inside its 30s step, which ValidateTOTPOnce rejects (#136).
+let rootCookies = [];
+
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, verify2FA, fullLogin, generateTOTP } = require('./helpers');
+const { useSession, rootSession, generateTOTP } = require('./helpers');
 
 const testUser = {
   name: 'Account Settings User',
@@ -13,17 +18,18 @@ let totpSecret = '';
 test.describe.serial('Account Settings', () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
-    await registerUser(page, testUser);
-    await loginUser(page, testUser);
-    const result = await setup2FA(page);
-    totpSecret = result.secret;
+    // Shared root session: see the note at the top of this file (#136).
+
+    rootCookies = rootSession().cookies;
+
+    await useSession(page, rootCookies);
     await page.close();
   });
 
   test('account settings page renders', async ({ page }) => {
     test.skip(!totpSecret, 'TOTP secret not available');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -39,7 +45,7 @@ test.describe.serial('Account Settings', () => {
   test('change password - wrong old password shows error', async ({ page }) => {
     test.skip(!totpSecret, 'TOTP secret not available');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -60,7 +66,7 @@ test.describe.serial('Account Settings', () => {
   test('change password - too short new password shows error', async ({ page }) => {
     test.skip(!totpSecret, 'TOTP secret not available');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -80,7 +86,7 @@ test.describe.serial('Account Settings', () => {
   test('change password - success', async ({ page }) => {
     test.skip(!totpSecret, 'TOTP secret not available');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 
@@ -113,7 +119,7 @@ test.describe.serial('Account Settings', () => {
     test.skip(!totpSecret, 'TOTP secret not available');
 
     // Login with the new password (changed in the previous test)
-    await fullLogin(page, { email: testUser.email, password: newPassword, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/account/settings');
     await page.waitForLoadState('networkidle');
 

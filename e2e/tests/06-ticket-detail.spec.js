@@ -1,11 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const {
-  registerUser,
-  loginUser,
-  setup2FA,
-  inviteAndRegisterUser,
-  useSession,
-} = require('./helpers');
+const { inviteAndRegisterUser, useSession, rootSession } = require('./helpers');
 
 // ---------- test users ----------
 const staffUser = {
@@ -60,11 +54,13 @@ test.describe.serial('Ticket Detail Page', () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
 
-    // ---- Register staff user (first user in this DB run becomes superadmin) ----
-    await registerUser(page, staffUser);
-    await loginUser(page, staffUser);
-    await setup2FA(page);
-    staffCookies = await page.context().cookies();
+    // ---- Use the shared root session ----
+    // NOT registerUser: the app permits exactly one registration ever
+    // (first-user-only), and global setup has already spent it. A spec that
+    // registers its own user works alone and skips silently behind any other
+    // spec, which is what made this whole suite decorative (#136).
+    staffCookies = rootSession().cookies;
+    await useSession(page, staffCookies);
 
     // ---- Create org + project ----
     await page.request.post('/orgs', { form: { name: 'Detail Org' } });

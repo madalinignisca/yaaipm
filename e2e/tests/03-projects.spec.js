@@ -1,5 +1,10 @@
+// Sessions come from global setup: the app allows exactly one registration
+// ever (first-user-only), and logging in per test would replay a TOTP code
+// inside its 30s step, which ValidateTOTPOnce rejects (#136).
+let rootCookies = [];
+
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, fullLogin } = require('./helpers');
+const { useSession, rootSession } = require('./helpers');
 
 const testUser = {
   name: 'Project Admin',
@@ -11,10 +16,11 @@ let totpSecret = '';
 test.describe('Projects', () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
-    await registerUser(page, testUser);
-    await loginUser(page, testUser);
-    const result = await setup2FA(page);
-    totpSecret = result.secret;
+    // Shared root session: see the note at the top of this file (#136).
+
+    rootCookies = rootSession().cookies;
+
+    await useSession(page, rootCookies);
 
     // Create an organization
     await page.request.post('/orgs', { form: { name: 'Project Org' } });
@@ -22,7 +28,7 @@ test.describe('Projects', () => {
   });
 
   test('create project via form', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
 
     // POST to create project
     await page.request.post('/orgs/project-org/projects', {
@@ -34,20 +40,26 @@ test.describe('Projects', () => {
     await page.waitForLoadState('networkidle');
 
     // Brief page shows tab navigation and brief content area
-    await expect(page.locator('body')).toContainText('No brief available yet');
+    // The empty-brief copy is "No project brief yet" — the old string had
+    // drifted and nothing could catch it while this spec never ran (#136).
+    await expect(page.locator('body')).toContainText('No project brief yet');
   });
 
   test('project brief page renders', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/project-org/projects/e2e-project/brief');
 
     await expect(page.locator('body')).toContainText('Brief');
-    // Tab navigation should be visible
-    await expect(page.locator('.tab-link')).toHaveCount(4);
+    // Assert the tabs by name rather than by count: a bare number goes stale
+    // every time a tab is added, and says nothing about what is missing.
+    const tabs = page.locator('.tab-link');
+    for (const name of ['Brief', 'Features', 'Bugs', 'Timeline', 'Settings']) {
+      await expect(tabs.filter({ hasText: name })).toHaveCount(1);
+    }
   });
 
   test('project features page renders', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/project-org/projects/e2e-project/features');
     await page.waitForLoadState('networkidle');
 
@@ -55,7 +67,7 @@ test.describe('Projects', () => {
   });
 
   test('project bugs page renders', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/project-org/projects/e2e-project/bugs');
     await page.waitForLoadState('networkidle');
 
@@ -63,7 +75,7 @@ test.describe('Projects', () => {
   });
 
   test('project gantt/timeline page renders', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/project-org/projects/e2e-project/gantt');
     await page.waitForLoadState('networkidle');
 
@@ -71,7 +83,7 @@ test.describe('Projects', () => {
   });
 
   test('project tabs navigate correctly', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/project-org/projects/e2e-project/brief');
 
     // Click Features tab

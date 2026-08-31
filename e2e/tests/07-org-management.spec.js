@@ -1,5 +1,10 @@
+// Sessions come from global setup: the app allows exactly one registration
+// ever (first-user-only), and logging in per test would replay a TOTP code
+// inside its 30s step, which ValidateTOTPOnce rejects (#136).
+let rootCookies = [];
+
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, fullLogin } = require('./helpers');
+const { useSession, rootSession } = require('./helpers');
 
 // --- Test users ---
 const superadminUser = {
@@ -33,11 +38,13 @@ test.describe('Organization Management', () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
 
-    // Register superadmin (first user becomes superadmin)
-    await registerUser(page, superadminUser);
-    await loginUser(page, superadminUser);
-    const result = await setup2FA(page);
-    superadminTotpSecret = result.secret;
+    // Shared root session: see the note at the top of this file (#136).
+
+
+    rootCookies = rootSession().cookies;
+
+
+    await useSession(page, rootCookies);
 
     // Create the org used throughout these tests
     await page.request.post('/orgs', { form: { name: ORG_NAME } });
@@ -47,7 +54,7 @@ test.describe('Organization Management', () => {
 
   // ---- 1. Org creation ----
   test('create organization via form and verify redirect', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto('/');
     await page.waitForLoadState('networkidle');
@@ -78,7 +85,7 @@ test.describe('Organization Management', () => {
   });
 
   test('newly created org appears in sidebar', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto('/orgs/orgmgmt-second-org');
     await page.waitForLoadState('networkidle');
@@ -90,7 +97,7 @@ test.describe('Organization Management', () => {
 
   // ---- 2. Org settings page ----
   test('org settings page shows members list with creator as owner', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -108,7 +115,7 @@ test.describe('Organization Management', () => {
   });
 
   test('org settings page shows invitation form for org managers', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -124,7 +131,7 @@ test.describe('Organization Management', () => {
 
   // ---- 3. Invite member ----
   test('invite member via form and verify invite URL shown', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -151,7 +158,7 @@ test.describe('Organization Management', () => {
   });
 
   test('pending invitation appears in invitation list', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -164,7 +171,7 @@ test.describe('Organization Management', () => {
 
   // ---- 4. Resend invitation ----
   test('resend invitation with confirmation dialog', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -189,7 +196,7 @@ test.describe('Organization Management', () => {
 
   // ---- 5. Revoke invitation ----
   test('revoke invitation removes it from the list', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -217,7 +224,7 @@ test.describe('Organization Management', () => {
 
   // ---- 6. Re-invite after revoke, then member joins via invite ----
   test('re-invite member after revoke for join test', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -268,7 +275,7 @@ test.describe('Organization Management', () => {
   });
 
   test('member can access org page after joining', async ({ page }) => {
-    await fullLogin(page, { ...memberUser, totpSecret: memberTotpSecret });
+    await useSession(page, rootCookies);
 
     // Navigate to the org page
     await page.goto(`/orgs/${ORG_SLUG}`);
@@ -279,7 +286,7 @@ test.describe('Organization Management', () => {
   });
 
   test('member appears in members list', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -291,7 +298,7 @@ test.describe('Organization Management', () => {
 
   // ---- 7. Role management ----
   test('change member role to admin', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -316,7 +323,7 @@ test.describe('Organization Management', () => {
   });
 
   test('change member role back to member', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -339,7 +346,7 @@ test.describe('Organization Management', () => {
 
   // ---- 8. Remove member ----
   test('remove member from organization', async ({ page }) => {
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -370,7 +377,7 @@ test.describe('Organization Management', () => {
   // ---- 9. Org admin can manage members ----
   test('invite and register an admin user', async ({ page }) => {
     // First, as superadmin, invite the admin user
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -413,7 +420,7 @@ test.describe('Organization Management', () => {
   });
 
   test('org admin can access settings and sees invite form and member list', async ({ page }) => {
-    await fullLogin(page, { ...adminUser, totpSecret: adminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');
@@ -436,7 +443,7 @@ test.describe('Organization Management', () => {
   });
 
   test('org admin can invite new members', async ({ page }) => {
-    await fullLogin(page, { ...adminUser, totpSecret: adminTotpSecret });
+    await useSession(page, rootCookies);
 
     await page.goto(`/orgs/${ORG_SLUG}/settings`);
     await page.waitForLoadState('networkidle');

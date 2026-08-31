@@ -207,6 +207,7 @@ async function fullLogin(page, { email, password, totpSecret }) {
 }
 
 module.exports = {
+  rootSession,
   inviteAndRegisterUser,
   useSession,
   generateTOTP,
@@ -216,3 +217,27 @@ module.exports = {
   verify2FA,
   fullLogin,
 };
+
+/**
+ * The shared root session created once by global-setup.js.
+ *
+ * Specs must NOT call registerUser: the application only permits one
+ * registration ever (first-user-only), so a spec that registers its own user
+ * works alone and silently skips behind any other spec (#136).
+ */
+function rootSession() {
+  const file = require('path').join(__dirname, '..', '.auth', 'root.json');
+  let raw;
+  try {
+    raw = require('fs').readFileSync(file, 'utf-8');
+  } catch (err) {
+    throw new Error(
+      `no root session at ${file}: global setup did not run or failed (${err.message})`,
+    );
+  }
+  const state = JSON.parse(raw);
+  if (!state.cookies || state.cookies.length === 0) {
+    throw new Error('root session file contains no cookies');
+  }
+  return state;
+}
