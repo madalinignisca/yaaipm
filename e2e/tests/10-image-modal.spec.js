@@ -80,7 +80,6 @@ test.describe('Image Insert Modal', () => {
 
   test.describe('Brief editor', () => {
     test('image toolbar button opens modal', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -101,7 +100,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal has Upload and AI Generate tabs', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -122,7 +120,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('tab switching works', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -151,7 +148,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal closes on Cancel button', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -169,7 +165,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal closes on X button', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -187,7 +182,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal closes on backdrop click', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -205,7 +199,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal closes on ESC key', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -222,7 +215,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('upload tab shows drop zone', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -238,7 +230,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('file upload via picker works and inserts markdown', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       const testImagePath = createTestImage();
 
       await useSession(page, rootCookies);
@@ -275,7 +266,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('AI generate tab shows prompt textarea', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -298,7 +288,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('AI generate button enables when prompt is entered', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -316,7 +305,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('AI generate shows error when service unavailable', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -337,7 +325,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('old generate-image toolbar button is removed', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
@@ -368,13 +355,14 @@ test.describe('Image Insert Modal', () => {
       await page.waitForLoadState('networkidle');
 
       // Find the ticket link href so we can navigate directly
-      const ticketLink = page.locator('a:has-text("Image Test Ticket")');
+      // .first(): the ticket appears as a card link and again in sub-item /
+      // listing markup, so a bare text match resolves to several elements.
+      const ticketLink = page.locator('a:has-text("Image Test Ticket")').first();
       ticketUrl = await ticketLink.getAttribute('href');
       await page.close();
     });
 
     test('image toolbar button opens modal on ticket detail', async ({ page }) => {
-      test.skip(!ticketUrl, 'Ticket URL not found');
       await useSession(page, rootCookies);
 
       // Full page load ensures EasyMDE script in page_head is loaded
@@ -399,7 +387,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('file upload works on ticket editor', async ({ page }) => {
-      test.skip(!ticketUrl, 'Ticket URL not found');
       const testImagePath = createTestImage();
 
       await useSession(page, rootCookies);
@@ -433,7 +420,6 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('upload another button resets for new upload', async ({ page }) => {
-      test.skip(!ticketUrl, 'Ticket URL not found');
       const testImagePath = createTestImage();
 
       await useSession(page, rootCookies);

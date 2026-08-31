@@ -5,7 +5,7 @@ const {
   inviteAndRegisterUser,
   loginUser,
   verify2FA,
-  awaitNextTOTPWindow,
+  awaitTOTPReuseWindow,
   generateTOTP,
 } = require('./helpers');
 
@@ -149,10 +149,10 @@ test.describe.serial('Account Settings', () => {
   });
 
   test('login with new email works', async ({ page }) => {
-    // The previous test already signed in; reusing its TOTP code inside the
-    // same 30s step is refused as a replay, which would fail here for a reason
-    // that has nothing to do with the email change (#136).
-    await awaitNextTOTPWindow(page);
+    // The previous test signed in; the server refuses ANY 2FA verification
+    // within 30s of the last one (not just the same code), so wait it out —
+    // otherwise this fails for a reason unrelated to the email change (#136).
+    await awaitTOTPReuseWindow(page);
 
     await loginUser(page, { email: newEmail, password: newPassword });
     await verify2FA(page, ownTotpSecret);
