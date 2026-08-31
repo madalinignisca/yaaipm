@@ -13,12 +13,35 @@
       <button type="button" role="tab" class="tab" :class="tab === 'changes' && 'tab-active'"
               :aria-selected="tab === 'changes' ? 'true' : 'false'" aria-controls="debate-pane-changes"
               @click="tab = 'changes'" data-testid="debate-tab-changes">What changed</button>
+      <button type="button" role="tab" class="tab" :class="tab === 'edit' && 'tab-active'"
+              :aria-selected="tab === 'edit' ? 'true' : 'false'" aria-controls="debate-pane-edit"
+              @click="tab = 'edit'" data-testid="debate-tab-edit">Edit</button>
     </div>
     <div x-show="tab === 'preview'" id="debate-pane-preview" role="tabpanel" class="prose prose-sm max-w-none py-3" data-testid="debate-preview-pane">
       {{markdown .Pending.OutputText}}
     </div>
     <div x-show="tab === 'changes'" x-cloak id="debate-pane-changes" role="tabpanel" class="py-3 text-sm" data-testid="debate-changes-pane">
+      {{/* Always the AI's proposal against the previous version, even after an
+           edit — the label says so, because it no longer describes what will
+           ship once the text below has been changed (#66). */}}
+      <p class="text-xs text-base-content/60 mb-2">What the AI proposed, compared with the current version.</p>
       {{renderInlineDiff .Pending.InputText .Pending.OutputText}}
+    </div>
+    {{/* Correct the AI before accepting (#66). Accept sends this via
+         hx-include, so the panel keeps its deliberate no-<form> design and the
+         global CSRF header injection in init.js still applies.
+
+         The text is client-side only: there is no draft persistence, so
+         anything that swaps #debate-stage discards it. Nothing does that in the
+         background — the effort chip polls into its own element — so only the
+         user's own navigation can lose it. */}}
+    <div x-show="tab === 'edit'" x-cloak id="debate-pane-edit" role="tabpanel" class="py-3" data-testid="debate-edit-pane">
+      <label class="label pb-1" for="debate-edit-text">
+        <span class="label-text text-xs">Edit before accepting. Leave it alone to accept the AI's version as-is.</span>
+      </label>
+      <textarea id="debate-edit-text" name="edited_text"
+                class="textarea textarea-bordered w-full font-mono text-sm"
+                rows="14" data-testid="debate-edit-textarea">{{.Pending.OutputText}}</textarea>
     </div>
   </div>
   {{/* Bare hx-post buttons (no <form>): CSRF is covered globally — init.js
@@ -27,6 +50,7 @@
   <div class="flex gap-2 px-4 py-3 border-t border-base-300 bg-base-100">
     <button class="btn btn-success btn-sm" data-testid="debate-accept"
             hx-post="/tickets/{{.TicketID}}/debate/rounds/{{.Pending.RoundID}}/accept"
+            hx-include="#debate-edit-text"
             hx-target="#debate-stage" hx-swap="innerHTML">
       Accept — make this version {{.Pending.NextVersion}}
     </button>

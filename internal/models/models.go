@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type User struct {
 	CreatedAt          time.Time `db:"created_at"`
@@ -307,21 +310,49 @@ type FeatureDebate struct {
 }
 
 type DebateRound struct {
-	CreatedAt        time.Time  `db:"created_at"`
-	DecidedAt        *time.Time `db:"decided_at"`
-	Feedback         *string    `db:"feedback"`
-	DiffUnified      *string    `db:"diff_unified"`
-	InputTokens      *int       `db:"input_tokens"`
-	OutputTokens     *int       `db:"output_tokens"`
-	CostMicros       *int64     `db:"cost_micros"`
-	ScorerCostMicros *int64     `db:"scorer_cost_micros"`
-	ID               string     `db:"id"`
-	DebateID         string     `db:"debate_id"`
-	Provider         string     `db:"provider"` // claude | gemini | openai
-	Model            string     `db:"model"`
-	TriggeredBy      string     `db:"triggered_by"`
-	InputText        string     `db:"input_text"`
-	OutputText       string     `db:"output_text"`
-	Status           string     `db:"status"` // in_review | accepted | rejected
-	RoundNumber      int        `db:"round_number"`
+	CreatedAt   time.Time  `db:"created_at"`
+	DecidedAt   *time.Time `db:"decided_at"`
+	Feedback    *string    `db:"feedback"`
+	DiffUnified *string    `db:"diff_unified"`
+	// EditedText is the user's correction of the AI's proposal, NULL when they
+	// accepted it as-is. Never read it directly to decide what shipped — use
+	// ShippedText(), which is the single definition of that (#66).
+	EditedText       *string `db:"edited_text"`
+	InputTokens      *int    `db:"input_tokens"`
+	OutputTokens     *int    `db:"output_tokens"`
+	CostMicros       *int64  `db:"cost_micros"`
+	ScorerCostMicros *int64  `db:"scorer_cost_micros"`
+	ID               string  `db:"id"`
+	DebateID         string  `db:"debate_id"`
+	Provider         string  `db:"provider"` // claude | gemini | openai
+	Model            string  `db:"model"`
+	TriggeredBy      string  `db:"triggered_by"`
+	InputText        string  `db:"input_text"`
+	OutputText       string  `db:"output_text"`
+	Status           string  `db:"status"` // in_review | accepted | rejected
+	RoundNumber      int     `db:"round_number"`
+}
+
+// ShippedText is the text this round actually contributed to the document: the
+// user's edit when they made one, otherwise the AI's output.
+//
+// The SQL in UndoRoundsFromTx and ClaimStaleEffortScores implements the same
+// rule and MUST agree with this to the byte. It uses CASE WHEN btrim(...) <> ”
+// rather than NULLIF(btrim(...), ”) for that reason: NULLIF returns the
+// TRIMMED value, which silently rewrote the user's text and made undo disagree
+// with this function. The trim answers "is this blank?" — it never alters what
+// ships. TestShippedTextAgreesBetweenGoAndSQL pins the two together.
+//
+// This exists so the COALESCE is written once. Five separate places need it —
+// accept, the undo recompute, both scorer paths and the version-history viewer
+// — and each one that forgets it fails silently, showing or scoring the AI's
+// draft instead of what shipped (#66).
+func (r *DebateRound) ShippedText() string {
+	// A blank edit is treated as no edit. The handler refuses one and a CHECK
+	// constraint backs that up, so this is the third line of defense — but it
+	// is the cheapest, and shipping "" would blank the brief.
+	if r.EditedText != nil && strings.TrimSpace(*r.EditedText) != "" {
+		return *r.EditedText
+	}
+	return r.OutputText
 }

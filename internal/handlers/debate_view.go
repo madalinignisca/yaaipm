@@ -56,7 +56,7 @@ type DebateView struct {
 // (the seed text).
 type ViewingVersion struct {
 	Label       int    // 0 means "Original"
-	Text        string // the version's full text (output_text or seed)
+	Text        string // the version's full text: what SHIPPED (edit or AI output), or the seed
 	RestoreFrom int    // undo ?from= that restores this version
 }
 
