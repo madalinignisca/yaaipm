@@ -285,4 +285,56 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
     // The whole point of the feature: not the default provider.
     expect(chipText, `effort chip text was: ${chipText}`).not.toContain('via Gemini');
   });
+  // Placed LAST on purpose: these accept rounds, and the tests above count
+  // versions on the shared debate. Adding accepted rounds earlier shifts that
+  // state and breaks the undo-cascade test (#66).
+  // #66: correct the AI before accepting, rather than paying for another round.
+  test('edit the AI suggestion before accepting it', async ({ page }) => {
+    await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
+    await ensureComposer(page);
+
+    await page.fill('[data-testid="debate-feedback"]', 'Please improve this');
+    await page.click('[data-testid="debate-suggest"]');
+    await expect(page.locator('[data-testid="debate-suggestion"]')).toBeVisible();
+
+    // The Edit tab holds the AI's proposal, ready to correct.
+    await page.click('[data-testid="debate-tab-edit"]');
+    const textarea = page.locator('[data-testid="debate-edit-textarea"]');
+    await expect(textarea).toBeVisible();
+    const aiProposal = await textarea.inputValue();
+    expect(aiProposal).toContain('added by fake refiner');
+
+    const corrected = `${aiProposal}\n\nHand-written correction that the AI did not produce.`;
+    await textarea.fill(corrected);
+
+    await page.click('[data-testid="debate-accept"]');
+    await expect(page.locator('[data-testid="debate-composer"]')).toBeVisible({ timeout: 8000 });
+
+    // The document is the CORRECTED text — this is the whole feature.
+    const doc = page.locator('[data-testid="debate-current-text"]');
+    await expect(doc).toContainText('Hand-written correction that the AI did not produce.');
+    await expect(doc).toContainText('added by fake refiner');
+  });
+
+  // The textarea is always in the DOM (the tab only hides it), so it is
+  // submitted on every accept. Accepting without touching it must not be
+  // recorded as an edit, and must ship the AI's text unchanged.
+  test('accepting without opening the Edit tab ships the AI text unchanged', async ({ page }) => {
+    await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
+    await ensureComposer(page);
+
+    await page.fill('[data-testid="debate-feedback"]', 'Another improvement');
+    await page.click('[data-testid="debate-suggest"]');
+    await expect(page.locator('[data-testid="debate-suggestion"]')).toBeVisible();
+
+    const proposed = await page.locator('[data-testid="debate-edit-textarea"]').inputValue();
+
+    await page.click('[data-testid="debate-accept"]');
+    await expect(page.locator('[data-testid="debate-composer"]')).toBeVisible({ timeout: 8000 });
+
+    await expect(page.locator('[data-testid="debate-current-text"]')).toContainText(
+      proposed.split('\n')[0].trim(),
+    );
+  });
+
 });

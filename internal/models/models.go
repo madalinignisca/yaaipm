@@ -336,6 +336,13 @@ type DebateRound struct {
 // ShippedText is the text this round actually contributed to the document: the
 // user's edit when they made one, otherwise the AI's output.
 //
+// The SQL in UndoRoundsFromTx and ClaimStaleEffortScores implements the same
+// rule and MUST agree with this to the byte. It uses CASE WHEN btrim(...) <> ”
+// rather than NULLIF(btrim(...), ”) for that reason: NULLIF returns the
+// TRIMMED value, which silently rewrote the user's text and made undo disagree
+// with this function. The trim answers "is this blank?" — it never alters what
+// ships. TestShippedTextAgreesBetweenGoAndSQL pins the two together.
+//
 // This exists so the COALESCE is written once. Five separate places need it —
 // accept, the undo recompute, both scorer paths and the version-history viewer
 // — and each one that forgets it fails silently, showing or scoring the AI's

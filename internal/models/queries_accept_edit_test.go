@@ -159,3 +159,28 @@ func TestAcceptRefusesAnEmptyEdit(t *testing.T) {
 		})
 	}
 }
+
+// TestWhitespaceOnlyDifferenceIsNotAnEdit makes an untested choice deliberate.
+//
+// The user opens the Edit tab, adds a stray trailing space, and accepts. That
+// is not an edit of the brief, and recording one would make every later "was
+// this hand-edited?" answer wrong — the same concern that motivates folding
+// CRLF in the handler: a difference nobody can see must not become data.
+func TestWhitespaceOnlyDifferenceIsNotAnEdit(t *testing.T) {
+	db := NewDB(testutil.SetupTestDB(t))
+	const aiText = "The AI's proposal."
+
+	deb, userID := newDebate(t, db)
+	roundID := seedPendingRound(t, db, deb.ID, userID, 1, aiText)
+
+	round, err := acceptWith(t, db, deb.ID, roundID, strptr(aiText+"   \n"))
+	if err != nil {
+		t.Fatalf("AcceptRoundTx: %v", err)
+	}
+	if round.EditedText != nil {
+		t.Errorf("edited_text = %q; a whitespace-only difference is not an edit", *round.EditedText)
+	}
+	if got := currentText(t, db, deb.ID); got != aiText {
+		t.Errorf("current_text = %q, want the AI text unchanged", got)
+	}
+}

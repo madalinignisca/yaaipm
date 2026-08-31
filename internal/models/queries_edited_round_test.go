@@ -137,3 +137,60 @@ func TestCheckConstraintRejectsWhitespaceOnlyEdit(t *testing.T) {
 		})
 	}
 }
+
+// TestShippedTextAgreesBetweenGoAndSQL pins the one thing this design is for:
+// there must be exactly ONE answer to "what shipped".
+//
+// The Go helper and the SQL used by undo and the retry sweep are two
+// implementations of the same rule, and they diverged: NULLIF(btrim(x), ”)
+// returns the TRIMMED value, so SQL shipped "text" where Go shipped "text  ".
+// The trim is only meant to answer "is this blank?", never to alter the text.
+//
+// The visible consequence: undo would silently reformat the document, and the
+// retry scorer would score different text from the immediate scorer.
+func TestShippedTextAgreesBetweenGoAndSQL(t *testing.T) {
+	db := NewDB(testutil.SetupTestDB(t))
+	ctx := context.Background()
+
+	orgID, userID, projID, ticketID := seedFeatureTicket(t, db, "seed")
+	deb, err := db.StartDebate(ctx, ticketID, projID, orgID, userID)
+	if err != nil {
+		t.Fatalf("StartDebate: %v", err)
+	}
+
+	// Trailing whitespace the user legitimately typed and we must not silently
+	// rewrite.
+	const aiText = "AI text"
+	const userText = "Hand-edited text with trailing spaces   "
+	seedAcceptedRound(t, db, deb.ID, userID, 1, aiText, strptr(userText))
+	seedAcceptedRound(t, db, deb.ID, userID, 2, "second round", nil)
+
+	// The Go answer.
+	round := &DebateRound{OutputText: aiText, EditedText: strptr(userText)}
+	goAnswer := round.ShippedText()
+
+	// The SQL answer, via the undo recompute.
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if uErr := db.UndoRoundsFromTx(ctx, tx, deb.ID, 2); uErr != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("UndoRoundsFromTx: %v", uErr)
+	}
+	if cErr := tx.Commit(ctx); cErr != nil {
+		t.Fatalf("Commit: %v", cErr)
+	}
+	var sqlAnswer string
+	if sErr := db.Pool.QueryRow(ctx,
+		`SELECT current_text FROM feature_debates WHERE id = $1`, deb.ID).Scan(&sqlAnswer); sErr != nil {
+		t.Fatalf("reading current_text: %v", sErr)
+	}
+
+	if goAnswer != sqlAnswer {
+		t.Errorf("Go and SQL disagree about what shipped:\n  Go:  %q\n  SQL: %q", goAnswer, sqlAnswer)
+	}
+	if sqlAnswer != userText {
+		t.Errorf("SQL rewrote the user's text: %q, want %q", sqlAnswer, userText)
+	}
+}

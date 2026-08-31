@@ -2871,7 +2871,12 @@ func (db *DB) AcceptRoundTx(
 		if trimmed == "" {
 			return nil, ErrEmptyEdit
 		}
-		if *editedText != outputText {
+		// Compare TRIMMED, for the same reason CRLF is folded in the handler:
+		// a difference the user cannot see should not be recorded as an edit.
+		// Someone who opens the tab and fatfingers a trailing space has not
+		// edited the brief. Whitespace-only differences therefore collapse to
+		// "unedited", and the AI's text ships.
+		if trimmed != strings.TrimSpace(outputText) {
 			toStore = editedText
 		}
 	}
@@ -2962,7 +2967,7 @@ func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, 
 	var newCurrentText string
 	if scanErr := tx.QueryRow(ctx, `
 		SELECT COALESCE(
-			(SELECT COALESCE(NULLIF(btrim(edited_text, E' \t\n\r\f\v'), ''), output_text) FROM feature_debate_rounds
+			(SELECT CASE WHEN btrim(edited_text, E' \t\n\r\f\v') <> '' THEN edited_text ELSE output_text END FROM feature_debate_rounds
 			  WHERE debate_id = $1 AND status = 'accepted'
 			  ORDER BY round_number DESC LIMIT 1),
 			(SELECT seed_description FROM feature_debates WHERE id = $1)
@@ -3139,7 +3144,7 @@ func (db *DB) ClaimStaleEffortScores(
 		    -- does not affect the FOR UPDATE SKIP LOCKED semantics that
 		    -- keep two replicas from double-billing the same debate.
 		    (SELECT p.scorer_provider FROM projects p WHERE p.id = fd.project_id),
-		    (SELECT COALESCE(NULLIF(btrim(r.edited_text, E' \t\n\r\f\v'), ''), r.output_text) FROM feature_debate_rounds r
+		    (SELECT CASE WHEN btrim(r.edited_text, E' \t\n\r\f\v') <> '' THEN r.edited_text ELSE r.output_text END FROM feature_debate_rounds r
 		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
 		      ORDER BY r.round_number DESC LIMIT 1)`,
 		now, now.Add(-minAge), limit, baseBackoff.Seconds(), maxBackoff.Seconds(),
