@@ -77,6 +77,10 @@ type Config struct {
 	// in a way that looks nothing like rate limiting (issue #136).
 	AuthRateLimitRPS   float64
 	AuthRateLimitBurst int
+
+	// Concurrent Argon2id computations. Each holds ~64 MB, so this times that
+	// is the memory floor the container must be able to hold (#142).
+	AuthHashConcurrency int
 }
 
 func envInt64(key string, fallback int64) int64 {
@@ -97,6 +101,11 @@ func envInt64(key string, fallback int64) int64 {
 const (
 	defaultAuthRateLimitRPS   = 0.5
 	defaultAuthRateLimitBurst = 5
+
+	// 2 x 64 MB = 128 MB of Argon2id working memory. The server container is
+	// limited to 256Mi and idles near 80 MiB, so this leaves headroom rather
+	// than racing the OOM killer. Raise it only alongside that limit.
+	defaultAuthHashConcurrency = 2
 )
 
 func authRateLimitRPS() float64 {
@@ -115,6 +124,15 @@ func authRateLimitRPS() float64 {
 // authRateLimitBurst reads the auth rate limiter burst size. Same reasoning: a
 // non-positive burst would be a denial of service against ourselves, so it
 // falls back rather than applying.
+func authHashConcurrency() int {
+	if v := strings.TrimSpace(os.Getenv("AUTH_HASH_CONCURRENCY")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultAuthHashConcurrency
+}
+
 func authRateLimitBurst() int {
 	if v := strings.TrimSpace(os.Getenv("AUTH_RATE_LIMIT_BURST")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -221,6 +239,7 @@ func Load() (*Config, error) {
 		BaseURL:              baseURL,
 		AuthRateLimitRPS:     authRateLimitRPS(),
 		AuthRateLimitBurst:   authRateLimitBurst(),
+		AuthHashConcurrency:  authHashConcurrency(),
 		SMTPHost:             os.Getenv("SMTP_HOST"),
 		SMTPPort:             smtpPort,
 		SMTPUsername:         smtpUsername,

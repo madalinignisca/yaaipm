@@ -48,7 +48,7 @@ func TestTicketDetailShowsCommentAuthorNames(t *testing.T) {
 
 	// A second, differently-named human so the assertion cannot pass on
 	// the viewer's own name leaking in from the navbar.
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	author, err := db.CreateUser(ctx, "alice95@test.com", hash, "Alice Author", "client")
 	if err != nil {
 		t.Fatalf("creating comment author: %v", err)

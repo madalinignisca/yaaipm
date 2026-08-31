@@ -132,7 +132,7 @@ func createAuthenticatedUser(t *testing.T, db *models.DB, sessions *auth.Session
 	t.Helper()
 	ctx := context.Background()
 
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	user, err := db.CreateUser(ctx, email, hash, "Test User", role)
 	if err != nil {
 		t.Fatalf("creating user: %v", err)
@@ -267,7 +267,7 @@ func TestLoginWrongPassword(t *testing.T) {
 	r, db, _, _ := setupTestRouter(t)
 	ctx := context.Background()
 
-	hash, _ := auth.HashPassword("CorrectPassword1")
+	hash, _ := auth.HashPassword(context.Background(), "CorrectPassword1")
 	db.CreateUser(ctx, "wrong@test.com", hash, "Wrong", "client")
 
 	form := url.Values{"email": {"wrong@test.com"}, "password": {"WrongPassword11"}}
@@ -762,7 +762,7 @@ func TestOrgSettingsPage_NonMemberForbidden(t *testing.T) {
 		t.Fatalf("CreateOrg: %v", err)
 	}
 	// A member whose identity must not cross the tenant boundary.
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	insider, err := db.CreateUser(ctx, "insider@victim.test", hash, "Victim Insider", "client")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)

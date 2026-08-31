@@ -662,7 +662,7 @@ func TestChangePasswordSuccess(t *testing.T) {
 	// Verify new password works
 	ctx := context.Background()
 	user, _ := db.GetUserByEmail(ctx, "chgpwd@test.com")
-	ok, err := auth.VerifyPassword("NewSecurePass123!", user.PasswordHash)
+	ok, err := auth.VerifyPassword(context.Background(), "NewSecurePass123!", user.PasswordHash)
 	if err != nil || !ok {
 		t.Error("new password should verify successfully")
 	}
@@ -803,7 +803,7 @@ func TestChangeEmailDuplicate(t *testing.T) {
 
 	// Create two users
 	cookie := createAuthenticatedUser(t, db, sessions, "chgemaildup@test.com", "superadmin")
-	hash, _ := auth.HashPassword("AnotherPassword1")
+	hash, _ := auth.HashPassword(context.Background(), "AnotherPassword1")
 	db.CreateUser(ctx, "existing@test.com", hash, "Existing User", "client")
 
 	form := url.Values{

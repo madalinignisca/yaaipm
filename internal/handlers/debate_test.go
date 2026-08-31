@@ -96,7 +96,7 @@ func seedAuthedFeatureTicket(t *testing.T, db *models.DB, sessions *auth.Session
 	t.Helper()
 	ctx := context.Background()
 
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	user, err := db.CreateUser(ctx, t.Name()+"@example.com", hash, "Debate Test User", "client")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -338,7 +338,7 @@ func TestDebate_RejectsNonFeatureTicket(t *testing.T) {
 	r, db, sessions := setupDebateTestEnv(t)
 	ctx := context.Background()
 
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	user, err := db.CreateUser(ctx, "bug-owner@example.com", hash, "Bug Owner", "client")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)

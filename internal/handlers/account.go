@@ -56,14 +56,14 @@ func (h *AccountHandler) ChangePassword(w http.ResponseWriter, r *http.Request) 
 
 	if flashMsg == "" {
 		// Verify current password
-		ok, err := auth.VerifyPassword(currentPassword, user.PasswordHash)
+		ok, err := auth.VerifyPassword(r.Context(), currentPassword, user.PasswordHash)
 		if err != nil || !ok {
 			flashMsg = "Current password is incorrect"
 		}
 	}
 
 	if flashMsg == "" {
-		hash, err := auth.HashPassword(newPassword)
+		hash, err := auth.HashPassword(r.Context(), newPassword)
 		if err != nil {
 			log.Printf("hashing password: %v", err)
 			flashMsg = "Failed to update password"
@@ -93,7 +93,7 @@ func (h *AccountHandler) ChangeEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if flashMsg == "" {
-		ok, err := auth.VerifyPassword(password, user.PasswordHash)
+		ok, err := auth.VerifyPassword(r.Context(), password, user.PasswordHash)
 		if err != nil || !ok {
 			flashMsg = "Password is incorrect"
 		}

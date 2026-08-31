@@ -539,7 +539,7 @@ func TestCreateRound_RoleAppropriateWording(t *testing.T) {
 			t.Fatalf("UpdateOrgMonthlyBudget: %v", err)
 		}
 
-		staffHash, _ := auth.HashPassword("TestPassword123!")
+		staffHash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 		staffUser, err := db.CreateUser(context.Background(), "staff-wording@example.com", staffHash, "Staff", "staff")
 		if err != nil {
 			t.Fatalf("CreateUser: %v", err)

@@ -42,7 +42,7 @@ func seedStaleScorableDebate(t *testing.T, db *models.DB, decidedAt time.Time, o
 	t.Helper()
 	ctx := context.Background()
 
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	user, err := db.CreateUser(ctx, t.Name()+"@example.com", hash, "Retry User", "client")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -28,6 +29,35 @@ func (h *AuthHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
 	_ = h.engine.Render(w, r, "login.html", render.PageData{Title: "Login"})
 }
 
+// respondHashingBusy sheds a request that could not get a password-hashing
+// slot (#142). Argon2id concurrency is capped to bound memory, and a saturated
+// hasher must refuse promptly rather than queue — queueing turns a crash into
+// a hang, which is still a denial of service.
+//
+// Deliberately NOT folded into "Invalid email or password": that would tell a
+// legitimate user their credentials are wrong when the service is merely busy,
+// and it would hide the saturation from the logs. The response is identical
+// whether or not the account exists, so it reveals nothing.
+// shedIfHashingBusy maps a hashing-capacity error to a 503 and reports whether
+// it handled the request. Extracted so the mapping can be tested directly:
+// driving it through the login handler only ever exercised the unknown-account
+// branch, so removing this check from the credential-verification branch left
+// every test green.
+func (h *AuthHandler) shedIfHashingBusy(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(err, auth.ErrHashingBusy) {
+		return false
+	}
+	h.respondHashingBusy(w, r)
+	return true
+}
+
+func (h *AuthHandler) respondHashingBusy(w http.ResponseWriter, r *http.Request) {
+	log.Printf("auth: shedding request, password hashing at capacity (%s %s)", r.Method, r.URL.Path)
+	w.Header().Set("Retry-After", "2")
+	h.engine.RenderError(w, http.StatusServiceUnavailable,
+		"The server is busy verifying sign-ins. Please try again in a moment.")
+}
+
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(r.FormValue("email"))
 	password := r.FormValue("password")
@@ -42,14 +72,23 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	user, err := h.db.GetUserByEmail(r.Context(), email)
 	if err != nil {
 		// Hash the password anyway to equalize timing (prevents user enumeration)
-		_, _ = auth.HashPassword(password)
+		// Shed here too, so a busy server answers identically for an unknown
+		// and a known address — otherwise the difference would itself be the
+		// enumeration oracle the dummy hash exists to close.
+		_, hashErr := auth.HashPassword(r.Context(), password)
+		if h.shedIfHashingBusy(w, r, hashErr) {
+			return
+		}
 		_ = h.engine.Render(w, r, "login.html", render.PageData{
 			Title: "Login", Flash: "Invalid email or password.", FlashType: "error",
 		})
 		return
 	}
 
-	ok, err := auth.VerifyPassword(password, user.PasswordHash)
+	ok, err := auth.VerifyPassword(r.Context(), password, user.PasswordHash)
+	if h.shedIfHashingBusy(w, r, err) {
+		return
+	}
 	if err != nil || !ok {
 		_ = h.engine.Render(w, r, "login.html", render.PageData{
 			Title: "Login", Flash: "Invalid email or password.", FlashType: "error",
@@ -134,7 +173,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := auth.HashPassword(password)
+	hash, err := auth.HashPassword(r.Context(), password)
 	if err != nil {
 		log.Printf("hashing password: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
@@ -262,7 +301,7 @@ func (h *AuthHandler) VerifySetupTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hashedCodes, err := auth.HashRecoveryCodes(codes)
+	hashedCodes, err := auth.HashRecoveryCodes(r.Context(), codes)
 	if err != nil {
 		log.Printf("hashing recovery codes: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
@@ -316,6 +355,45 @@ func (h *AuthHandler) Verify2FAPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// tryRecoveryCode checks a submitted code against the user's stored recovery
+// codes, consuming it and completing 2FA on a match.
+//
+// Returns consumed=true when it has already written a response (the code
+// matched), and shed=true when the request was shed because password hashing
+// was at capacity. Extracted from Verify2FA to keep that handler flat.
+func (h *AuthHandler) tryRecoveryCode(
+	w http.ResponseWriter, r *http.Request,
+	user *models.User, sess *auth.Session, code string,
+) (consumed, shed bool) {
+	if user.RecoveryCodes == nil {
+		return false, false
+	}
+
+	hashedCodes, err := auth.DecryptRecoveryCodes(user.RecoveryCodes, h.aesKey)
+	if err != nil {
+		return false, false
+	}
+
+	idx, verifyErr := auth.VerifyRecoveryCode(r.Context(), code, hashedCodes)
+	// Shed rather than fall through to "invalid code": this is the path
+	// someone reaches after losing their authenticator, and recovery codes are
+	// single-use, so a false rejection could burn several of them (#142).
+	if h.shedIfHashingBusy(w, r, verifyErr) {
+		return false, true
+	}
+	if idx < 0 {
+		return false, false
+	}
+
+	hashedCodes[idx] = "" // consume
+	if encCodes, encErr := auth.EncryptRecoveryCodes(hashedCodes, h.aesKey); encErr == nil {
+		_ = h.db.ConsumeRecoveryCode(r.Context(), user.ID, encCodes)
+	}
+	_ = h.sessions.MarkTwoFactorVerified(r.Context(), sess.ID)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+	return true, false
+}
+
 func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 	sess := h.getSessionFromCookie(r)
 	if sess == nil {
@@ -353,21 +431,8 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try recovery code
-	if user.RecoveryCodes != nil {
-		hashedCodes, err := auth.DecryptRecoveryCodes(user.RecoveryCodes, h.aesKey)
-		if err == nil {
-			idx := auth.VerifyRecoveryCode(code, hashedCodes)
-			if idx >= 0 {
-				hashedCodes[idx] = "" // consume
-				encCodes, err := auth.EncryptRecoveryCodes(hashedCodes, h.aesKey)
-				if err == nil {
-					_ = h.db.ConsumeRecoveryCode(r.Context(), user.ID, encCodes)
-				}
-				_ = h.sessions.MarkTwoFactorVerified(r.Context(), sess.ID)
-				http.Redirect(w, r, "/", http.StatusSeeOther)
-				return
-			}
-		}
+	if consumed, shed := h.tryRecoveryCode(w, r, user, sess, code); shed || consumed {
+		return
 	}
 
 	_ = h.engine.Render(w, r, "verify_2fa.html", render.PageData{
