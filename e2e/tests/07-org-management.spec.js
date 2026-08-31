@@ -67,7 +67,10 @@ test.describe('Organization Management', () => {
     }
 
     // Fill org creation form — either inline or on the dashboard page
-    const nameInput = page.locator('input[name="name"]');
+    // Scope to the org form: with a shared session the user already has a
+    // project, so the sidebar renders a "Project name" input too and a bare
+    // name selector matches both (#136).
+    const nameInput = page.locator('input[placeholder="Org name"]');
     if (await nameInput.isVisible()) {
       await nameInput.fill('OrgMgmt Second Org');
       await page.click('button[type="submit"]');
