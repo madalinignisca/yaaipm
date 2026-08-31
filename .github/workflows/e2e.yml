@@ -62,11 +62,13 @@ jobs:
           BASE_URL: http://localhost:8081
         run: |
           npx playwright test \
+            01-auth.spec.js \
             02-dashboard-orgs.spec.js \
             03-projects.spec.js \
             04-tickets.spec.js \
             05-admin.spec.js \
             06-ticket-detail.spec.js \
+            09-rbac-journeys.spec.js \
             12-debate-fake.spec.js
 
       - name: App logs on failure
