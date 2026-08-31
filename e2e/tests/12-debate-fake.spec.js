@@ -77,7 +77,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   }
 
   test('reject (dismiss) leaves current text unchanged and pre-fills feedback', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -110,7 +109,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   });
 
   test('a suggestion with empty feedback still works', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -129,7 +127,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   });
 
   test('undo cascade: accept 3 rounds then restore v1 removes v2 and v3', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -162,7 +159,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   });
 
   test('feedback draft is auto-saved to localStorage and restored after reload', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -185,7 +181,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   });
 
   test('a successful suggestion clears the saved feedback draft', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);

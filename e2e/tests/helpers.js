@@ -196,6 +196,8 @@ async function verify2FA(page, secret) {
   await page.fill('input[name="code"]', code);
   await page.click('button[type="submit"]');
   await page.waitForLoadState('networkidle');
+  // Record when, so awaitTOTPReuseWindow can wait out the server's 30s guard.
+  lastTOTPVerifyAt = Date.now();
 }
 
 /**
@@ -207,7 +209,7 @@ async function fullLogin(page, { email, password, totpSecret }) {
 }
 
 module.exports = {
-  awaitNextTOTPWindow,
+  awaitTOTPReuseWindow,
   rootSession,
   inviteAndRegisterUser,
   useSession,
@@ -243,17 +245,29 @@ function rootSession() {
   return state;
 }
 
+// When 2FA was last verified successfully, so awaitTOTPReuseWindow knows how
+// long to wait. Set by verify2FA.
+let lastTOTPVerifyAt = 0;
+
 /**
- * Wait until the current TOTP window rolls over.
+ * Wait out the server's TOTP reuse guard.
  *
- * ValidateTOTPOnce (migration 000027) refuses a code already used inside its
- * 30-second step, so two logins seconds apart fail on the second — for a reason
- * that looks nothing like the thing under test. Tests that genuinely must sign
- * in twice call this between them (#136).
+ * ValidateTOTPOnce (internal/auth/totp.go) rejects on ELAPSED TIME, not on the
+ * code:
+ *
+ *     if lastUsedAt != nil && time.Since(*lastUsedAt) < 30*time.Second
+ *
+ * so ANY verification within 30 seconds of the last successful one is refused,
+ * even with a different code. Waiting for the next TOTP window boundary is not
+ * enough — that can be a second later. Tests that must sign in twice wait here
+ * instead (#136).
  */
-async function awaitNextTOTPWindow(page) {
-  const period = 30_000;
-  const msIntoWindow = Date.now() % period;
-  // +1s of slack so we are comfortably inside the next step, not on its edge.
-  await page.waitForTimeout(period - msIntoWindow + 1000);
+async function awaitTOTPReuseWindow(page) {
+  const guard = 30_000;
+  const slack = 1_500;
+  const elapsed = Date.now() - lastTOTPVerifyAt;
+  if (lastTOTPVerifyAt === 0 || elapsed >= guard + slack) {
+    return;
+  }
+  await page.waitForTimeout(guard + slack - elapsed);
 }

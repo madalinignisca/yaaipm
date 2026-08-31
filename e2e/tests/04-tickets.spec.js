@@ -39,7 +39,6 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('create feature ticket', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
     await useSession(page, rootCookies);
 
@@ -58,7 +57,6 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('create bug ticket', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
     await useSession(page, rootCookies);
 
@@ -77,7 +75,6 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('features page shows features', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
     await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
@@ -87,7 +84,6 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('bugs page shows bugs', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
     await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/bugs');
@@ -97,7 +93,6 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('ticket detail page renders', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
     await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
@@ -114,7 +109,6 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('post comment on ticket via HTMX', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
     await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
@@ -146,7 +140,6 @@ test.describe('Tickets & Comments', () => {
   // by the tests above: a guard like that turns a missing ticket into a
   // silent pass, and this test exists to catch a rendering regression.
   test('comment author name survives a reload', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
     await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
@@ -179,7 +172,6 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('update ticket status', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
     await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');

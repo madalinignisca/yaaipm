@@ -54,8 +54,8 @@ jobs:
       # its session, so specs no longer compete for that one slot and no
       # longer need a database reset between them (#136).
       #
-      # Specs not listed here are not yet migrated off self-registration and
-      # would fail; they are tracked in #136 rather than silently skipped.
+      # Every spec except 13-debate-real-ai, which needs real provider API keys
+      # and is a declared opt-in rather than a silent skip.
       - name: Run migrated e2e specs
         working-directory: e2e
         env:
@@ -69,7 +69,9 @@ jobs:
             05-admin.spec.js \
             06-ticket-detail.spec.js \
             07-org-management.spec.js \
+            08-account-settings.spec.js \
             09-rbac-journeys.spec.js \
+            10-image-modal.spec.js \
             11-debate.spec.js \
             12-debate-fake.spec.js
 
