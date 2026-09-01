@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"math"
 	"net/http"
@@ -66,11 +67,15 @@ func (h *CostHandler) ProjectCosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		if _, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); memErr != nil {
-			h.engine.RenderError(w, http.StatusForbidden, "Access denied")
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, org.ID); authErr != nil {
+		if errors.Is(authErr, errCrossTenant) {
+			h.engine.RenderError(w, http.StatusNotFound, "Organization not found")
 			return
 		}
+		// A lookup failure is infrastructure, never an access decision (#128).
+		log.Printf("costs authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organization")
+		return
 	}
 
 	proj, err := h.db.GetProject(r.Context(), org.ID, projSlug)
@@ -136,11 +141,15 @@ func (h *CostHandler) OrgCosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		if _, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); memErr != nil {
-			h.engine.RenderError(w, http.StatusForbidden, "Access denied")
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, org.ID); authErr != nil {
+		if errors.Is(authErr, errCrossTenant) {
+			h.engine.RenderError(w, http.StatusNotFound, "Organization not found")
 			return
 		}
+		// A lookup failure is infrastructure, never an access decision (#128).
+		log.Printf("costs authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organization")
+		return
 	}
 
 	month := parseMonth(r)

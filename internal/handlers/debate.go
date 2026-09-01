@@ -51,6 +51,21 @@ const (
 	roundStatusRejected = "rejected"
 )
 
+// microsPerCent converts organizations.monthly_budget_cents (USD cents)
+// to the same unit feature_debate_rounds.cost_micros is recorded in, so
+// the comparison in checkOrgBudget never has to round.
+const microsPerCent = 10_000
+
+var (
+	// errBudgetExceeded means the org's current-month debate spend has
+	// reached or passed its cap — CreateRound must refuse the round.
+	errBudgetExceeded = errors.New("org monthly budget reached")
+	// errBudgetUnavailable means the spend aggregate could not be read.
+	// Callers MUST fail closed (spec §3): treating "unknown" as zero
+	// would turn a transient DB error into unlimited spend.
+	errBudgetUnavailable = errors.New("org monthly spend could not be determined")
+)
+
 // DebateConfig groups the per-deployment tuning knobs for the debate
 // flow. Defaults come from DefaultDebateConfig; production wiring in
 // cmd/server/main.go can override from env or leave defaults in place.
@@ -106,18 +121,91 @@ type DebateHandler struct {
 	db       *models.DB
 	engine   *render.Engine
 	refiners map[string]ai.Refiner
-	scorer   ai.Scorer
+	scorers  map[string]ai.Scorer
 	cfg      DebateConfig
 }
 
-// NewDebateHandler constructs the handler. refiners are keyed by
-// Refiner.Name() ("claude", "gemini", "openai"); the scorer can be
-// nil if GEMINI_API_KEY isn't configured (scoring then silently skips
-// and the sidebar shows the empty state).
+// NewDebateHandler constructs the handler. refiners and scorers are both
+// keyed by provider name ("claude", "gemini", "openai") and may be
+// smaller than 3 — or empty — when an operator deployment is missing API
+// keys. Which scorer runs is chosen per project (issue #63); an empty
+// scorers map means scoring silently skips and the sidebar shows the
+// empty state, matching the pre-#63 nil-scorer behavior.
 func NewDebateHandler(db *models.DB, engine *render.Engine,
-	refiners map[string]ai.Refiner, scorer ai.Scorer, cfg DebateConfig,
+	refiners map[string]ai.Refiner, scorers map[string]ai.Scorer, cfg DebateConfig,
 ) *DebateHandler {
-	return &DebateHandler{db: db, engine: engine, refiners: refiners, scorer: scorer, cfg: cfg}
+	return &DebateHandler{db: db, engine: engine, refiners: refiners, scorers: scorers, cfg: cfg}
+}
+
+// checkOrgBudget is the enforcement gate for issue #64. Returns nil when
+// the org is uncapped or under cap; errBudgetExceeded at/over cap;
+// errBudgetUnavailable when the aggregate could not be read.
+//
+// Compares in MICROS with no rounding: only DISPLAY figures (the org
+// settings card) round to cents. The cap is bounded to 100_000_000
+// cents at the model layer, so cap*microsPerCent (max ~1e12) is nowhere
+// near int64 overflow.
+func (h *DebateHandler) checkOrgBudget(ctx context.Context, org *models.Organization) error {
+	if org.MonthlyBudgetCents == nil {
+		return nil
+	}
+
+	from, to := models.CurrentUTCMonthRange(time.Now())
+	spendMicros, err := h.db.SumOrgDebateSpendMicros(ctx, org.ID, from, to)
+	if err != nil {
+		return errBudgetUnavailable
+	}
+
+	if spendMicros >= *org.MonthlyBudgetCents*microsPerCent {
+		return errBudgetExceeded
+	}
+	return nil
+}
+
+// budgetExceededMessage picks role-appropriate copy for a tripped
+// budget cap (spec §8). Does ONE GetOrgMembership lookup, and only when
+// the cap has actually tripped, so the hot (under-cap) path never pays
+// for it. A lookup error falls back to the least-informative CLIENT
+// wording — the safe default when role can't be confirmed.
+func (h *DebateHandler) budgetExceededMessage(ctx context.Context, dctx debateContext) string {
+	const actionable = "Monthly AI budget reached for this organization — raise it in organization settings to continue."
+	const clientSafe = "Your organization's monthly budget has been reached. It resets at the start of next month."
+
+	if auth.IsStaffOrAbove(dctx.user.Role) {
+		return actionable
+	}
+	m, err := h.db.GetOrgMembership(ctx, dctx.user.ID, dctx.org.ID)
+	if err != nil {
+		return clientSafe
+	}
+	if auth.CanManageOrg(m.Role) {
+		return actionable
+	}
+	return clientSafe
+}
+
+// errScorerNotConfigured means the project names a provider that has no
+// registered scorer — almost always a missing API key for that vendor.
+// Distinct from a DB failure so the two get different log lines and an
+// operator can tell a misconfiguration from an outage.
+var errScorerNotConfigured = errors.New("no scorer registered for provider")
+
+// scorerForProject resolves the scorer a project is configured to use.
+//
+// Returns the provider name alongside the scorer so callers can name it
+// in logs and record it with the score. Three outcomes are deliberately
+// kept distinct: a DB error (infrastructure), an unregistered provider
+// (operator configuration), and success.
+func (h *DebateHandler) scorerForProject(ctx context.Context, projectID string) (ai.Scorer, string, error) {
+	provider, err := h.db.GetProjectScorerProvider(ctx, projectID)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolving scorer provider for project %s: %w", projectID, err)
+	}
+	scorer, ok := h.scorers[provider]
+	if !ok {
+		return nil, provider, errScorerNotConfigured
+	}
+	return scorer, provider, nil
 }
 
 // debateContext bundles the three things every endpoint looks up in
@@ -202,14 +290,7 @@ func (h *DebateHandler) requireDebateContext(r *http.Request) (debateContext, in
 // on this handler. Used by the template to render the AI-picker
 // buttons.
 func (h *DebateHandler) providerNames() []string {
-	names := make([]string, 0, len(h.refiners))
-	// Fixed order so the button layout doesn't shuffle between requests.
-	for _, n := range []string{"claude", "gemini", "openai"} {
-		if _, ok := h.refiners[n]; ok {
-			names = append(names, n)
-		}
-	}
-	return names
+	return ai.SortedProviderKeys(h.refiners)
 }
 
 // ── GET /tickets/{ticketID}/debate ────────────────────────────────
@@ -385,6 +466,29 @@ func (h *DebateHandler) CreateRound(w http.ResponseWriter, r *http.Request) {
 		if dailyCount, dcErr := h.db.CountUserRoundsLast24h(r.Context(), dctx.user.ID); dcErr == nil && dailyCount >= h.cfg.ClientDailyRoundCap {
 			h.renderDebateError(w, r, http.StatusTooManyRequests,
 				"You've reached the daily suggestion limit — try again tomorrow or ask us if you need more.")
+			return
+		}
+	}
+
+	// Org monthly budget (#64). Deliberately OUTSIDE the
+	// !IsStaffOrAbove block above: spec §5 blocks CreateRound with no
+	// role qualifier, and §8 gives staff their own "raise it in
+	// organization settings" wording, which only makes sense if staff
+	// hit the block too. Placed after the existing fuses and before the
+	// reservation tx so a blocked request makes no AI call and mutates
+	// no debate row.
+	if budgetErr := h.checkOrgBudget(r.Context(), dctx.org); budgetErr != nil {
+		switch {
+		case errors.Is(budgetErr, errBudgetExceeded):
+			h.renderDebateError(w, r, http.StatusTooManyRequests,
+				h.budgetExceededMessage(r.Context(), dctx))
+			return
+		case errors.Is(budgetErr, errBudgetUnavailable):
+			// 503, NOT 429: "we couldn't verify your budget" is not a
+			// rate limit and must not tell a client to wait until next
+			// month when the real problem is an infra fault.
+			h.renderDebateError(w, r, http.StatusServiceUnavailable,
+				"We couldn't verify your organization's AI budget — please try again shortly.")
 			return
 		}
 	}
@@ -635,7 +739,32 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	round, err := h.acceptRoundUnderLock(r.Context(), deb.ID, roundID)
+	// Optional user correction of the AI's text (#66). Absent field means
+	// "accepted as-is"; a present-but-blank one is a validation error, not a
+	// silent no-op, because shipping it would empty the brief.
+	//
+	// ParseForm explicitly: r.Form is nil until something parses, and Has() on
+	// a nil map returns false without complaining — so without this the edit
+	// would be silently ignored on every request.
+	if parseErr := r.ParseForm(); parseErr != nil {
+		h.renderWorkspaceUpdate(w, r, dctx, "Could not read the submitted form.")
+		return
+	}
+	var editedText *string
+	if r.Form.Has("edited_text") {
+		// Browsers normalise textarea newlines to CRLF on submit, while the
+		// stored text uses LF. Without folding them back, text the user never
+		// touched would differ from output_text and EVERY accept would record a
+		// spurious edit — wrong data that looks fine until someone queries it.
+		v := strings.ReplaceAll(r.FormValue("edited_text"), "\r\n", "\n")
+		editedText = &v
+	}
+
+	round, err := h.acceptRoundUnderLock(r.Context(), deb.ID, roundID, editedText)
+	if errors.Is(err, models.ErrEmptyEdit) {
+		h.renderWorkspaceUpdate(w, r, dctx, "The edited text is empty — nothing was accepted.")
+		return
+	}
 	if err != nil {
 		h.writeAcceptError(w, r, err)
 		return
@@ -653,9 +782,17 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 	// goroutine runs, causing the scorer to evaluate stale content
 	// while the result is still associated with this round's ID. The
 	// direct-pass path guarantees scorer input == round output.
-	if h.scorer != nil {
+	//
+	// ShippedText(), not OutputText: when the user corrected the AI's text, the
+	// effort estimate must describe what will actually be built (#66). The
+	// no-reread rationale above is unchanged — the value is still passed by
+	// value, just the right value.
+	//
+	// The provider lookup happens inside the goroutine, not here: it is a
+	// database round-trip and the accept response must not wait on it.
+	if len(h.scorers) > 0 {
 		go h.scoreAfterAccept(context.WithoutCancel(r.Context()),
-			deb.ID, round.ID, dctx.ticket.ProjectID, round.OutputText)
+			deb.ID, round.ID, dctx.ticket.ProjectID, round.ShippedText())
 	}
 
 	h.renderWorkspaceUpdate(w, r, dctx, "")
@@ -664,7 +801,9 @@ func (h *DebateHandler) AcceptRound(w http.ResponseWriter, r *http.Request) {
 // acceptRoundUnderLock runs the accept transaction: lock debate row,
 // lock round row, verify status == 'active' at the debate level,
 // update round + current_text, commit.
-func (h *DebateHandler) acceptRoundUnderLock(ctx context.Context, debateID, roundID string) (*models.DebateRound, error) {
+func (h *DebateHandler) acceptRoundUnderLock(
+	ctx context.Context, debateID, roundID string, editedText *string,
+) (*models.DebateRound, error) {
 	tx, err := h.db.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -684,7 +823,7 @@ func (h *DebateHandler) acceptRoundUnderLock(ctx context.Context, debateID, roun
 		return nil, models.ErrDebateNotActive
 	}
 
-	round, err := h.db.AcceptRoundTx(ctx, tx, debateID, roundID)
+	round, err := h.db.AcceptRoundTx(ctx, tx, debateID, roundID, editedText)
 	if err != nil {
 		return nil, err
 	}
@@ -732,13 +871,30 @@ func (h *DebateHandler) scoreAfterAccept(ctx context.Context, debateID, roundID,
 	callCtx, cancel := context.WithTimeout(ctx, h.cfg.AICallTimeout)
 	defer cancel()
 
-	res, err := h.scorer.Score(callCtx, textToScore)
-	if err != nil {
-		log.Printf("debate scoreAfterAccept: scorer failed for debate %s round %s: %v", debateID, roundID, err)
+	scorer, provider, err := h.scorerForProject(callCtx, projectID)
+	switch {
+	case errors.Is(err, errScorerNotConfigured):
+		// No silent fallback to another vendor (spec §3.2): the score is
+		// skipped and the sidebar keeps its empty state. The retry sweep
+		// will keep trying and backing off until an operator either
+		// configures the key or changes the project's provider.
+		log.Printf("WARNING: debate scoreAfterAccept: project %s is configured for scorer provider %q "+
+			"but no such scorer is registered (missing API key?) — debate %s round %s left unscored",
+			projectID, provider, debateID, roundID)
+		return
+	case err != nil:
+		log.Printf("debate scoreAfterAccept: %v", err)
 		return
 	}
 
-	if applyErr := h.applyScoreResult(ctx, debateID, roundID, projectID, res); applyErr != nil {
+	res, err := scorer.Score(callCtx, textToScore)
+	if err != nil {
+		log.Printf("debate scoreAfterAccept: scorer %q failed for debate %s round %s: %v",
+			provider, debateID, roundID, err)
+		return
+	}
+
+	if applyErr := h.applyScoreResult(ctx, debateID, roundID, projectID, provider, res); applyErr != nil {
 		log.Printf("debate scoreAfterAccept: %v", applyErr)
 	}
 }
@@ -760,7 +916,7 @@ const effortScoreWriteTimeout = 15 * time.Second
 // Shared by the accept path (scoreAfterAccept) and the background retry
 // sweep (retryOneEffortScore) so the cost-accounting write lives in
 // exactly one place. Returns a wrapped error for the caller to log.
-func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID, projectID string, res ai.ScoreResult) error {
+func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID, projectID, provider string, res ai.ScoreResult) error {
 	// Both callers pass an un-deadlined context (accept: context.WithoutCancel;
 	// sweep: context.Background). Bound the write so a stuck FOR UPDATE lock
 	// or a slow database can't wedge the goroutine and leak a pooled
@@ -786,7 +942,8 @@ func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID,
 	if uErr := h.db.UpdateScorerCostMicros(dbCtx, tx, roundID, res.Usage.CostMicros); uErr != nil {
 		return fmt.Errorf("update scorer cost on round %s: %w", roundID, uErr)
 	}
-	if uErr := h.db.UpdateEffortScoreCondTx(dbCtx, tx, debateID, roundID, res.Score, res.Hours, res.Reasoning); uErr != nil {
+	if uErr := h.db.UpdateEffortScoreCondTx(dbCtx, tx, debateID, roundID,
+		res.Score, res.Hours, res.Reasoning, provider, res.Usage.Model); uErr != nil {
 		return fmt.Errorf("UpdateEffortScoreCondTx debate %s: %w", debateID, uErr)
 	}
 
@@ -819,10 +976,10 @@ func (h *DebateHandler) applyScoreResult(ctx context.Context, debateID, roundID,
 //
 // Safe to run on every server replica concurrently: the claim's
 // FOR UPDATE SKIP LOCKED plus the backoff lease guarantees each debate is
-// scored by at most one replica per window. A nil scorer (no
-// GEMINI_API_KEY) makes it a no-op, matching the accept path.
+// scored by at most one replica per window. An empty scorer registry (no
+// provider API keys) makes it a no-op, matching the accept path.
 func (h *DebateHandler) RetryStaleEffortScores(ctx context.Context) {
-	if h.scorer == nil {
+	if len(h.scorers) == 0 {
 		return
 	}
 	claimed, err := h.db.ClaimStaleEffortScores(ctx, time.Now(),
@@ -847,12 +1004,26 @@ func (h *DebateHandler) retryOneEffortScore(ctx context.Context, d models.StaleE
 	callCtx, cancel := context.WithTimeout(ctx, h.cfg.AICallTimeout)
 	defer cancel()
 
-	res, err := h.scorer.Score(callCtx, d.OutputText)
-	if err != nil {
-		log.Printf("debate RetryStaleEffortScores: scorer failed for debate %s round %s: %v", d.DebateID, d.RoundID, err)
+	// The claim joined in the project's configured provider, so this is a
+	// map lookup rather than another query per claimed row.
+	scorer, ok := h.scorers[d.ScorerProvider]
+	if !ok {
+		log.Printf("WARNING: debate RetryStaleEffortScores: project %s is configured for scorer provider %q "+
+			"but no such scorer is registered (missing API key?) — debate %s round %s left unscored",
+			d.ProjectID, d.ScorerProvider, d.DebateID, d.RoundID)
 		return
 	}
-	if applyErr := h.applyScoreResult(ctx, d.DebateID, d.RoundID, d.ProjectID, res); applyErr != nil {
+
+	// d.OutputText here is already the SHIPPED text — ClaimStaleEffortScores
+	// coalesces the edit in its query, so the retry path and the immediate
+	// path score the same thing (#66).
+	res, err := scorer.Score(callCtx, d.OutputText)
+	if err != nil {
+		log.Printf("debate RetryStaleEffortScores: scorer %q failed for debate %s round %s: %v",
+			d.ScorerProvider, d.DebateID, d.RoundID, err)
+		return
+	}
+	if applyErr := h.applyScoreResult(ctx, d.DebateID, d.RoundID, d.ProjectID, d.ScorerProvider, res); applyErr != nil {
 		log.Printf("debate RetryStaleEffortScores: %v", applyErr)
 	}
 }
@@ -1240,7 +1411,9 @@ func (h *DebateHandler) ShowVersion(w http.ResponseWriter, r *http.Request) {
 			if rd.Status == roundStatusAccepted {
 				label++
 				if rd.ID == roundID {
-					viewing = &ViewingVersion{Label: label, Text: rd.OutputText, RestoreFrom: rd.RoundNumber + 1}
+					// ShippedText(): history must show what the document
+					// actually was, not the AI draft behind an edit (#66).
+					viewing = &ViewingVersion{Label: label, Text: rd.ShippedText(), RestoreFrom: rd.RoundNumber + 1}
 					break
 				}
 			}

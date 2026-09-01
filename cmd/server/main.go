@@ -103,6 +103,16 @@ func main() {
 		}
 	}
 
+	// Say so when storage is OFF, not only when it is on. The absence of a
+	// startup line is not something anyone reads, which is how a deployment ran
+	// for months offering upload controls whose routes were never registered
+	// (#153).
+	engine.StorageEnabled = s3Client != nil
+	if s3Client == nil {
+		log.Printf("S3 storage DISABLED (no S3_ENDPOINT/S3_BUCKET) — " +
+			"file upload and attachment routes are not registered, and the UI hides them")
+	}
+
 	// Handlers
 	secureCookie := strings.HasPrefix(cfg.BaseURL, "https")
 	mailer := mail.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, cfg.SMTPSSL)
@@ -110,7 +120,6 @@ func main() {
 	authH := handlers.NewAuthHandler(db, sessions, engine, cfg.AESKey, secureCookie)
 	dashH := handlers.NewDashboardHandler(db, engine)
 	orgH := handlers.NewOrgHandler(db, engine, sessions, mailer, cfg.BaseURL, cfg.ProtectedSuperadmins)
-	projH := handlers.NewProjectHandler(db, engine)
 	ticketH := handlers.NewTicketHandler(db, engine, geminiClient, cfg)
 	commentH := handlers.NewCommentHandler(db, engine)
 	adminH := handlers.NewAdminHandler(db, engine)
@@ -177,25 +186,81 @@ func main() {
 	if debateRefinerMode == debateRefinerModeFake {
 		debateRefiners = buildFakeDebateRefiners()
 	}
-	var debateScorer ai.Scorer
+	// Scorer registry, keyed like the refiners above. Which one runs is a
+	// per-project setting (issue #63); projects default to gemini, which
+	// is what v1 hardcoded. Each provider uses its own SCORER_MODEL_*
+	// (defaulting to that vendor's cheapest priced model) because scoring
+	// fires on every accepted round plus the background retry sweep.
+	debateScorers := map[string]ai.Scorer{}
+	if cfg.AnthropicAPIKey != "" {
+		// A second client bound to the scorer model: AnthropicClient is
+		// model-bound at construction and the scorer model may differ
+		// from the refiner's.
+		debateScorers[ai.ProviderClaude] = ai.NewAnthropicScorer(
+			ai.NewAnthropicClient(cfg.AnthropicAPIKey, ai.AnthropicModels{
+				Default: cfg.ScorerModelClaude,
+				Content: cfg.AnthropicModelContent,
+			}), cfg.ScorerModelClaude)
+	}
 	if geminiClient != nil {
-		// v1 hardcodes Gemini as the scorer (spec §3.2); phase-2 issue
-		// #63 makes this configurable per project.
-		debateScorer = ai.NewGeminiScorer(geminiClient, cfg.GeminiModel)
+		debateScorers[ai.ProviderGemini] = ai.NewGeminiScorer(geminiClient, cfg.ScorerModelGemini)
+	}
+	if cfg.OpenAIAPIKey != "" {
+		debateScorers[ai.ProviderOpenAI] = ai.NewOpenAIScorer(
+			ai.NewOpenAIClient(cfg.OpenAIAPIKey, cfg.ScorerModelOpenAI))
+	}
+	if debateRefinerMode == debateRefinerModeFake {
+		debateScorers = buildFakeDebateScorers()
 	}
 	debateCfg := handlers.DefaultDebateConfig()
-	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorer, debateCfg)
-	log.Printf("Feature Debate Mode wired (%d refiners, scorer=%v)", len(debateRefiners), debateScorer != nil)
+	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorers, debateCfg)
+	// Constructed here rather than with the other handlers above because
+	// the project settings dropdown offers exactly the scorer providers
+	// that are actually configured (issue #63), so it needs the registry.
+	projH := handlers.NewProjectHandler(db, engine, ai.SortedProviderKeys(debateScorers))
+	log.Printf("Feature Debate Mode wired (%d refiners, %d scorers)", len(debateRefiners), len(debateScorers))
+
+	// Cost-tracking guard (issue #108). A model absent from the pricing
+	// table prices every call at $0 silently; warn loudly at startup so a
+	// future GEMINI_MODEL/OPENAI_MODEL/ANTHROPIC_MODEL bump can't quietly
+	// under-bill clients. Fake mode is skipped — its refiners report
+	// placeholder model names and never make billable calls.
+	if debateRefinerMode != debateRefinerModeFake {
+		unpriced := map[string]struct{}{}
+		for _, r := range debateRefiners {
+			if m := r.Model(); m != "" && !ai.HasPricing(m) {
+				unpriced[m] = struct{}{}
+			}
+		}
+		// Every configured scorer, not just Gemini: with per-project
+		// selection (#63) any of the three can bill, and each uses its
+		// own SCORER_MODEL_*. This iteration is why Scorer carries
+		// Model() at all.
+		for _, s := range debateScorers {
+			if m := s.Model(); m != "" && !ai.HasPricing(m) {
+				unpriced[m] = struct{}{}
+			}
+		}
+		for m := range unpriced {
+			log.Printf("WARNING: debate model %q has no pricing-table entry — its AI calls record $0 cost (issue #108, internal/ai/pricing.go)", m)
+		}
+	}
 
 	if debateRealAI {
 		if len(debateRefiners) == 0 {
 			log.Fatal("DEBATE_REAL_AI=1 but no provider API keys configured — set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")
 		}
-		log.Printf("WARNING: DEBATE_REAL_AI=1 — debate refiners and scorer make REAL, billable provider calls (%d providers, scorer=%v)", len(debateRefiners), debateScorer != nil)
+		log.Printf("WARNING: DEBATE_REAL_AI=1 — debate refiners and scorers make REAL, billable provider calls (%d providers, %d scorers)", len(debateRefiners), len(debateScorers))
 	}
 
-	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
-	authLimiter := middleware.NewRateLimiter(0.5, 5)
+	// Bound concurrent Argon2id work so memory cannot scale with request
+	// concurrency. The rate limiter is per-IP, so it alone cannot cap this
+	// (#142).
+	auth.SetHashConcurrency(cfg.AuthHashConcurrency)
+
+	// Rate limiter for auth endpoints. Defaults to 0.5 req/s burst 5; see
+	// config.AuthRateLimitRPS for why it is tunable at all.
+	authLimiter := middleware.NewRateLimiter(cfg.AuthRateLimitRPS, cfg.AuthRateLimitBurst)
 
 	r := chi.NewRouter()
 
@@ -267,6 +332,7 @@ func main() {
 		r.Post("/orgs", orgH.CreateOrg)
 		r.Get("/orgs/{orgSlug}", orgH.OrgPage)
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
+		r.Get("/orgs/{orgSlug}/invitations/list", inviteH.InvitationList)
 		r.Post("/orgs/{orgSlug}/invitations", orgH.InviteMember)
 		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
 		r.Post("/orgs/{orgSlug}/invitations/{invitationID}/resend", inviteH.ResendInvitation)
@@ -274,6 +340,7 @@ func main() {
 		r.Patch("/orgs/{orgSlug}/members/{userID}/role", orgH.UpdateMemberRole)
 		r.Post("/orgs/{orgSlug}/settings/business", orgH.UpdateBusinessDetails)
 		r.Post("/orgs/{orgSlug}/settings/margin", orgH.UpdateAIMargin)
+		r.Post("/orgs/{orgSlug}/settings/budget", orgH.UpdateMonthlyBudget)
 		r.Post("/orgs/{orgSlug}/settings/currency", orgH.UpdateCurrency)
 
 		// Projects
@@ -287,6 +354,7 @@ func main() {
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/archived", projH.ProjectArchived)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/settings", projH.ProjectSettings)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/settings/repo", projH.UpdateRepoURL)
+		r.Post("/orgs/{orgSlug}/projects/{projSlug}/settings/scorer", projH.UpdateScorerProvider)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/transfer", projH.TransferProject)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.ProjectCosts)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.AddCostItem)
@@ -369,9 +437,9 @@ func main() {
 	// stuck on its empty state. Runs in-process on each replica;
 	// ClaimStaleEffortScores uses FOR UPDATE SKIP LOCKED + a backoff lease
 	// so the two forgedesk-server replicas never double-score (double-bill)
-	// the same debate. Guarded on the scorer being configured — without
-	// GEMINI_API_KEY there is nothing to call.
-	if debateScorer != nil {
+	// the same debate. Guarded on at least one scorer being configured —
+	// with no provider API keys there is nothing to call.
+	if len(debateScorers) > 0 {
 		go func() {
 			ticker := time.NewTicker(debateCfg.EffortRetrySweepInterval)
 			defer ticker.Stop()
@@ -450,8 +518,39 @@ func buildFakeDebateRefiners() map[string]ai.Refiner {
 		}
 	}
 	return map[string]ai.Refiner{
-		"claude": mk("claude", ai.ModelClaudeSonnet46),
-		"gemini": mk("gemini", ai.ModelGeminiFlash),
-		"openai": mk("openai", ai.ModelGPT5Mini),
+		ai.ProviderClaude: mk(ai.ProviderClaude, ai.ModelClaudeSonnet46),
+		ai.ProviderGemini: mk(ai.ProviderGemini, ai.ModelGeminiFlash),
+		ai.ProviderOpenAI: mk(ai.ProviderOpenAI, ai.ModelGPT5Mini),
+	}
+}
+
+// buildFakeDebateScorers mirrors buildFakeDebateRefiners for the scorer
+// registry. Without fake scorers the E2E stack could not exercise
+// per-project provider selection at all (issue #63) — which is the whole
+// feature — since every real scorer needs a billable API key.
+//
+// Each fake names its provider in Reasoning so a test can assert which
+// one actually ran, and reports the matching real model so the cost
+// accounting path behaves as it does in production.
+func buildFakeDebateScorers() map[string]ai.Scorer {
+	mk := func(name, model string) ai.Scorer {
+		return &ai.FakeScorer{
+			NameVal: name, ModelVal: model,
+			Result: ai.ScoreResult{
+				Score:     5,
+				Hours:     8,
+				Reasoning: "Scored by fake " + name + " scorer.",
+				Usage: ai.RefineUsage{
+					InputTokens: 100, OutputTokens: 20,
+					CostMicros: ai.ComputeCostMicros(model, 100, 20),
+					Model:      model,
+				},
+			},
+		}
+	}
+	return map[string]ai.Scorer{
+		ai.ProviderClaude: mk(ai.ProviderClaude, ai.ModelClaudeSonnet46),
+		ai.ProviderGemini: mk(ai.ProviderGemini, ai.ModelGeminiFlash),
+		ai.ProviderOpenAI: mk(ai.ProviderOpenAI, ai.ModelGPT5Mini),
 	}
 }

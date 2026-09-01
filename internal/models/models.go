@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type User struct {
 	CreatedAt          time.Time `db:"created_at"`
@@ -35,6 +38,9 @@ type Organization struct {
 	ContactEmails      string    `db:"contact_emails"`
 	Slug               string    `db:"slug"`
 	AIMarginPercent    int       `db:"ai_margin_percent"`
+	// MonthlyBudgetCents is USD cents; nil = unlimited. See migration
+	// 000035 and docs/superpowers/specs/2026-08-20-org-monthly-budget-design.md.
+	MonthlyBudgetCents *int64 `db:"monthly_budget_cents"`
 }
 
 type OrgMembership struct {
@@ -78,6 +84,10 @@ type Project struct {
 	Slug          string    `db:"slug"`
 	BriefMarkdown string    `db:"brief_markdown"`
 	RepoURL       string    `db:"repo_url"`
+	// ScorerProvider selects which AI provider scores this project's
+	// feature debates: claude | gemini | openai (issue #63). Staff-only
+	// setting; defaults to gemini, which is what v1 hardcoded.
+	ScorerProvider string `db:"scorer_provider"`
 }
 
 type Ticket struct {
@@ -108,6 +118,38 @@ type Comment struct {
 	ID           string    `db:"id"`
 	TicketID     string    `db:"ticket_id"`
 	BodyMarkdown string    `db:"body_markdown"`
+}
+
+// CommentWithAuthor is a Comment plus the single name to display for its
+// author. It is a distinct type rather than a joined `AuthorName` field on
+// Comment (the convention used by BriefRevision/AIMessage above) so the
+// compiler stops an author-less []Comment from reaching a render path: the
+// bug this fixes (#95) was precisely two render paths disagreeing about the
+// author, and a zero-value string would have shown a blank byline instead
+// of failing loudly.
+type CommentWithAuthor struct {
+	Comment
+	AuthorName string
+}
+
+// CommentAuthorName resolves the one name shown for a comment. Both render
+// paths call it so neither can drift from the other again.
+//
+// Agent comments collapse to a single generic label on purpose: the client
+// role must not see which agent produced the work (CLAUDE.md: "client
+// (per-org, no agent internals visible)"), so agent_name is never rendered.
+//
+// No agent and no user name means the author row is gone — a deleted user.
+// "User" is the honest fallback; an empty byline would look like a bug.
+func CommentAuthorName(agentName, userName *string) string {
+	switch {
+	case agentName != nil:
+		return "ForgeDesk Bot"
+	case userName != nil && *userName != "":
+		return *userName
+	default:
+		return "User"
+	}
 }
 
 type TicketActivity struct {
@@ -238,44 +280,79 @@ type PlatformSettings struct {
 }
 
 type FeatureDebate struct {
-	CreatedAt                 time.Time  `db:"created_at"`
-	UpdatedAt                 time.Time  `db:"updated_at"`
-	InFlightStartedAt         *time.Time `db:"in_flight_started_at"`
-	EffortScoredAt            *time.Time `db:"effort_scored_at"`
-	InFlightRequestID         *string    `db:"in_flight_request_id"`
-	EffortScore               *int       `db:"effort_score"`
-	EffortHours               *int       `db:"effort_hours"`
-	EffortReasoning           *string    `db:"effort_reasoning"`
-	LastScoredRoundID         *string    `db:"last_scored_round_id"`
-	ApprovedText              *string    `db:"approved_text"`
-	ID                        string     `db:"id"`
-	TicketID                  string     `db:"ticket_id"`
-	ProjectID                 string     `db:"project_id"`
-	OrgID                     string     `db:"org_id"`
-	StartedBy                 string     `db:"started_by"`
-	Status                    string     `db:"status"` // active | approved | abandoned
-	SeedDescription           string     `db:"seed_description"`
-	CurrentText               string     `db:"current_text"`
-	OriginalTicketDescription string     `db:"original_ticket_description"`
-	TotalCostMicros           int64      `db:"total_cost_micros"`
+	CreatedAt         time.Time  `db:"created_at"`
+	UpdatedAt         time.Time  `db:"updated_at"`
+	InFlightStartedAt *time.Time `db:"in_flight_started_at"`
+	EffortScoredAt    *time.Time `db:"effort_scored_at"`
+	InFlightRequestID *string    `db:"in_flight_request_id"`
+	EffortScore       *int       `db:"effort_score"`
+	EffortHours       *int       `db:"effort_hours"`
+	EffortReasoning   *string    `db:"effort_reasoning"`
+	LastScoredRoundID *string    `db:"last_scored_round_id"`
+	ApprovedText      *string    `db:"approved_text"`
+	// EffortScorer* record which provider/model produced the CURRENT
+	// effort_* snapshot (issue #63). Not derivable from the project's
+	// live scorer_provider: flipping that dropdown must not retroactively
+	// relabel scores an older provider produced. NULL until first scored;
+	// the model is also NULL for scores backfilled by migration 000034.
+	EffortScorerProvider      *string `db:"effort_scorer_provider"`
+	EffortScorerModel         *string `db:"effort_scorer_model"`
+	ID                        string  `db:"id"`
+	TicketID                  string  `db:"ticket_id"`
+	ProjectID                 string  `db:"project_id"`
+	OrgID                     string  `db:"org_id"`
+	StartedBy                 string  `db:"started_by"`
+	Status                    string  `db:"status"` // active | approved | abandoned
+	SeedDescription           string  `db:"seed_description"`
+	CurrentText               string  `db:"current_text"`
+	OriginalTicketDescription string  `db:"original_ticket_description"`
+	TotalCostMicros           int64   `db:"total_cost_micros"`
 }
 
 type DebateRound struct {
-	CreatedAt        time.Time  `db:"created_at"`
-	DecidedAt        *time.Time `db:"decided_at"`
-	Feedback         *string    `db:"feedback"`
-	DiffUnified      *string    `db:"diff_unified"`
-	InputTokens      *int       `db:"input_tokens"`
-	OutputTokens     *int       `db:"output_tokens"`
-	CostMicros       *int64     `db:"cost_micros"`
-	ScorerCostMicros *int64     `db:"scorer_cost_micros"`
-	ID               string     `db:"id"`
-	DebateID         string     `db:"debate_id"`
-	Provider         string     `db:"provider"` // claude | gemini | openai
-	Model            string     `db:"model"`
-	TriggeredBy      string     `db:"triggered_by"`
-	InputText        string     `db:"input_text"`
-	OutputText       string     `db:"output_text"`
-	Status           string     `db:"status"` // in_review | accepted | rejected
-	RoundNumber      int        `db:"round_number"`
+	CreatedAt   time.Time  `db:"created_at"`
+	DecidedAt   *time.Time `db:"decided_at"`
+	Feedback    *string    `db:"feedback"`
+	DiffUnified *string    `db:"diff_unified"`
+	// EditedText is the user's correction of the AI's proposal, NULL when they
+	// accepted it as-is. Never read it directly to decide what shipped — use
+	// ShippedText(), which is the single definition of that (#66).
+	EditedText       *string `db:"edited_text"`
+	InputTokens      *int    `db:"input_tokens"`
+	OutputTokens     *int    `db:"output_tokens"`
+	CostMicros       *int64  `db:"cost_micros"`
+	ScorerCostMicros *int64  `db:"scorer_cost_micros"`
+	ID               string  `db:"id"`
+	DebateID         string  `db:"debate_id"`
+	Provider         string  `db:"provider"` // claude | gemini | openai
+	Model            string  `db:"model"`
+	TriggeredBy      string  `db:"triggered_by"`
+	InputText        string  `db:"input_text"`
+	OutputText       string  `db:"output_text"`
+	Status           string  `db:"status"` // in_review | accepted | rejected
+	RoundNumber      int     `db:"round_number"`
+}
+
+// ShippedText is the text this round actually contributed to the document: the
+// user's edit when they made one, otherwise the AI's output.
+//
+// The SQL in UndoRoundsFromTx and ClaimStaleEffortScores implements the same
+// rule and MUST agree with this to the byte. It uses CASE WHEN btrim(...) <> ”
+// rather than NULLIF(btrim(...), ”) for that reason: NULLIF returns the
+// TRIMMED value, which silently rewrote the user's text and made undo disagree
+// with this function. The trim answers "is this blank?" — it never alters what
+// ships. TestShippedTextAgreesBetweenGoAndSQL pins the two together.
+//
+// This exists so the COALESCE is written once. Five separate places need it —
+// accept, the undo recompute, both scorer paths and the version-history viewer
+// — and each one that forgets it fails silently, showing or scoring the AI's
+// draft instead of what shipped (#66).
+func (r *DebateRound) ShippedText() string {
+	// A blank edit is treated as no edit. The handler refuses one and a CHECK
+	// constraint backs that up, so this is the third line of defense — but it
+	// is the cheapest, and shipping "" would blank the brief.
+	if r.EditedText != nil && strings.TrimSpace(*r.EditedText) != "" {
+		return *r.EditedText
+	}
+	return r.OutputText
 }

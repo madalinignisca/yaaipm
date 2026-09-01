@@ -6,10 +6,20 @@ package ai
 const (
 	ModelClaudeSonnet46 = "claude-sonnet-4-6"
 	ModelClaudeOpus46   = "claude-opus-4-6"
-	ModelGPT5Mini       = "gpt-5-mini"
-	ModelGPT5           = "gpt-5"
-	ModelGeminiFlash    = "gemini-2.5-flash"
-	ModelGeminiPro      = "gemini-2.5-pro"
+	// ModelClaudeHaiku45 is Anthropic's cheapest current model. It is the
+	// default debate scorer for the claude provider: scoring is a small
+	// structured task that runs on every accepted round plus the retry
+	// sweep, so it does not need a frontier model (issue #119).
+	ModelClaudeHaiku45 = "claude-haiku-4-5"
+	ModelGPT5Mini      = "gpt-5-mini"
+	ModelGPT5          = "gpt-5"
+	ModelGPT54         = "gpt-5.4"
+	ModelGeminiFlash   = "gemini-2.5-flash"
+	ModelGeminiPro     = "gemini-2.5-pro"
+	// Gemini3FlashPreview is the production-pinned scorer/refiner model
+	// (GEMINI_MODEL in the forgedesk-env cluster Secret). Added 2026-07
+	// after the live-API suite (issue #67) found it un-priced.
+	ModelGemini3FlashPreview = "gemini-3-flash-preview"
 )
 
 // pricingRate expresses a per-1k-token rate in micros (millionths of USD).
@@ -22,17 +32,51 @@ type pricingRate struct {
 // Update when vendors change prices; git history preserves the audit trail
 // of "we were paying $X per 1k tokens during period Y".
 //
-// Rates are the public list prices as of the spec date (2026-04-14). If a
-// model the handler asks about is absent from this table, ComputeCostMicros
-// returns 0 — the round still records successfully, just without cost data
-// (safer than failing the round on a pricing lookup miss).
+// Rates are public list prices. The original set is as of the spec date
+// (2026-04-14); entries added later carry their own date + source in a
+// trailing comment.
+//
+// VERIFY AGAINST THE VENDOR, DO NOT COPY FROM MEMORY. Anthropic, OpenAI
+// and Google all cut prices on existing model names, so a rate that was
+// correct when written goes stale in place with nothing to signal it.
+// HasPricing only proves a model HAS an entry, never that the entry is
+// right — a missing price fails loudly at startup (#108), a wrong one
+// silently mis-bills clients until someone re-reads the pricing page
+// (which is exactly what happened to Opus 4.6, see below).
+// Anthropic: https://platform.claude.com/docs/en/about-claude/pricing If a model the handler asks about is absent from this
+// table, ComputeCostMicros returns 0 — the round still records
+// successfully, just without cost data (safer than failing the round on a
+// pricing lookup miss). Because a $0 miss is silent, cmd/server keeps the
+// configured debate models honest at startup via HasPricing (issue #108).
 var pricingTable = map[string]pricingRate{
 	ModelClaudeSonnet46: {inputMicrosPer1k: 3000, outputMicrosPer1k: 15000},
-	ModelClaudeOpus46:   {inputMicrosPer1k: 15000, outputMicrosPer1k: 75000},
-	ModelGPT5Mini:       {inputMicrosPer1k: 500, outputMicrosPer1k: 2000},
-	ModelGPT5:           {inputMicrosPer1k: 3000, outputMicrosPer1k: 15000},
-	ModelGeminiFlash:    {inputMicrosPer1k: 350, outputMicrosPer1k: 2800},
-	ModelGeminiPro:      {inputMicrosPer1k: 2500, outputMicrosPer1k: 15000},
+	// Opus 4.6: $5.00/1M in, $25.00/1M out. CORRECTED 2026-08-26 — this
+	// entry read 15000/75000, which is the RETIRED Opus 4.1 / Opus 4 rate.
+	// Anthropic cut Opus pricing at 4.5 and the entry was never updated,
+	// so every Opus call had been recorded at 3x its true cost since then.
+	// Historical project_costs rows are deliberately NOT rewritten: they
+	// are an audit trail of what was recorded at the time.
+	ModelClaudeOpus46: {inputMicrosPer1k: 5000, outputMicrosPer1k: 25000},
+	// haiku-4-5: $1.00/1M in, $5.00/1M out (issue #119).
+	ModelClaudeHaiku45: {inputMicrosPer1k: 1000, outputMicrosPer1k: 5000},
+	ModelGPT5Mini:      {inputMicrosPer1k: 500, outputMicrosPer1k: 2000},
+	ModelGPT5:          {inputMicrosPer1k: 3000, outputMicrosPer1k: 15000},
+	// gpt-5.4: $2.50/1M in, $15.00/1M out (developers.openai.com/api/docs/pricing, 2026-07).
+	ModelGPT54:       {inputMicrosPer1k: 2500, outputMicrosPer1k: 15000},
+	ModelGeminiFlash: {inputMicrosPer1k: 350, outputMicrosPer1k: 2800},
+	ModelGeminiPro:   {inputMicrosPer1k: 2500, outputMicrosPer1k: 15000},
+	// gemini-3-flash-preview: $0.50/1M in, $3.00/1M out (ai.google.dev/gemini-api/docs/pricing, 2026-07).
+	ModelGemini3FlashPreview: {inputMicrosPer1k: 500, outputMicrosPer1k: 3000},
+}
+
+// HasPricing reports whether the named model has a rate in pricingTable.
+// cmd/server calls this at startup for each configured debate model so an
+// un-priced model surfaces as a loud WARNING instead of silently recording
+// every call at $0 (issue #108: production ran gemini-3-flash-preview and
+// gpt-5.4 with no entries, so all Gemini/OpenAI debate costs read as $0).
+func HasPricing(model string) bool {
+	_, ok := pricingTable[model]
+	return ok
 }
 
 // ComputeCostMicros returns the cost in micros (millionths of USD) for the

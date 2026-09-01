@@ -2,11 +2,14 @@
      pages/ticket_detail.html. Previously this partial emitted raw
      BodyMarkdown, so a newly-posted comment showed escaped markdown
      until reload when the full page re-rendered it properly. (#37) */}}
-<div class="border-l-2 border-base-300 pl-4">
+{{/* `comment` is the E2E landmark for one rendered comment. It was absent
+     while the suite could not run, which made an existing assertion
+     (#comments .comment toHaveCount(0)) pass unconditionally (#136). */}}
+<div class="comment border-l-2 border-base-300 pl-4">
     <div class="flex items-center gap-2 text-xs mb-1">
-        <span class="font-medium">{{.UserName}}</span>
+        <span class="comment-author font-medium">{{.AuthorName}}</span>
         <span class="text-base-content/50">·</span>
-        <span class="text-base-content/60">{{formatDateTime .Comment.CreatedAt}}</span>
+        <span class="comment-time text-base-content/60">{{formatDateTime .Comment.CreatedAt}}</span>
     </div>
     {{/* comment-body retained alongside prose so the HTMX-partial
          regression test (#37) can match on a stable landmark class

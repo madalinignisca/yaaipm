@@ -42,6 +42,10 @@ const (
 type Engine struct {
 	templates        map[string]*template.Template
 	AssistantEnabled bool
+	// StorageEnabled is false when no object store is configured. The upload
+	// routes are not even registered in that case (cmd/server/main.go), so
+	// templates must not offer controls that would 404 (#153).
+	StorageEnabled bool
 }
 
 // PageData holds common data passed to every template.
@@ -60,6 +64,7 @@ type PageData struct {
 	Projects         []models.Project
 	Orgs             []models.Organization
 	AssistantEnabled bool
+	StorageEnabled   bool
 }
 
 // staticFuncMap returns template helpers that are pure functions with
@@ -449,6 +454,7 @@ func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, dat
 		return fmt.Errorf("template %q not found", name)
 	}
 	data.AssistantEnabled = e.AssistantEnabled
+	data.StorageEnabled = e.StorageEnabled
 	// filippo.io/csrf/gorilla uses header-based CSRF (Origin /
 	// Sec-Fetch-Site); Token/TemplateField are shim no-ops kept for
 	// source compatibility. Removing these call sites would also

@@ -18,12 +18,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      # Read the pinned version from .golangci-version, the SAME file
+      # scripts/lint.sh reads. Previously this said `version: v2.11`, a
+      # FLOATING minor that silently resolved to whichever v2.11.x was
+      # latest that day — so CI moved to 2.11.4 while the dev VM stayed on
+      # 2.11.1 and the two disagreed about real findings. A green local
+      # lint stopped predicting a green CI lint (issue #120). Neither side
+      # can drift now without editing that one file.
+      - name: Read pinned golangci-lint version
+        id: lintver
+        run: echo "version=$(tr -d '[:space:]' < .golangci-version)" >> "$GITHUB_OUTPUT"
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.11
+          version: ${{ steps.lintver.outputs.version }}
           args: --timeout=5m

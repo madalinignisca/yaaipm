@@ -1,33 +1,30 @@
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, fullLogin, generateTOTP } = require('./helpers');
+const { useSession, rootSession, generateTOTP } = require('./helpers');
 
 const testUser = {
   name: 'Org Admin',
   email: 'e2e-org@forgedesk.test',
   password: 'E2ETestPassword123!',
 };
-let totpSecret = '';
+// Sessions come from global setup: the app allows exactly one registration
+// ever, and logging in per test would replay a TOTP code inside its 30s step,
+// which ValidateTOTPOnce rejects (#136).
+let rootCookies = [];
 
 test.describe('Dashboard & Organizations', () => {
-  test.beforeAll(async ({ browser }) => {
-    // Register and set up 2FA for the test user
-    const page = await browser.newPage();
-    await registerUser(page, testUser);
-    await loginUser(page, testUser);
-    const result = await setup2FA(page);
-    totpSecret = result.secret;
-    await page.close();
+  test.beforeAll(() => {
+    rootCookies = rootSession().cookies;
   });
 
   test('dashboard shows when authenticated', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     const url = page.url();
     // Either dashboard or redirected to single org
     expect(url.includes('/login') === false).toBeTruthy();
   });
 
   test('create organization', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
 
     // Navigate to dashboard
     await page.goto('/');
@@ -48,7 +45,7 @@ test.describe('Dashboard & Organizations', () => {
   });
 
   test('org page shows projects list', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
 
     // Create org directly via POST
     const response = await page.request.post('/orgs', {
@@ -65,7 +62,7 @@ test.describe('Dashboard & Organizations', () => {
   });
 
   test('org settings page shows members', async ({ page }) => {
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
 
     // Create org if it doesn't exist
     await page.request.post('/orgs', {

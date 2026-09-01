@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,8 +19,26 @@ const (
 	TestSecret = "test-session-secret-32-chars-long!"
 )
 
+// requireTestDB reports whether an unreachable test database must FAIL the
+// test rather than skip it.
+//
+// Skipping is the right default for a developer with no Postgres running. It is
+// the wrong behavior in CI, where it makes the entire integration suite report
+// `ok` and exit 0 while executing nothing — indistinguishable from a working
+// run (#138). So CI declares the database as a precondition by setting
+// REQUIRE_TEST_DB, and a missing database becomes a hard failure.
+//
+// This is the one legitimate shape for a runtime skip: an explicitly declared
+// opt-in, not an inference from "the thing under test appears to be missing".
+func requireTestDB() bool {
+	v := strings.TrimSpace(os.Getenv("REQUIRE_TEST_DB"))
+	return v != "" && v != "0" && !strings.EqualFold(v, "false")
+}
+
 // SetupTestDB connects to the test database and cleans all data.
-// Skips the test if the test database is not reachable.
+//
+// Skips the test if the test database is not reachable — unless REQUIRE_TEST_DB
+// is set, in which case it fails. See requireTestDB.
 func SetupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -28,14 +47,24 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 		dbURL = TestDBURL
 	}
 
+	unreachable := func(format string, args ...any) {
+		t.Helper()
+		if requireTestDB() {
+			t.Fatalf("REQUIRE_TEST_DB is set: "+format, args...)
+		}
+		t.Skipf("skipping integration test: "+format, args...)
+	}
+
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
-		t.Skipf("skipping integration test: cannot connect to test DB: %v", err)
+		unreachable("cannot connect to test DB: %v", err)
+		return nil
 	}
 
 	if err := pool.Ping(context.Background()); err != nil {
 		pool.Close()
-		t.Skipf("skipping integration test: cannot ping test DB: %v", err)
+		unreachable("cannot ping test DB: %v", err)
+		return nil
 	}
 
 	// Clean all tables (order matters due to foreign keys).
@@ -50,6 +79,11 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 		"project_costs",
 		"ticket_activities",
 		"comments",
+		// Appended by #129. Listed explicitly even though its org_id FK is
+		// ON DELETE CASCADE, matching this list's children-first convention:
+		// if that FK is ever relaxed, spend rows would otherwise start
+		// leaking between tests silently.
+		"debate_spend",
 		// Debate rounds reference debates; debates reference tickets + users
 		// (ON DELETE RESTRICT on started_by/triggered_by), so purge rounds
 		// first, then debates, then the rest.
@@ -60,6 +94,10 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 		"projects",
 		"invitations",
 		"org_memberships",
+		// References organizations; must go before it even though the FK
+		// is ON DELETE CASCADE, to match this list's "children first"
+		// convention (#64).
+		"org_budget_changes",
 		"organizations",
 		"webauthn_credentials",
 		"sessions",

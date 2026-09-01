@@ -33,7 +33,7 @@ func NewAnthropicClient(apiKey string, models AnthropicModels) *AnthropicClient 
 // GenerateResponse sends a single-turn request and returns the text response.
 func (a *AnthropicClient) GenerateResponse(ctx context.Context, model, systemPrompt, userPrompt string, maxTokens int64) (string, *UsageData, error) {
 	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(model),
+		Model:     model,
 		MaxTokens: maxTokens,
 		System: []anthropic.TextBlockParam{
 			{Text: systemPrompt},
@@ -84,7 +84,7 @@ func NewAnthropicRefiner(c *AnthropicClient, model string) *AnthropicRefiner {
 	return &AnthropicRefiner{client: c, model: model}
 }
 
-func (r *AnthropicRefiner) Name() string  { return "claude" }
+func (r *AnthropicRefiner) Name() string  { return ProviderClaude }
 func (r *AnthropicRefiner) Model() string { return r.model }
 
 // Refine sends one refactoring request and returns the model's output
@@ -97,7 +97,7 @@ func (r *AnthropicRefiner) Refine(ctx context.Context, in RefineInput) (RefineOu
 	}
 
 	resp, err := r.client.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(r.model),
+		Model:     r.model,
 		MaxTokens: 4096,
 		System: []anthropic.TextBlockParam{
 			{Text: resolveSystemPrompt(in.SystemPrompt)},

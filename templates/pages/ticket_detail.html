@@ -17,13 +17,19 @@
         <div class="card-body p-6 gap-4">
             <div class="flex items-start justify-between gap-4 flex-wrap">
                 <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-1.5 flex-wrap mb-2">
-                        <span class="badge badge-sm badge-ghost uppercase">{{.Ticket.Type}}</span>
+                    {{/* ticket-badges / ticket-title / badge-uppercase are stable
+                         landmarks for the E2E suite, kept alongside the Tailwind
+                         classes so a restyle does not silently break selectors.
+                         Same convention as comment-body in components/comment.html
+                         (#37). The E2E suite could not run at all until #136, so
+                         these had drifted out of the markup unnoticed. */}}
+                    <div class="ticket-badges flex items-center gap-1.5 flex-wrap mb-2">
+                        <span class="badge badge-uppercase badge-sm badge-ghost uppercase">{{.Ticket.Type}}</span>
                         <span class="badge badge-sm {{statusBadgeClass .Ticket.Status}}">{{.Ticket.Status}}</span>
                         <span class="badge badge-sm {{priorityBadgeClass .Ticket.Priority}}">{{.Ticket.Priority}}</span>
                         {{if .Ticket.ArchivedAt}}<span class="badge badge-sm badge-error">archived</span>{{end}}
                     </div>
-                    <h1 x-show="!editing" class="text-2xl font-semibold tracking-tight">{{.Ticket.Title}}</h1>
+                    <h1 x-show="!editing" class="ticket-title text-2xl font-semibold tracking-tight">{{.Ticket.Title}}</h1>
                 </div>
 
                 <div class="flex gap-2 items-center shrink-0">
@@ -51,7 +57,7 @@
                     {{if .IsStaff}}
                     <div class="relative" x-data="{ open: false }">
                         <button @click="open = !open"
-                                class="btn btn-ghost btn-sm btn-square"
+                                class="btn-dots btn btn-ghost btn-sm btn-square"
                                 aria-label="More actions">
                             <svg width="16" height="16" fill="currentColor" viewBox="0 0 20 20">
                                 <path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM16 12a2 2 0 100-4 2 2 0 000 4z"/>
@@ -59,7 +65,7 @@
                         </button>
                         <div x-show="open" x-transition x-cloak
                              @click.outside="open = false"
-                             class="absolute right-0 mt-2 w-64 bg-base-100 border border-base-300
+                             class="dropdown-menu absolute right-0 mt-2 w-64 bg-base-100 border border-base-300
                                     rounded-lg shadow-xl z-40 overflow-hidden">
                             {{$ticketID := .Ticket.ID}}
                             <div class="p-2 border-b border-base-300">
@@ -70,7 +76,7 @@
                                             hx-vals='{"status":"{{$s}}"}'
                                             hx-target="#ticket-header"
                                             hx-swap="outerHTML"
-                                            class="text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">
+                                            class="dropdown-item text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">
                                         {{$s}}
                                     </button>
                                     {{end}}
@@ -101,15 +107,15 @@
                                     {{if .Ticket.ArchivedAt}}
                                     <button hx-post="/tickets/{{.Ticket.ID}}/restore"
                                             hx-confirm="Restore this ticket and its children?"
-                                            class="text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">Restore</button>
+                                            class="dropdown-item text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">Restore</button>
                                     {{else}}
                                     <button hx-post="/tickets/{{.Ticket.ID}}/archive"
                                             hx-confirm="Archive this ticket?"
-                                            class="text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">Archive</button>
+                                            class="dropdown-item text-left px-2 py-1.5 text-sm rounded hover:bg-base-200">Archive</button>
                                     {{end}}
                                     <button hx-delete="/tickets/{{.Ticket.ID}}"
                                             hx-confirm="Permanently delete this ticket? This cannot be undone."
-                                            class="text-left px-2 py-1.5 text-sm rounded hover:bg-base-200 text-error">Delete</button>
+                                            class="dropdown-item text-left px-2 py-1.5 text-sm rounded hover:bg-base-200 text-error">Delete</button>
                                 </div>
                             </div>
                         </div>
@@ -121,7 +127,7 @@
             {{/* View mode */}}
             <div x-show="!editing">
                 {{if .Ticket.DescriptionMarkdown}}
-                <div class="prose prose-sm max-w-none mt-2">{{markdown .Ticket.DescriptionMarkdown}}</div>
+                <div class="ticket-description prose prose-sm max-w-none mt-2">{{markdown .Ticket.DescriptionMarkdown}}</div>
                 {{end}}
             </div>
 
@@ -183,6 +189,10 @@
     </div>
 
     {{/* Attachments */}}
+    {{/* Storage-gated (#153). With no object store configured, main.go does not
+         register the upload routes at all, so offering these controls means
+         offering something that 404s. */}}
+    {{if $.StorageEnabled}}
     <div class="card bg-base-100 border border-base-300 shadow-sm">
         <div class="card-body p-6 gap-3">
             <div class="flex items-center justify-between flex-wrap gap-3">
@@ -275,12 +285,15 @@
             <div class="flex flex-col gap-2">
                 {{range .Children}}
                 <a href="/tickets/{{.ID}}"
-                   class="block p-3 rounded-md bg-base-200 hover:bg-base-300 transition-colors">
+                   class="sub-item block p-3 rounded-md bg-base-200 hover:bg-base-300 transition-colors">
                     <div class="flex items-center justify-between gap-3 flex-wrap">
                         <span class="font-medium text-sm flex-1 min-w-0 truncate">{{.Title}}</span>
                         <div class="flex items-center gap-1.5 shrink-0">
-                            <span class="badge badge-sm {{statusBadgeClass .Status}}">{{.Status}}</span>
-                            <span class="badge badge-sm {{priorityBadgeClass .Priority}}">{{.Priority}}</span>
+                            {{/* badge-status / badge-priority distinguish the two
+                                 badges for E2E assertions: a bare .badge selector
+                                 matches both and trips Playwright strict mode. */}}
+                            <span class="badge badge-status badge-sm {{statusBadgeClass .Status}}">{{.Status}}</span>
+                            <span class="badge badge-priority badge-sm {{priorityBadgeClass .Priority}}">{{.Priority}}</span>
                         </div>
                     </div>
                     {{if .DescriptionMarkdown}}
@@ -302,27 +315,23 @@
         </div>
     </div>
 
+    {{end}}
+
     {{/* Comments */}}
     <div class="card bg-base-100 border border-base-300 shadow-sm">
         <div class="card-body p-6 gap-4">
             <h3 class="text-base font-semibold">Comments</h3>
             <div id="comments" class="flex flex-col gap-4">
                 {{$cr := .CommentReactions}}
+                {{/* Delegated to components/comment.html rather than
+                     inlined: this loop and the partial used for HTMX-posted
+                     comments used to be near-duplicates kept in sync by
+                     hand, and they drifted — the loop hardcoded a generic
+                     "User" byline while the partial showed the real name,
+                     so a comment was renamed by a page reload (#95). One
+                     copy means they cannot disagree again. */}}
                 {{range .Comments}}
-                <div class="border-l-2 border-base-300 pl-4">
-                    <div class="flex items-center gap-2 text-xs mb-1">
-                        <span class="font-medium">{{if .AgentName}}ForgeDesk Bot{{else}}User{{end}}</span>
-                        <span class="text-base-content/50">·</span>
-                        <span class="text-base-content/60">{{formatDateTime .CreatedAt}}</span>
-                    </div>
-                    {{/* comment-body class retained alongside prose so the
-                         #37 partial-render regression test has a stable
-                         landmark independent of Tailwind refactors. Also
-                         matches the comment.html partial used for HTMX-
-                         posted comments after initial load. */}}
-                    <div class="comment-body prose prose-sm max-w-none">{{markdown .BodyMarkdown}}</div>
-                    {{template "reactions.html" dict "TargetType" "comment" "TargetID" .ID "Groups" (index $cr .ID)}}
-                </div>
+                {{template "comment.html" dict "Comment" .Comment "AuthorName" .AuthorName "CommentReactions" (index $cr .Comment.ID)}}
                 {{end}}
             </div>
 
@@ -341,7 +350,10 @@
     </div>
 </div>
 
-{{template "image_modal" .}}
+{{/* $ , not . : inside {{with .Data}} a bare .StorageEnabled is a
+     missing field, which aborts execution and SILENTLY TRUNCATES everything
+     after it (#153, same trap as PR #80). */}}
+{{if $.StorageEnabled}}{{template "image_modal" $}}{{end}}
 
 <script>
 var _imageGenProjectID = '{{.Ticket.ProjectID}}';
@@ -366,6 +378,7 @@ function ticketEditor() {
                             'bold', 'italic', 'heading', '|',
                             'unordered-list', 'ordered-list', '|',
                             'link',
+                            {{if $.StorageEnabled}}
                             {
                                 name: 'insert-image',
                                 action: function(editor) {
@@ -377,6 +390,7 @@ function ticketEditor() {
                                 className: 'fa fa-image',
                                 title: 'Insert Image',
                             },
+                            {{end}}
                             '|', 'code', 'quote', '|',
                             'preview', 'side-by-side', '|',
                             'guide'

@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/madalin/forgedesk/internal/auth"
@@ -15,10 +17,17 @@ import (
 type ProjectHandler struct {
 	db     *models.DB
 	engine *render.Engine
+	// scorerProviders are the debate scorer providers that actually have
+	// an API key configured, in stable display order (issue #63). The
+	// settings dropdown offers exactly these, and UpdateScorerProvider
+	// refuses anything outside the list: storing a provider with no
+	// registered scorer would leave the project silently unscored,
+	// visible only as a WARNING in the server log.
+	scorerProviders []string
 }
 
-func NewProjectHandler(db *models.DB, engine *render.Engine) *ProjectHandler {
-	return &ProjectHandler{db: db, engine: engine}
+func NewProjectHandler(db *models.DB, engine *render.Engine, scorerProviders []string) *ProjectHandler {
+	return &ProjectHandler{db: db, engine: engine, scorerProviders: scorerProviders}
 }
 
 type projectPageData struct {
@@ -28,7 +37,15 @@ type projectPageData struct {
 	Tickets   []models.Ticket
 	Revisions []models.BriefRevision
 	AllOrgs   []models.Organization
-	IsStaff   bool
+	// ScorerProviders are the selectable debate scorer providers for the
+	// settings dropdown (issue #63); empty when no AI keys are configured.
+	ScorerProviders []string
+	IsStaff         bool
+	// ScorerProviderUnavailable is true when the project's stored provider
+	// is not in ScorerProviders — its API key was removed after an admin
+	// selected it. The dropdown surfaces that rather than silently
+	// appearing to say something else.
+	ScorerProviderUnavailable bool
 }
 
 func (h *ProjectHandler) getOrgAndProject(r *http.Request, user *models.User) (*models.Organization, *models.Project, error) {
@@ -40,10 +57,17 @@ func (h *ProjectHandler) getOrgAndProject(r *http.Request, user *models.User) (*
 		return nil, nil, err
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		if _, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); memErr != nil {
-			return nil, nil, memErr
+	// Returns errCrossTenant for a genuine non-member and the underlying
+	// error otherwise, so callers CAN tell them apart. Today every caller
+	// still renders 404 for both, which is safe — but the distinction now
+	// exists in the returned error instead of being lost here, and an
+	// infrastructure fault is logged where it happens rather than
+	// vanishing into a "Not found" page (#128).
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, org.ID); authErr != nil {
+		if !errors.Is(authErr, errCrossTenant) {
+			log.Printf("project authz for user %s org %s: %v", user.ID, org.ID, authErr)
 		}
+		return nil, nil, authErr
 	}
 
 	proj, err := h.db.GetProject(r.Context(), org.ID, projSlug)
@@ -189,12 +213,13 @@ func (h *ProjectHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		mem, memErr := h.db.GetOrgMembership(r.Context(), user.ID, org.ID)
-		if memErr != nil || !auth.CanManageOrg(mem.Role) {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		log.Printf("create project authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
 	}
 
 	slug := slugify(name)
@@ -252,8 +277,64 @@ func (h *ProjectHandler) ProjectSettings(w http.ResponseWriter, r *http.Request)
 		Title: proj.Name + " — Settings", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "settings",
 		ProjectID: proj.ID,
-		Data:      projectPageData{Project: proj, Projects: projects, Tab: "settings", IsStaff: true, AllOrgs: allOrgs},
+		Data: projectPageData{
+			Project: proj, Projects: projects, Tab: "settings", IsStaff: true, AllOrgs: allOrgs,
+			ScorerProviders:           h.scorerProviders,
+			ScorerProviderUnavailable: !slices.Contains(h.scorerProviders, proj.ScorerProvider),
+		},
 	})
+}
+
+// UpdateScorerProvider sets which AI provider scores this project's
+// feature debates (issue #63). Staff-only, like every other setting on
+// this page.
+func (h *ProjectHandler) UpdateScorerProvider(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	if !auth.IsStaffOrAbove(user.Role) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	_, proj, err := h.getOrgAndProject(r, user)
+	if err != nil {
+		h.engine.RenderError(w, http.StatusNotFound, "Not found")
+		return
+	}
+
+	provider := strings.TrimSpace(r.FormValue("scorer_provider"))
+
+	// An absent field is "nothing was selected", not "invalid selection",
+	// and must not be reported as an error. It happens for real: when the
+	// stored provider has lost its API key the dropdown renders it as a
+	// disabled option, and HTML form submission SKIPS disabled options
+	// even when they are selected — so a staff user who opens settings
+	// and clicks Save without touching the dropdown sends no field at
+	// all. Treat that as a no-op and return them to the page.
+	if provider == "" {
+		w.Header().Set("Hx-Redirect", r.URL.Path[:strings.LastIndex(r.URL.Path, "/")])
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// One membership check covers both remaining failure modes: a name
+	// that is not a provider at all, and a real provider whose API key
+	// this deployment lacks. Either way the value must not reach the
+	// database — the CHECK constraint would catch the former but not the
+	// latter, and storing the latter leaves the project silently
+	// unscored.
+	if !slices.Contains(h.scorerProviders, provider) {
+		http.Error(w, "Unknown or unconfigured scorer provider", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.UpdateProjectScorerProvider(r.Context(), proj.ID, provider); err != nil {
+		log.Printf("updating scorer provider: %v", err)
+		http.Error(w, "Failed to update", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Hx-Redirect", r.URL.Path[:strings.LastIndex(r.URL.Path, "/")])
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *ProjectHandler) TransferProject(w http.ResponseWriter, r *http.Request) {

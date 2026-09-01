@@ -22,10 +22,13 @@ const DebateStatusActive = "active"
 // Task 7+) use errors.Is to route each distinct case to the correct
 // HTTP status per the spec §3.3 error discipline table.
 var (
-	ErrDebateNotActive     = errors.New("debate not active")
-	ErrInFlightAIRequest   = errors.New("AI request already in flight")
-	ErrSeedFrozen          = errors.New("seed frozen after first round")
-	ErrStaleAIInput        = errors.New("current_text changed during AI call")
+	ErrDebateNotActive   = errors.New("debate not active")
+	ErrInFlightAIRequest = errors.New("AI request already in flight")
+	ErrSeedFrozen        = errors.New("seed frozen after first round")
+	ErrStaleAIInput      = errors.New("current_text changed during AI call")
+	// ErrEmptyEdit: accepting a blank edit would set current_text to nothing
+	// and destroy the brief (#66).
+	ErrEmptyEdit           = errors.New("edited text is empty")
 	ErrInReviewRoundExists = errors.New("an in-review round already exists")
 	ErrDescriptionLocked   = errors.New("ticket description locked: active debate exists")
 	ErrRoundNotInReview    = errors.New("round is not in review state")
@@ -371,7 +374,7 @@ const orgColumns = `id, name, slug, ai_margin_percent, currency_code,
 	business_name, vat_number, registration_number,
 	address_street, address_extra, postal_code, city, country,
 	contact_phones, contact_emails,
-	created_at, updated_at`
+	created_at, updated_at, monthly_budget_cents`
 
 // prefixColumns adds a table alias prefix to each column in a comma-separated list.
 // e.g. prefixColumns("o", "id, name") → "o.id, o.name"
@@ -390,7 +393,7 @@ func scanOrg(scanner interface{ Scan(dest ...any) error }, o *Organization) erro
 		&o.BusinessName, &o.VATNumber, &o.RegistrationNumber,
 		&o.AddressStreet, &o.AddressExtra, &o.PostalCode, &o.City, &o.Country,
 		&o.ContactPhones, &o.ContactEmails,
-		&o.CreatedAt, &o.UpdatedAt,
+		&o.CreatedAt, &o.UpdatedAt, &o.MonthlyBudgetCents,
 	)
 }
 
@@ -815,15 +818,190 @@ func (db *DB) UpdateOrgCurrency(ctx context.Context, orgID, currencyCode string)
 	return nil
 }
 
+// ErrOrgNotFound is returned by UpdateOrgMonthlyBudget when the org row
+// doesn't exist (or was deleted between the caller's lookup and this
+// call) — distinct from a generic DB failure so the handler can 404
+// instead of 500.
+var ErrOrgNotFound = errors.New("organization not found")
+
+// ErrBudgetOutOfRange is returned by UpdateOrgMonthlyBudget when capCents
+// is negative or exceeds maxBudgetCents. The handler's parser already rejects this, but
+// a future or internal caller that bypasses the handler must not be able
+// to persist a value that overflows cap*microsPerCent at comparison time
+// (spec §6). The DB CHECK only guards the negative direction.
+var ErrBudgetOutOfRange = errors.New("monthly budget out of range")
+
+// maxBudgetCents is USD 1,000,000 in cents. Chosen so maxBudgetCents *
+// microsPerCent (10_000) is nowhere near int64 overflow (1e12 vs ~9.2e18).
+const maxBudgetCents = 100_000_000
+
+// UpdateOrgMonthlyBudget sets (non-nil) or clears (nil) an org's monthly
+// AI debate budget cap, recording the old->new transition in
+// org_budget_changes in the SAME transaction.
+//
+// Atomic on purpose: an unaudited change to a money control is worse
+// than a failed change. If the audit INSERT fails, the cap UPDATE must
+// not survive either — a silent, unrecorded budget change is exactly
+// the failure mode spec §8 exists to prevent.
+func (db *DB) UpdateOrgMonthlyBudget(ctx context.Context, orgID, actorUserID string, capCents *int64) error {
+	// Both directions, and with a distinct sentinel: a negative cap would
+	// otherwise reach the DB and come back as an opaque constraint
+	// violation, which the handler cannot tell apart from an infra fault.
+	if capCents != nil && (*capCents < 0 || *capCents > maxBudgetCents) {
+		return ErrBudgetOutOfRange
+	}
+
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning update org monthly budget transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// FOR UPDATE: takes a row lock so a concurrent update can't read the
+	// same pre-image, both producing an audit row that claims to be "the"
+	// transition from the same old value.
+	var oldCents *int64
+	err = tx.QueryRow(ctx,
+		`SELECT monthly_budget_cents FROM organizations WHERE id = $1 FOR UPDATE`,
+		orgID,
+	).Scan(&oldCents)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrOrgNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("locking org for budget update: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE organizations SET monthly_budget_cents = $1, updated_at = now() WHERE id = $2`,
+		capCents, orgID); err != nil {
+		return fmt.Errorf("updating org monthly budget: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO org_budget_changes (org_id, changed_by, old_cents, new_cents)
+		 VALUES ($1, $2, $3, $4)`,
+		orgID, actorUserID, oldCents, capCents); err != nil {
+		return fmt.Errorf("inserting org budget change audit row: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing update org monthly budget transaction: %w", err)
+	}
+	return nil
+}
+
+// SumOrgDebateSpendMicros totals raw provider spend for one org's debate
+// rounds in [from, to). Refiner AND scorer cost, all round statuses — a
+// rejected suggestion still cost money.
+//
+// Enforcement source of truth (spec §3), NOT project_costs:
+// IncrementProjectCostCents runs after commit and is explicitly
+// non-fatal, so one failed rollup would permanently undercount and
+// silently lift the cap. cost_micros/scorer_cost_micros are written
+// inside the round transaction itself.
+//
+// Returns 0,nil when there are no rounds; callers MUST treat a non-nil
+// error as "unknown", never as zero — see checkOrgBudget's fail-closed
+// contract in internal/handlers/debate.go.
+func (db *DB) SumOrgDebateSpendMicros(ctx context.Context, orgID string, from, to time.Time) (int64, error) {
+	var sum int64
+	// Reads the append-only ledger, NOT feature_debate_rounds. Undo hard-deletes
+	// rounds, so summing them let a user reclaim headroom for money already paid
+	// to the provider (#129). Both callers — the cap check in debate.go and the
+	// org settings spend display — go through here, so they cannot disagree.
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(cost_micros), 0)::BIGINT
+		   FROM debate_spend
+		  WHERE org_id = $1 AND incurred_at >= $2 AND incurred_at < $3`,
+		orgID, from, to,
+	).Scan(&sum)
+	if err != nil {
+		return 0, fmt.Errorf("summing org debate spend: %w", err)
+	}
+	return sum, nil
+}
+
+// RecordDebateSpendTx appends one charge to the spend ledger.
+//
+// MUST be called inside the same transaction that records the cost, so the
+// ledger cannot commit without the thing it is charging for, or vice versa.
+//
+// org_id is resolved by sub-select from the debate rather than passed in: the
+// caller already holds the debate row and this keeps the two from drifting.
+//
+// There is deliberately NO uniqueness or upsert here. Every call represents a
+// separate provider call that was really billed — notably the effort scorer,
+// which the retry sweep runs again on a round it already scored. Collapsing
+// those would silently discard real charges, which is the same class of bug
+// this table exists to fix.
+func (db *DB) RecordDebateSpendTx(
+	ctx context.Context, tx pgx.Tx, debateID, roundID, kind string, costMicros int64,
+) error {
+	if costMicros <= 0 {
+		return nil // nothing was billed; no ledger entry to make
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO debate_spend (org_id, debate_id, round_id, kind, cost_micros)
+		 SELECT d.org_id, d.id, $2, $3, $4
+		   FROM feature_debates d
+		  WHERE d.id = $1`,
+		debateID, roundID, kind, costMicros,
+	)
+	if err != nil {
+		return fmt.Errorf("recording debate spend: %w", err)
+	}
+	return nil
+}
+
+// CurrentUTCMonthRange returns [start,end) of the UTC month containing
+// now — the same bucket IncrementProjectCostCents writes via
+// Format("2006-01") (spec §7).
+//
+// No error return: constructing the boundaries directly from now with
+// time.Date(...) in UTC cannot fail, whereas a Format-then-Parse
+// round-trip would introduce an impossible error path callers had to
+// handle for no benefit.
+//
+// Callers MUST pass `now` explicitly and never substitute time.Now()
+// internally, or the caller's captured instant and this function's
+// bucket can straddle midnight and disagree.
+func CurrentUTCMonthRange(now time.Time) (start, end time.Time) {
+	y, m, _ := now.UTC().Date()
+	start = time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+	end = start.AddDate(0, 1, 0)
+	return start, end
+}
+
 // ── Projects ──────────────────────────────────────────────────────
+
+// projectColumns lists the column order used by every project SELECT /
+// RETURNING clause, and scanProject reads that order back. Keeping the
+// pair in one place is what makes adding a column (e.g. scorer_provider
+// in #63) a single edit instead of four synchronized ones — a mismatch
+// between the column list and the scan targets is a RUNTIME error, not a
+// compile error. Same pattern as featureDebateColumns below.
+const projectColumns = `id, org_id, name, slug, brief_markdown, repo_url,
+	scorer_provider, created_at, updated_at`
+
+type projectScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanProject(row projectScanner, p *Project) error {
+	return row.Scan(
+		&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL,
+		&p.ScorerProvider, &p.CreatedAt, &p.UpdatedAt,
+	)
+}
 
 func (db *DB) CreateProject(ctx context.Context, orgID, name, slug string) (*Project, error) {
 	p := &Project{}
-	err := db.Pool.QueryRow(ctx,
+	err := scanProject(db.Pool.QueryRow(ctx,
 		`INSERT INTO projects (org_id, name, slug) VALUES ($1, $2, $3)
-		 RETURNING id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at`,
+		 RETURNING `+projectColumns,
 		orgID, name, slug,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
+	), p)
 	if err != nil {
 		return nil, fmt.Errorf("creating project: %w", err)
 	}
@@ -832,10 +1010,10 @@ func (db *DB) CreateProject(ctx context.Context, orgID, name, slug string) (*Pro
 
 func (db *DB) GetProject(ctx context.Context, orgID, slug string) (*Project, error) {
 	p := &Project{}
-	err := db.Pool.QueryRow(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
+	err := scanProject(db.Pool.QueryRow(ctx,
+		`SELECT `+projectColumns+`
 		 FROM projects WHERE org_id = $1 AND slug = $2`, orgID, slug,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
+	), p)
 	if err != nil {
 		return nil, fmt.Errorf("getting project: %w", err)
 	}
@@ -844,10 +1022,10 @@ func (db *DB) GetProject(ctx context.Context, orgID, slug string) (*Project, err
 
 func (db *DB) GetProjectByID(ctx context.Context, id string) (*Project, error) {
 	p := &Project{}
-	err := db.Pool.QueryRow(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
+	err := scanProject(db.Pool.QueryRow(ctx,
+		`SELECT `+projectColumns+`
 		 FROM projects WHERE id = $1`, id,
-	).Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt)
+	), p)
 	if err != nil {
 		return nil, fmt.Errorf("getting project by id: %w", err)
 	}
@@ -856,7 +1034,7 @@ func (db *DB) GetProjectByID(ctx context.Context, id string) (*Project, error) {
 
 func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, org_id, name, slug, brief_markdown, repo_url, created_at, updated_at
+		`SELECT `+projectColumns+`
 		 FROM projects WHERE org_id = $1 ORDER BY name`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("listing projects: %w", err)
@@ -866,7 +1044,7 @@ func (db *DB) ListProjects(ctx context.Context, orgID string) ([]Project, error)
 	var projects []Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &p.BriefMarkdown, &p.RepoURL, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := scanProject(rows, &p); err != nil {
 			return nil, fmt.Errorf("scanning project: %w", err)
 		}
 		projects = append(projects, p)
@@ -890,6 +1068,38 @@ func (db *DB) UpdateProjectRepoURL(ctx context.Context, projectID, repoURL strin
 		return fmt.Errorf("updating project repo url: %w", err)
 	}
 	return nil
+}
+
+// UpdateProjectScorerProvider sets which AI provider scores this
+// project's debates (issue #63). Callers MUST validate the provider
+// against the configured registry first; the CHECK constraint from
+// migration 000034 is only the backstop.
+func (db *DB) UpdateProjectScorerProvider(ctx context.Context, projectID, provider string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE projects SET scorer_provider = $1, updated_at = now() WHERE id = $2`, provider, projectID)
+	if err != nil {
+		return fmt.Errorf("updating project scorer provider: %w", err)
+	}
+	return nil
+}
+
+// GetProjectScorerProvider reads just the configured scorer provider.
+//
+// A dedicated one-column query rather than GetProjectByID because the
+// accept path calls this from a background scoring goroutine that needs
+// one word — pulling brief_markdown (which can be many KB) along with it
+// would be wasteful on every accepted round.
+//
+// Returns a wrapped pgx.ErrNoRows for an unknown project so callers can
+// distinguish "project vanished" from "provider not configured".
+func (db *DB) GetProjectScorerProvider(ctx context.Context, projectID string) (string, error) {
+	var provider string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT scorer_provider FROM projects WHERE id = $1`, projectID).Scan(&provider)
+	if err != nil {
+		return "", fmt.Errorf("getting project scorer provider: %w", err)
+	}
+	return provider, nil
 }
 
 func (db *DB) TransferProject(ctx context.Context, projectID, targetOrgID string) error {
@@ -1450,6 +1660,44 @@ func (db *DB) ListComments(ctx context.Context, ticketID string) ([]Comment, err
 			return nil, fmt.Errorf("scanning comment: %w", err)
 		}
 		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+// ListCommentsWithAuthors returns a ticket's comments for rendering, each
+// carrying a resolved display name.
+//
+// The plain ListComments above is deliberately kept for the AI-context
+// builders (orchestrator, assistant): they hand raw user_id/agent_name to a
+// third-party LLM and must NOT start shipping real people's names into
+// provider prompts just because the ticket page needed them.
+//
+// LEFT JOIN, not JOIN: agent comments have user_id IS NULL, and an inner
+// join would silently drop every bot comment from the page.
+func (db *DB) ListCommentsWithAuthors(ctx context.Context, ticketID string) ([]CommentWithAuthor, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT c.id, c.ticket_id, c.user_id, c.agent_name, c.body_markdown, c.created_at, u.name
+		 FROM comments c
+		 LEFT JOIN users u ON u.id = c.user_id
+		 WHERE c.ticket_id = $1 ORDER BY c.created_at`, ticketID)
+	if err != nil {
+		return nil, fmt.Errorf("listing comments with authors: %w", err)
+	}
+	defer rows.Close()
+
+	var comments []CommentWithAuthor
+	for rows.Next() {
+		var cw CommentWithAuthor
+		// Scanned into a local rather than a struct field: the comments
+		// table has user_id/agent_name but no name, so the author's name
+		// exists only for the lifetime of this joined row.
+		var userName *string
+		if err := rows.Scan(&cw.ID, &cw.TicketID, &cw.UserID, &cw.AgentName,
+			&cw.BodyMarkdown, &cw.CreatedAt, &userName); err != nil {
+			return nil, fmt.Errorf("scanning comment with author: %w", err)
+		}
+		cw.AuthorName = CommentAuthorName(cw.AgentName, userName)
+		comments = append(comments, cw)
 	}
 	return comments, rows.Err()
 }
@@ -2187,6 +2435,7 @@ const featureDebateColumns = `id, ticket_id, project_id, org_id, started_by, sta
 	seed_description, current_text, original_ticket_description,
 	in_flight_request_id, in_flight_started_at, total_cost_micros,
 	effort_score, effort_hours, effort_reasoning, effort_scored_at,
+	effort_scorer_provider, effort_scorer_model,
 	last_scored_round_id, approved_text, created_at, updated_at`
 
 // scanFeatureDebate reads one row from a pgx.Row or pgx.Rows into a *FeatureDebate.
@@ -2200,6 +2449,7 @@ func scanFeatureDebate(row featureDebateScanner, deb *FeatureDebate) error {
 		&deb.SeedDescription, &deb.CurrentText, &deb.OriginalTicketDescription,
 		&deb.InFlightRequestID, &deb.InFlightStartedAt, &deb.TotalCostMicros,
 		&deb.EffortScore, &deb.EffortHours, &deb.EffortReasoning, &deb.EffortScoredAt,
+		&deb.EffortScorerProvider, &deb.EffortScorerModel,
 		&deb.LastScoredRoundID, &deb.ApprovedText, &deb.CreatedAt, &deb.UpdatedAt,
 	)
 }
@@ -2303,7 +2553,7 @@ func (db *DB) GetLatestRound(ctx context.Context, debateID string) (*DebateRound
 	r := &DebateRound{}
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, debate_id, round_number, provider, model, triggered_by,
-		       feedback, input_text, output_text, diff_unified, status,
+		       feedback, input_text, output_text, edited_text, diff_unified, status,
 		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
 		       created_at, decided_at
 		  FROM feature_debate_rounds
@@ -2311,7 +2561,7 @@ func (db *DB) GetLatestRound(ctx context.Context, debateID string) (*DebateRound
 		 ORDER BY round_number DESC LIMIT 1`, debateID,
 	).Scan(
 		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
-		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.EditedText, &r.DiffUnified, &r.Status,
 		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
 		&r.CreatedAt, &r.DecidedAt,
 	)
@@ -2325,7 +2575,7 @@ func (db *DB) GetLatestRound(ctx context.Context, debateID string) (*DebateRound
 func (db *DB) GetDebateRounds(ctx context.Context, debateID string) ([]DebateRound, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT id, debate_id, round_number, provider, model, triggered_by,
-		       feedback, input_text, output_text, diff_unified, status,
+		       feedback, input_text, output_text, edited_text, diff_unified, status,
 		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
 		       created_at, decided_at
 		  FROM feature_debate_rounds
@@ -2340,7 +2590,7 @@ func (db *DB) GetDebateRounds(ctx context.Context, debateID string) ([]DebateRou
 		var r DebateRound
 		if err := rows.Scan(
 			&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
-			&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+			&r.Feedback, &r.InputText, &r.OutputText, &r.EditedText, &r.DiffUnified, &r.Status,
 			&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
 			&r.CreatedAt, &r.DecidedAt,
 		); err != nil {
@@ -2509,7 +2759,7 @@ func (db *DB) InsertDebateRoundTx(
 			 input_tokens, output_tokens, cost_micros)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_review', $10, $11, $12)
 		RETURNING id, debate_id, round_number, provider, model, triggered_by,
-		          feedback, input_text, output_text, diff_unified, status,
+		          feedback, input_text, output_text, edited_text, diff_unified, status,
 		          input_tokens, output_tokens, cost_micros, scorer_cost_micros,
 		          created_at, decided_at`,
 		in.DebateID, maxRound+1, in.Provider, in.Model, in.TriggeredBy, feedbackParam,
@@ -2517,7 +2767,7 @@ func (db *DB) InsertDebateRoundTx(
 		in.InputTokens, in.OutputTokens, in.CostMicros,
 	).Scan(
 		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
-		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.EditedText, &r.DiffUnified, &r.Status,
 		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
 		&r.CreatedAt, &r.DecidedAt,
 	)
@@ -2528,6 +2778,12 @@ func (db *DB) InsertDebateRoundTx(
 			return nil, 0, ErrInReviewRoundExists
 		}
 		return nil, 0, err
+	}
+
+	// Same transaction as the round INSERT: the charge and the record of it
+	// commit together or not at all (#129).
+	if spendErr := db.RecordDebateSpendTx(ctx, tx, in.DebateID, r.ID, "round", in.CostMicros); spendErr != nil {
+		return nil, 0, spendErr
 	}
 
 	newTotalMicros := oldTotalMicros + in.CostMicros
@@ -2553,13 +2809,13 @@ func (db *DB) getRoundWithTx(ctx context.Context, tx pgx.Tx, roundID string) (*D
 	r := &DebateRound{}
 	err := tx.QueryRow(ctx, `
 		SELECT id, debate_id, round_number, provider, model, triggered_by,
-		       feedback, input_text, output_text, diff_unified, status,
+		       feedback, input_text, output_text, edited_text, diff_unified, status,
 		       input_tokens, output_tokens, cost_micros, scorer_cost_micros,
 		       created_at, decided_at
 		  FROM feature_debate_rounds WHERE id = $1`, roundID,
 	).Scan(
 		&r.ID, &r.DebateID, &r.RoundNumber, &r.Provider, &r.Model, &r.TriggeredBy,
-		&r.Feedback, &r.InputText, &r.OutputText, &r.DiffUnified, &r.Status,
+		&r.Feedback, &r.InputText, &r.OutputText, &r.EditedText, &r.DiffUnified, &r.Status,
 		&r.InputTokens, &r.OutputTokens, &r.CostMicros, &r.ScorerCostMicros,
 		&r.CreatedAt, &r.DecidedAt,
 	)
@@ -2580,7 +2836,17 @@ func (db *DB) getRoundWithTx(ctx context.Context, tx pgx.Tx, roundID string) (*D
 // Returns pgx.ErrNoRows if the round doesn't exist under this debate,
 // ErrRoundNotInReview if the round is not in_review (already accepted
 // or rejected — stale client view).
-func (db *DB) AcceptRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID string) (*DebateRound, error) {
+// AcceptRoundTx accepts a round, optionally recording a user edit of the AI's
+// text, and makes the SHIPPED text the debate's current version.
+//
+// editedText is the raw submission; it is stored only when it differs from
+// output_text, so opening the edit tab and changing nothing is not an edit
+// (#66). No staleness token is needed: output_text is written once at insert
+// and never updated, so the status check below is the only "has this round
+// moved on" question there is.
+func (db *DB) AcceptRoundTx(
+	ctx context.Context, tx pgx.Tx, debateID, roundID string, editedText *string,
+) (*DebateRound, error) {
 	var status, outputText string
 	err := tx.QueryRow(ctx, `
 		SELECT status, output_text FROM feature_debate_rounds
@@ -2597,18 +2863,40 @@ func (db *DB) AcceptRoundTx(ctx context.Context, tx pgx.Tx, debateID, roundID st
 		return nil, ErrRoundNotInReview
 	}
 
+	// Normalise before deciding: blank is not an edit, and neither is the AI's
+	// own text handed back unchanged.
+	var toStore *string
+	if editedText != nil {
+		trimmed := strings.TrimSpace(*editedText)
+		if trimmed == "" {
+			return nil, ErrEmptyEdit
+		}
+		// Compare TRIMMED, for the same reason CRLF is folded in the handler:
+		// a difference the user cannot see should not be recorded as an edit.
+		// Someone who opens the tab and fatfingers a trailing space has not
+		// edited the brief. Whitespace-only differences therefore collapse to
+		// "unedited", and the AI's text ships.
+		if trimmed != strings.TrimSpace(outputText) {
+			toStore = editedText
+		}
+	}
+
 	if _, err = tx.Exec(ctx, `
 		UPDATE feature_debate_rounds
-		   SET status = 'accepted', decided_at = now()
-		 WHERE id = $1`, roundID,
+		   SET status = 'accepted', decided_at = now(), edited_text = $2
+		 WHERE id = $1`, roundID, toStore,
 	); err != nil {
 		return nil, err
 	}
 
+	shipped := outputText
+	if toStore != nil {
+		shipped = *toStore
+	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE feature_debates
 		   SET current_text = $1, updated_at = now()
-		 WHERE id = $2`, outputText, debateID,
+		 WHERE id = $2`, shipped, debateID,
 	); err != nil {
 		return nil, err
 	}
@@ -2679,7 +2967,7 @@ func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, 
 	var newCurrentText string
 	if scanErr := tx.QueryRow(ctx, `
 		SELECT COALESCE(
-			(SELECT output_text FROM feature_debate_rounds
+			(SELECT CASE WHEN btrim(edited_text, E' \t\n\r\f\v') <> '' THEN edited_text ELSE output_text END FROM feature_debate_rounds
 			  WHERE debate_id = $1 AND status = 'accepted'
 			  ORDER BY round_number DESC LIMIT 1),
 			(SELECT seed_description FROM feature_debates WHERE id = $1)
@@ -2708,10 +2996,15 @@ func (db *DB) UndoRoundsFromTx(ctx context.Context, tx pgx.Tx, debateID string, 
 // Out-of-order scorer responses (scorer for round N finishes after
 // scorer for round N+1) are silently discarded — the freshest
 // accepted round's score always wins. See spec §4.3 step 8.
+//
+// provider and model record who produced this snapshot (issue #63); they
+// are written in the same statement as the score so the effort chip can
+// never label a score with a provider that did not produce it.
 func (db *DB) UpdateEffortScoreCondTx(
 	ctx context.Context, tx pgx.Tx,
 	debateID, scoredRoundID string,
 	score, hours int, reasoning string,
+	provider, model string,
 ) error {
 	_, err := tx.Exec(ctx, `
 		UPDATE feature_debates
@@ -2719,14 +3012,16 @@ func (db *DB) UpdateEffortScoreCondTx(
 		       effort_hours = $2,
 		       effort_reasoning = $3,
 		       effort_scored_at = now(),
-		       last_scored_round_id = $4,
+		       effort_scorer_provider = $4,
+		       effort_scorer_model = $5,
+		       last_scored_round_id = $6,
 		       updated_at = now()
-		 WHERE id = $5
+		 WHERE id = $7
 		   AND status IN ('active','approved')
 		   AND (last_scored_round_id IS NULL
 		     OR (SELECT round_number FROM feature_debate_rounds WHERE id = last_scored_round_id)
-		      < (SELECT round_number FROM feature_debate_rounds WHERE id = $4))`,
-		score, hours, reasoning, scoredRoundID, debateID,
+		      < (SELECT round_number FROM feature_debate_rounds WHERE id = $6))`,
+		score, hours, reasoning, provider, model, scoredRoundID, debateID,
 	)
 	return err
 }
@@ -2737,21 +3032,38 @@ func (db *DB) UpdateEffortScoreCondTx(
 // for the call, and the canonical per-round audit trail must reflect
 // that).
 func (db *DB) UpdateScorerCostMicros(ctx context.Context, tx pgx.Tx, roundID string, cost int64) error {
-	_, err := tx.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`UPDATE feature_debate_rounds SET scorer_cost_micros = $1 WHERE id = $2`,
 		cost, roundID,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+
+	// The column above is a SET, so a re-score overwrites the previous
+	// attempt's cost and the earlier charge disappears. Every scorer call is
+	// separately billed, so the ledger gets its own row per call and the month
+	// total counts all of them (#129).
+	var debateID string
+	if err := tx.QueryRow(ctx,
+		`SELECT debate_id FROM feature_debate_rounds WHERE id = $1`, roundID,
+	).Scan(&debateID); err != nil {
+		return fmt.Errorf("resolving debate for scorer spend: %w", err)
+	}
+	return db.RecordDebateSpendTx(ctx, tx, debateID, roundID, "scorer", cost)
 }
 
 // StaleEffortDebate is one debate claimed by the effort-score retry
 // sweep: enough to re-run the scorer (OutputText) and write the result
 // back to the right round (RoundID) and project (ProjectID).
 type StaleEffortDebate struct {
-	DebateID   string
-	ProjectID  string
-	RoundID    string
-	OutputText string
+	DebateID  string
+	ProjectID string
+	RoundID   string
+	// ScorerProvider is the owning project's configured provider, joined
+	// in by the claim so the sweep can resolve a scorer without a second
+	// query per claimed row (issue #63).
+	ScorerProvider string
+	OutputText     string
 }
 
 // ClaimStaleEffortScores atomically claims up to limit debates whose
@@ -2826,7 +3138,13 @@ func (db *DB) ClaimStaleEffortScores(
 		    (SELECT r.id FROM feature_debate_rounds r
 		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
 		      ORDER BY r.round_number DESC LIMIT 1),
-		    (SELECT r.output_text FROM feature_debate_rounds r
+		    -- Correlated read of the owning project's configured scorer
+		    -- (issue #63). Joined here so the sweep needs no extra query
+		    -- per row; projects is not locked by the claim above, so this
+		    -- does not affect the FOR UPDATE SKIP LOCKED semantics that
+		    -- keep two replicas from double-billing the same debate.
+		    (SELECT p.scorer_provider FROM projects p WHERE p.id = fd.project_id),
+		    (SELECT CASE WHEN btrim(r.edited_text, E' \t\n\r\f\v') <> '' THEN r.edited_text ELSE r.output_text END FROM feature_debate_rounds r
 		      WHERE r.debate_id = fd.id AND r.status = 'accepted'
 		      ORDER BY r.round_number DESC LIMIT 1)`,
 		now, now.Add(-minAge), limit, baseBackoff.Seconds(), maxBackoff.Seconds(),
@@ -2839,7 +3157,7 @@ func (db *DB) ClaimStaleEffortScores(
 	var claimed []StaleEffortDebate
 	for rows.Next() {
 		var d StaleEffortDebate
-		if scanErr := rows.Scan(&d.DebateID, &d.ProjectID, &d.RoundID, &d.OutputText); scanErr != nil {
+		if scanErr := rows.Scan(&d.DebateID, &d.ProjectID, &d.RoundID, &d.ScorerProvider, &d.OutputText); scanErr != nil {
 			return nil, scanErr
 		}
 		claimed = append(claimed, d)

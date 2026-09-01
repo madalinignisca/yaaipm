@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -19,7 +20,17 @@ const (
 )
 
 // HashPassword hashes a password using Argon2id.
-func HashPassword(password string) (string, error) {
+//
+// Takes a context because the work is gated: each call holds 64 MB, so
+// concurrency is capped to keep the process inside its memory limit (#142).
+// Returns ErrHashingBusy if the gate is saturated and ctx expires first.
+func HashPassword(ctx context.Context, password string) (string, error) {
+	release, err := acquireHashSlot(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	salt := make([]byte, argonSaltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("generating salt: %w", err)
@@ -36,7 +47,16 @@ func HashPassword(password string) (string, error) {
 }
 
 // VerifyPassword checks a password against an Argon2id hash.
-func VerifyPassword(password, encoded string) (bool, error) {
+//
+// Gated like HashPassword: verification runs the same 64 MB Argon2id
+// computation, and the login path reaches it on every attempt (#142).
+func VerifyPassword(ctx context.Context, password, encoded string) (bool, error) {
+	release, err := acquireHashSlot(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
 		return false, fmt.Errorf("invalid hash format")
@@ -45,7 +65,7 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	var memory uint32
 	var iterations uint32
 	var parallel uint8
-	_, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallel)
+	_, err = fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallel)
 	if err != nil {
 		return false, fmt.Errorf("parsing params: %w", err)
 	}

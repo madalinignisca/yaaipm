@@ -163,9 +163,23 @@ func TestProjectCostsForbiddenForNonMember(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	// Client not a member of the org should get 403
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+	// A non-member now gets 404, not 403 (#128). The costs handler moved
+	// onto authorizeOrgAccess, which deliberately collapses "not a member"
+	// and "no such org" so the status code cannot be used to probe which
+	// orgs exist. The access guarantee this test exists for is unchanged
+	// and strictly stronger — asserted below by checking the response is
+	// indistinguishable from one for an org that does not exist.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+
+	missReq := httptest.NewRequest(http.MethodGet, "/orgs/no-such-org/projects/no-such-proj/costs", http.NoBody)
+	missReq.AddCookie(cookie)
+	missRec := httptest.NewRecorder()
+	r.ServeHTTP(missRec, missReq)
+	if missRec.Code != rec.Code {
+		t.Fatalf("enumeration: existing-but-forbidden org returned %d, nonexistent returned %d — must match",
+			rec.Code, missRec.Code)
 	}
 }
 
@@ -648,7 +662,7 @@ func TestChangePasswordSuccess(t *testing.T) {
 	// Verify new password works
 	ctx := context.Background()
 	user, _ := db.GetUserByEmail(ctx, "chgpwd@test.com")
-	ok, err := auth.VerifyPassword("NewSecurePass123!", user.PasswordHash)
+	ok, err := auth.VerifyPassword(context.Background(), "NewSecurePass123!", user.PasswordHash)
 	if err != nil || !ok {
 		t.Error("new password should verify successfully")
 	}
@@ -789,7 +803,7 @@ func TestChangeEmailDuplicate(t *testing.T) {
 
 	// Create two users
 	cookie := createAuthenticatedUser(t, db, sessions, "chgemaildup@test.com", "superadmin")
-	hash, _ := auth.HashPassword("AnotherPassword1")
+	hash, _ := auth.HashPassword(context.Background(), "AnotherPassword1")
 	db.CreateUser(ctx, "existing@test.com", hash, "Existing User", "client")
 
 	form := url.Values{

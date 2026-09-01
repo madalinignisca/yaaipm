@@ -49,24 +49,32 @@ jobs:
         working-directory: e2e
         run: npx playwright install --with-deps chromium
 
-      # Runs the fake-backed debate spec only. It self-registers the first
-      # user (registration is first-user-only), so it must run against the
-      # fresh CI database on its own — do not add other self-registering
-      # specs to this invocation.
-      - name: Run fake-backed debate e2e
+      # One invocation for the whole set. Global setup registers the single
+      # account the app permits (registration is first-user-only) and shares
+      # its session, so specs no longer compete for that one slot and no
+      # longer need a database reset between them (#136).
+      #
+      # Every spec except 13-debate-real-ai, which needs real provider API keys
+      # and is a declared opt-in rather than a silent skip.
+      - name: Run migrated e2e specs
         working-directory: e2e
         env:
           BASE_URL: http://localhost:8081
-        run: npx playwright test 12-debate-fake.spec.js
+        run: |
+          npx playwright test \
+            01-auth.spec.js \
+            02-dashboard-orgs.spec.js \
+            03-projects.spec.js \
+            04-tickets.spec.js \
+            05-admin.spec.js \
+            06-ticket-detail.spec.js \
+            07-org-management.spec.js \
+            08-account-settings.spec.js \
+            09-rbac-journeys.spec.js \
+            10-image-modal.spec.js \
+            11-debate.spec.js \
+            12-debate-fake.spec.js
 
-      - name: Upload Playwright artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-results
-          path: e2e/test-results/
-          retention-days: 7
-
-      - name: Dump app logs on failure
+      - name: App logs on failure
         if: failure()
         run: docker compose -f docker-compose.test.yml logs app

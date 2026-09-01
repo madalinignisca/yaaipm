@@ -14,6 +14,10 @@ node_modules/
 /bin/tailwindcss
 /bin/daisyui.mjs
 /bin/daisyui-theme.mjs
+
+# golangci-lint pinned by scripts/lint.sh (see .golangci-version)
+/bin/golangci-lint
+/bin/.golangci-lint.version
 /static/css/tw.css
 
 # IDE

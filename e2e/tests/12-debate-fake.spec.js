@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA } = require('./helpers');
+const { rootSession } = require('./helpers');
 
 // Fake-backed debate coverage that complements 11-debate.spec.js. Spec 11
 // drives the happy path (start → suggest → accept → approve, dismiss,
@@ -24,14 +24,11 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   test.use({ timeout: 120000 });
 
   test.beforeAll(async ({ browser }) => {
-    const page = await browser.newPage();
-    await registerUser(page, testUser);
-    // Pause so the auth rate limiter (0.5 req/s, burst 5) doesn't block the
-    // TOTP verify POST — registration + login + 2FA hit several limited routes.
-    await page.waitForTimeout(4000);
-    await loginUser(page, testUser);
-    await setup2FA(page);
-    authCookies = await page.context().cookies();
+    const page = await browser.newPage();    // Shared root session from global setup: the app permits exactly one
+    // registration ever, and the old per-spec register/login/2FA dance also
+    // needed a 4s pause to dodge the auth rate limiter (#136).
+    authCookies = rootSession().cookies;
+    await page.context().addCookies(authCookies);
 
     await page.request.post('/orgs', { form: { name: 'Debate Fake Org' } });
     await page.request.post('/orgs/debate-fake-org/projects', { form: { name: 'Debate Fake Project' } });
@@ -80,7 +77,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   }
 
   test('reject (dismiss) leaves current text unchanged and pre-fills feedback', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -113,7 +109,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   });
 
   test('a suggestion with empty feedback still works', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -132,7 +127,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   });
 
   test('undo cascade: accept 3 rounds then restore v1 removes v2 and v3', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -165,7 +159,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   });
 
   test('feedback draft is auto-saved to localStorage and restored after reload', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -188,7 +181,6 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
   });
 
   test('a successful suggestion clears the saved feedback draft', async ({ page }) => {
-    test.skip(!ticketID, 'ticket id not resolved in beforeAll');
 
     await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
     await ensureComposer(page);
@@ -208,4 +200,141 @@ test.describe('Feature Debate Mode — fake refiner branches', () => {
     await ensureComposer(page);
     await expect(page.locator('[data-testid="debate-feedback"]')).toHaveValue('');
   });
+
+  // Per-project scorer provider (issue #63). Lives in this file rather
+  // than its own spec because registration is first-user-only and the CI
+  // job runs exactly one self-registering spec against a fresh database.
+  //
+  // Uses a dedicated org/project/ticket so changing the scorer provider
+  // can't affect the other tests here regardless of execution order.
+  //
+  // Only the critical flow is covered end-to-end; the 403 path and the
+  // validation errors are functional tests in
+  // internal/handlers/projects_scorer_test.go. This works without any
+  // billable key because DEBATE_REFINER_MODE=fake also installs fake
+  // scorers for all three providers (buildFakeDebateScorers).
+  test('scorer provider is per-project and the effort chip credits it', async ({ page }) => {
+    const orgSlug = 'scorer-pick-org';
+    const projSlug = 'scorer-pick-project';
+
+    if (authCookies.length > 0) {
+      await page.context().addCookies(authCookies);
+    }
+    await page.request.post('/orgs', { form: { name: 'Scorer Pick Org' } });
+    await page.request.post(`/orgs/${orgSlug}/projects`, { form: { name: 'Scorer Pick Project' } });
+
+    await page.goto(`/orgs/${orgSlug}/projects/${projSlug}/features`);
+    const projectID = await page.locator("input[name='project_id']").first().getAttribute('value');
+    expect(projectID, 'project id must be discoverable').toBeTruthy();
+
+    const created = await page.request.post('/tickets', {
+      form: {
+        project_id: projectID,
+        title: 'E2E scorer provider feature',
+        type: 'feature',
+        priority: 'medium',
+        description: 'Feature used to verify the per-project scorer provider',
+      },
+      headers: { Referer: `/orgs/${orgSlug}/projects/${projSlug}/features` },
+    });
+    expect(created.status(), 'create-ticket response').toBeLessThan(400);
+
+    await page.goto(`/orgs/${orgSlug}/projects/${projSlug}/features`);
+    const href = await page.locator("a[href^='/tickets/']").first().getAttribute('href');
+    const scorerTicketID = href ? href.split('/').pop() : '';
+    expect(scorerTicketID, 'ticket id must be discoverable').not.toEqual('');
+
+    // ── Change the provider in project settings ─────────────────
+    await authenticatedDebatePage(page, `/orgs/${orgSlug}/projects/${projSlug}/settings`);
+    const select = page.locator('select[name="scorer_provider"]');
+    await expect(select, 'staff must see the scorer dropdown').toBeVisible();
+    await expect(select, 'defaults to the schema default').toHaveValue('gemini');
+
+    await select.selectOption('claude');
+    await page.click('button:has-text("Save Scorer Provider")');
+
+    // Save responds with Hx-Redirect, which performs a REAL navigation
+    // back to this same URL. Calling page.goto() before that settles
+    // races it ("Navigation is interrupted by another navigation"), so
+    // retry the reload-and-assert until it lands.
+    await expect(async () => {
+      await page.goto(`/orgs/${orgSlug}/projects/${projSlug}/settings`);
+      await page.waitForLoadState('networkidle');
+      await expect(page.locator('select[name="scorer_provider"]')).toHaveValue('claude');
+    }).toPass({ timeout: 20000 });
+
+    // ── Run a round to completion ───────────────────────────────
+    await authenticatedDebatePage(page, `/tickets/${scorerTicketID}/debate`);
+    await ensureComposer(page);
+    await page.click('[data-testid="debate-suggest"]');
+    await expect(page.locator('[data-testid="debate-suggestion"]')).toBeVisible();
+    await page.click('[data-testid="debate-accept"]');
+    await expect(page.locator('[data-testid="debate-composer"]')).toBeVisible({ timeout: 8000 });
+
+    // ── The chip credits the chosen provider ────────────────────
+    // Scoring is fire-and-forget, so retry a reload until it settles.
+    const chip = page.locator('[data-testid="debate-effort-chip"]');
+    await expect(async () => {
+      await page.reload();
+      await page.waitForLoadState('networkidle');
+      await expect(chip).toContainText('Effort', { timeout: 2000 });
+    }).toPass({ timeout: 30000 });
+
+    const chipText = await chip.textContent();
+    expect(chipText, `effort chip text was: ${chipText}`).toContain('via Claude');
+    // The whole point of the feature: not the default provider.
+    expect(chipText, `effort chip text was: ${chipText}`).not.toContain('via Gemini');
+  });
+  // Placed LAST on purpose: these accept rounds, and the tests above count
+  // versions on the shared debate. Adding accepted rounds earlier shifts that
+  // state and breaks the undo-cascade test (#66).
+  // #66: correct the AI before accepting, rather than paying for another round.
+  test('edit the AI suggestion before accepting it', async ({ page }) => {
+    await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
+    await ensureComposer(page);
+
+    await page.fill('[data-testid="debate-feedback"]', 'Please improve this');
+    await page.click('[data-testid="debate-suggest"]');
+    await expect(page.locator('[data-testid="debate-suggestion"]')).toBeVisible();
+
+    // The Edit tab holds the AI's proposal, ready to correct.
+    await page.click('[data-testid="debate-tab-edit"]');
+    const textarea = page.locator('[data-testid="debate-edit-textarea"]');
+    await expect(textarea).toBeVisible();
+    const aiProposal = await textarea.inputValue();
+    expect(aiProposal).toContain('added by fake refiner');
+
+    const corrected = `${aiProposal}\n\nHand-written correction that the AI did not produce.`;
+    await textarea.fill(corrected);
+
+    await page.click('[data-testid="debate-accept"]');
+    await expect(page.locator('[data-testid="debate-composer"]')).toBeVisible({ timeout: 8000 });
+
+    // The document is the CORRECTED text — this is the whole feature.
+    const doc = page.locator('[data-testid="debate-current-text"]');
+    await expect(doc).toContainText('Hand-written correction that the AI did not produce.');
+    await expect(doc).toContainText('added by fake refiner');
+  });
+
+  // The textarea is always in the DOM (the tab only hides it), so it is
+  // submitted on every accept. Accepting without touching it must not be
+  // recorded as an edit, and must ship the AI's text unchanged.
+  test('accepting without opening the Edit tab ships the AI text unchanged', async ({ page }) => {
+    await authenticatedDebatePage(page, `/tickets/${ticketID}/debate`);
+    await ensureComposer(page);
+
+    await page.fill('[data-testid="debate-feedback"]', 'Another improvement');
+    await page.click('[data-testid="debate-suggest"]');
+    await expect(page.locator('[data-testid="debate-suggestion"]')).toBeVisible();
+
+    const proposed = await page.locator('[data-testid="debate-edit-textarea"]').inputValue();
+
+    await page.click('[data-testid="debate-accept"]');
+    await expect(page.locator('[data-testid="debate-composer"]')).toBeVisible({ timeout: 8000 });
+
+    await expect(page.locator('[data-testid="debate-current-text"]')).toContainText(
+      proposed.split('\n')[0].trim(),
+    );
+  });
+
 });

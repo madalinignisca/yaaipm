@@ -52,12 +52,21 @@ func (f *FakeRefiner) Refine(_ context.Context, in RefineInput) (RefineOutput, e
 // the success path, Err for the failure path. Delay (optional) is called
 // inside Score before returning — use it to simulate a slow scorer in
 // out-of-order race tests.
+//
+// NameVal/ModelVal back the interface's Name/Model. Set NameVal to a real
+// provider key ("claude"/"gemini"/"openai") when the test builds a scorer
+// registry, so per-project provider selection can be exercised without
+// real API calls (issue #63).
 type FakeScorer struct {
-	Result    ScoreResult
-	Err       error
-	Delay     func()
-	CallCount int
+	NameVal, ModelVal string
+	Result            ScoreResult
+	Err               error
+	Delay             func()
+	CallCount         int
 }
+
+func (f *FakeScorer) Name() string  { return f.NameVal }
+func (f *FakeScorer) Model() string { return f.ModelVal }
 
 func (f *FakeScorer) Score(_ context.Context, _ string) (ScoreResult, error) {
 	f.CallCount++

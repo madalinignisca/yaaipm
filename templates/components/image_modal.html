@@ -4,14 +4,18 @@
      @keydown.escape.window="open && closeModal()"
      @open-image-modal.window="openModal($event.detail.editor, $event.detail.projectID)"
      aria-modal="true" role="dialog">
-    <div class="absolute inset-0 bg-black/50" @click="closeModal()"></div>
-    <div class="relative bg-base-100 border border-base-300 rounded-lg shadow-xl
+    {{/* modal-backdrop / modal-card / btn-close / modal-tab are stable E2E
+         landmarks kept alongside the Tailwind and DaisyUI classes, the same
+         convention as comment-body (#37). They had drifted out of the markup
+         while the suite could not run (#136). */}}
+    <div class="modal-backdrop absolute inset-0 bg-black/50" @click="closeModal()"></div>
+    <div class="modal-card relative bg-base-100 border border-base-300 rounded-lg shadow-xl
                 w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6"
          @click.stop>
         <!-- Header -->
         <div class="flex items-center justify-between mb-4">
             <h3 class="text-lg font-semibold">Insert Image</h3>
-            <button @click="closeModal()" class="btn btn-ghost btn-xs btn-square" aria-label="Close">
+            <button @click="closeModal()" class="btn-close btn btn-ghost btn-xs btn-square" aria-label="Close">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
                      fill="none" stroke="currentColor" stroke-width="2"
                      stroke-linecap="round" stroke-linejoin="round">
@@ -23,7 +27,7 @@
         <!-- Tabs -->
         <div role="tablist" class="tabs tabs-bordered mb-4">
             <button role="tab"
-                    class="tab gap-1.5"
+                    class="modal-tab tab gap-1.5"
                     :class="{ 'tab-active': activeTab === 'upload' }"
                     @click="switchTab('upload')">
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
@@ -36,7 +40,7 @@
                 Upload
             </button>
             <button role="tab"
-                    class="tab gap-1.5"
+                    class="modal-tab tab gap-1.5"
                     :class="{ 'tab-active': activeTab === 'generate' }"
                     @click="switchTab('generate')">
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
@@ -52,7 +56,7 @@
         <div x-show="activeTab === 'upload'" class="min-h-48">
             <!-- Drop zone (before file selected) -->
             <div x-show="!file && !uploadedUrl"
-                 class="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors"
+                 class="drop-zone border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors"
                  :class="dragover ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/30'"
                  @dragover.prevent="dragover = true"
                  @dragleave.prevent="dragover = false"
@@ -138,7 +142,7 @@
         </div>
 
         <!-- Error -->
-        <div x-show="error" class="alert alert-error alert-sm mt-3">
+        <div x-show="error" class="text-danger alert alert-error alert-sm mt-3">
             <span x-text="error"></span>
         </div>
 

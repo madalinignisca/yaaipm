@@ -1,0 +1,48 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  go-test:
+    name: go test
+    runs-on: ubuntu-latest
+    # The suite is serial (-p 1) and Argon2id hashing is deliberately slow, so
+    # it is not fast. Cap the job so a hung container cannot hold the runner.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Reuse the compose stack rather than a bare `services:` block, so CI runs
+      # against the same Postgres version and the same pinned migrate image as
+      # a developer does locally. Only postgres and migrate are needed — these
+      # are not browser tests, so the app container stays down.
+      - name: Start Postgres and apply migrations
+        run: |
+          docker compose -f docker-compose.test.yml up -d postgres
+          docker compose -f docker-compose.test.yml up --exit-code-from migrate migrate
+
+      # REQUIRE_TEST_DB turns "database unreachable" from a skip into a hard
+      # failure. Without it a misconfigured service container would make the
+      # whole suite report ok while executing nothing, which is the exact
+      # failure this workflow exists to prevent (#138).
+      - name: Run tests
+        env:
+          TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5433/forgedesk_test?sslmode=disable
+          REQUIRE_TEST_DB: "1"
+        run: go test ./internal/... -p 1 -count=1 -timeout 300s
+
+      - name: Postgres logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs postgres
