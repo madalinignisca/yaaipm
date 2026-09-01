@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, fullLogin } = require('./helpers');
+const { inviteAndRegisterUser, useSession, rootSession } = require('./helpers');
 
 // ---------- test users ----------
 const staffUser = {
@@ -15,8 +15,11 @@ const memberUser = {
 };
 
 // ---------- shared state (populated in beforeAll / early tests) ----------
-let staffTotpSecret = '';
-let memberTotpSecret = '';
+// Sessions are captured once in beforeAll and replayed per test. Logging in
+// again per test re-uses the same TOTP code inside its 30s step, which
+// ValidateTOTPOnce rejects (#136).
+let staffCookies = [];
+let memberCookies = [];
 let projectId = '';
 let featureTicketId = '';
 let bugTicketId = '';
@@ -51,11 +54,13 @@ test.describe.serial('Ticket Detail Page', () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
 
-    // ---- Register staff user (first user in this DB run becomes superadmin) ----
-    await registerUser(page, staffUser);
-    await loginUser(page, staffUser);
-    const result = await setup2FA(page);
-    staffTotpSecret = result.secret;
+    // ---- Use the shared root session ----
+    // NOT registerUser: the app permits exactly one registration ever
+    // (first-user-only), and global setup has already spent it. A spec that
+    // registers its own user works alone and skips silently behind any other
+    // spec, which is what made this whole suite decorative (#136).
+    staffCookies = rootSession().cookies;
+    await useSession(page, staffCookies);
 
     // ---- Create org + project ----
     await page.request.post('/orgs', { form: { name: 'Detail Org' } });
@@ -68,9 +73,15 @@ test.describe.serial('Ticket Detail Page', () => {
     await page.waitForLoadState('networkidle');
     projectId = await extractProjectId(page);
 
+    // Hard failure, not an early return. This used to bail quietly and let
+    // every test below skip, which reported a completely broken suite as a
+    // green run for six months (#136).
     if (!projectId) {
       await page.close();
-      return; // remaining tests will skip
+      throw new Error(
+        `bootstrap failed: no project_id on ${ORG_SLUG}/${PROJECT_SLUG}/features — ` +
+          'org/project creation or the 2FA session did not succeed',
+      );
     }
 
     // ---- Create feature ticket with rich markdown description ----
@@ -152,35 +163,18 @@ test.describe.serial('Ticket Detail Page', () => {
       }
     }
 
-    // ---- Register the member user ----
-    // Log out first, then register the second user
-    await page.goto('/login');
-    await registerUser(page, memberUser);
-    await loginUser(page, memberUser);
-    const memberResult = await setup2FA(page);
-    memberTotpSecret = memberResult.secret;
-
-    // ---- Add member user to the org via invitation mechanism ----
-    // Log back in as staff to invite the member
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
-    await page.request.post(`/orgs/${ORG_SLUG}/invitations`, {
-      form: {
-        email: memberUser.email,
-        role: 'member',
-      },
+    // ---- Create the member user via invitation ----
+    // NOT registerUser: registration is first-user-only, so the second account
+    // has to come through the invite flow. This also joins them to the org in
+    // one step, which the old code needed a separate invite + accept for (#136).
+    const member = await inviteAndRegisterUser(page, {
+      orgSlug: ORG_SLUG,
+      email: memberUser.email,
+      name: memberUser.name,
+      password: memberUser.password,
+      role: 'member',
     });
-
-    // Now log in as member and accept the invitation
-    await fullLogin(page, { ...memberUser, totpSecret: memberTotpSecret });
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
-
-    // Check for pending invitations and accept
-    const acceptBtn = page.locator('button:has-text("Accept"), [hx-post*="/accept"]');
-    if (await acceptBtn.count() > 0) {
-      await acceptBtn.first().click();
-      await page.waitForLoadState('networkidle');
-    }
+    memberCookies = member.cookies;
 
     await page.close();
   });
@@ -189,9 +183,8 @@ test.describe.serial('Ticket Detail Page', () => {
   // 1. TICKET DETAIL RENDERS CORRECTLY
   // ==================================================================
   test('feature ticket detail shows type, status, and priority badges', async ({ page }) => {
-    test.skip(!featureTicketId, 'Feature ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -214,9 +207,8 @@ test.describe.serial('Ticket Detail Page', () => {
   });
 
   test('feature ticket description renders markdown as HTML', async ({ page }) => {
-    test.skip(!featureTicketId, 'Feature ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -240,9 +232,8 @@ test.describe.serial('Ticket Detail Page', () => {
   });
 
   test('feature ticket shows sub-items with title and status', async ({ page }) => {
-    test.skip(!featureTicketId, 'Feature ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -258,16 +249,17 @@ test.describe.serial('Ticket Detail Page', () => {
     await expect(subItems.filter({ hasText: 'Child Task Beta' })).toHaveCount(1);
 
     // Status badges on sub-items
+    // .badge-status, not .badge: a sub-item carries both a status and a
+    // priority badge, so the looser selector matched two elements.
     const alphaBadge = subItems
       .filter({ hasText: 'Child Task Alpha' })
-      .locator('.badge');
+      .locator('.badge-status');
     await expect(alphaBadge).toContainText('backlog');
   });
 
   test('comments section is present with empty state', async ({ page }) => {
-    test.skip(!featureTicketId, 'Feature ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -287,9 +279,8 @@ test.describe.serial('Ticket Detail Page', () => {
   // 2. COMMENT LIFECYCLE
   // ==================================================================
   test('post a comment with markdown text', async ({ page }) => {
-    test.skip(!featureTicketId, 'Feature ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -316,9 +307,8 @@ test.describe.serial('Ticket Detail Page', () => {
   });
 
   test('comment appears with rendered markdown after page reload', async ({ page }) => {
-    test.skip(!featureTicketId, 'Feature ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -336,9 +326,8 @@ test.describe.serial('Ticket Detail Page', () => {
   // 3. STATUS UPDATES (STAFF ONLY)
   // ==================================================================
   test('staff can update ticket status via dropdown', async ({ page }) => {
-    test.skip(!featureTicketId, 'Feature ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -375,9 +364,8 @@ test.describe.serial('Ticket Detail Page', () => {
   // 4. TICKET ARCHIVE / RESTORE (STAFF ONLY)
   // ==================================================================
   test('staff can archive a ticket', async ({ page }) => {
-    test.skip(!bugTicketId, 'Bug ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${bugTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -408,9 +396,8 @@ test.describe.serial('Ticket Detail Page', () => {
   });
 
   test('archived ticket appears on the archived tab', async ({ page }) => {
-    test.skip(!bugTicketId, 'Bug ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/orgs/${ORG_SLUG}/projects/${PROJECT_SLUG}/archived`);
     await page.waitForLoadState('networkidle');
 
@@ -423,9 +410,8 @@ test.describe.serial('Ticket Detail Page', () => {
   });
 
   test('staff can restore an archived ticket', async ({ page }) => {
-    test.skip(!bugTicketId, 'Bug ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/orgs/${ORG_SLUG}/projects/${PROJECT_SLUG}/archived`);
     await page.waitForLoadState('networkidle');
 
@@ -453,9 +439,8 @@ test.describe.serial('Ticket Detail Page', () => {
   // 5. BUG TICKET DETAIL
   // ==================================================================
   test('bug ticket detail shows "bug" type badge', async ({ page }) => {
-    test.skip(!bugTicketId, 'Bug ticket not created');
 
-    await fullLogin(page, { ...staffUser, totpSecret: staffTotpSecret });
+    await useSession(page, staffCookies);
     await page.goto(`/tickets/${bugTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -482,9 +467,8 @@ test.describe.serial('Ticket Detail Page', () => {
   // 6. CROSS-ROLE VISIBILITY
   // ==================================================================
   test('member user can view the same ticket detail', async ({ page }) => {
-    test.skip(!featureTicketId || !memberTotpSecret, 'Prerequisites not met');
 
-    await fullLogin(page, { ...memberUser, totpSecret: memberTotpSecret });
+    await useSession(page, memberCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -507,9 +491,8 @@ test.describe.serial('Ticket Detail Page', () => {
   });
 
   test('member user does NOT see the staff dropdown menu', async ({ page }) => {
-    test.skip(!featureTicketId || !memberTotpSecret, 'Prerequisites not met');
 
-    await fullLogin(page, { ...memberUser, totpSecret: memberTotpSecret });
+    await useSession(page, memberCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -519,9 +502,8 @@ test.describe.serial('Ticket Detail Page', () => {
   });
 
   test('member user can post a comment on the ticket', async ({ page }) => {
-    test.skip(!featureTicketId || !memberTotpSecret, 'Prerequisites not met');
 
-    await fullLogin(page, { ...memberUser, totpSecret: memberTotpSecret });
+    await useSession(page, memberCookies);
     await page.goto(`/tickets/${featureTicketId}`);
     await page.waitForLoadState('networkidle');
 
@@ -537,9 +519,8 @@ test.describe.serial('Ticket Detail Page', () => {
   });
 
   test('member user cannot archive a ticket via direct POST', async ({ page }) => {
-    test.skip(!bugTicketId || !memberTotpSecret, 'Prerequisites not met');
 
-    await fullLogin(page, { ...memberUser, totpSecret: memberTotpSecret });
+    await useSession(page, memberCookies);
 
     // Try to archive via direct API call -- should be forbidden
     const response = await page.request.post(`/tickets/${bugTicketId}/archive`);

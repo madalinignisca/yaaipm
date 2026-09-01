@@ -78,7 +78,7 @@ func TestParseMonth(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/costs?month="+tc.query, nil)
+			req := httptest.NewRequest(http.MethodGet, "/costs?month="+tc.query, http.NoBody)
 			got := parseMonth(req)
 			if got != tc.expected {
 				t.Errorf("parseMonth with query %q = %q, want %q", tc.query, got, tc.expected)
@@ -122,7 +122,7 @@ func TestProjectCosts(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Cost Org", "cost-org")
 	db.CreateProject(ctx, org.ID, "Cost Proj", "cost-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/cost-org/projects/cost-proj/costs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/cost-org/projects/cost-proj/costs", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -140,7 +140,7 @@ func TestProjectCostsWithMonth(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "CostM Org", "costm-org")
 	db.CreateProject(ctx, org.ID, "CostM Proj", "costm-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/costm-org/projects/costm-proj/costs?month=2025-03", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/costm-org/projects/costm-proj/costs?month=2025-03", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -158,14 +158,28 @@ func TestProjectCostsForbiddenForNonMember(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "CostNon Org", "costnon-org")
 	db.CreateProject(ctx, org.ID, "CostNon Proj", "costnon-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/costnon-org/projects/costnon-proj/costs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/costnon-org/projects/costnon-proj/costs", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	// Client not a member of the org should get 403
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+	// A non-member now gets 404, not 403 (#128). The costs handler moved
+	// onto authorizeOrgAccess, which deliberately collapses "not a member"
+	// and "no such org" so the status code cannot be used to probe which
+	// orgs exist. The access guarantee this test exists for is unchanged
+	// and strictly stronger — asserted below by checking the response is
+	// indistinguishable from one for an org that does not exist.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+
+	missReq := httptest.NewRequest(http.MethodGet, "/orgs/no-such-org/projects/no-such-proj/costs", http.NoBody)
+	missReq.AddCookie(cookie)
+	missRec := httptest.NewRecorder()
+	r.ServeHTTP(missRec, missReq)
+	if missRec.Code != rec.Code {
+		t.Fatalf("enumeration: existing-but-forbidden org returned %d, nonexistent returned %d — must match",
+			rec.Code, missRec.Code)
 	}
 }
 
@@ -377,7 +391,7 @@ func TestDeleteCostItem(t *testing.T) {
 		t.Fatalf("creating cost: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/costs/"+cost.ID, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/costs/"+cost.ID, http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -387,7 +401,7 @@ func TestDeleteCostItem(t *testing.T) {
 	}
 
 	// Verify HX-Redirect header is set
-	hxRedirect := rec.Header().Get("HX-Redirect")
+	hxRedirect := rec.Header().Get("Hx-Redirect")
 	if hxRedirect == "" {
 		t.Error("expected HX-Redirect header to be set")
 	}
@@ -412,7 +426,7 @@ func TestDeleteCostItemForbiddenForClient(t *testing.T) {
 
 	cost, _ := db.CreateProjectCost(ctx, proj.ID, "2025-06", "base_fee", "Item", 1000)
 
-	req := httptest.NewRequest(http.MethodDelete, "/costs/"+cost.ID, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/costs/"+cost.ID, http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -426,7 +440,7 @@ func TestDeleteCostItemNotFound(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	cookie := createAuthenticatedUser(t, db, sessions, "costdelnf@test.com", "superadmin")
 
-	req := httptest.NewRequest(http.MethodDelete, "/costs/00000000-0000-0000-0000-000000000000", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/costs/00000000-0000-0000-0000-000000000000", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -608,7 +622,7 @@ func TestAccountSettingsPage(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	cookie := createAuthenticatedUser(t, db, sessions, "acctpage@test.com", "superadmin")
 
-	req := httptest.NewRequest(http.MethodGet, "/account/settings", nil)
+	req := httptest.NewRequest(http.MethodGet, "/account/settings", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -648,7 +662,7 @@ func TestChangePasswordSuccess(t *testing.T) {
 	// Verify new password works
 	ctx := context.Background()
 	user, _ := db.GetUserByEmail(ctx, "chgpwd@test.com")
-	ok, err := auth.VerifyPassword("NewSecurePass123!", user.PasswordHash)
+	ok, err := auth.VerifyPassword(context.Background(), "NewSecurePass123!", user.PasswordHash)
 	if err != nil || !ok {
 		t.Error("new password should verify successfully")
 	}
@@ -789,7 +803,7 @@ func TestChangeEmailDuplicate(t *testing.T) {
 
 	// Create two users
 	cookie := createAuthenticatedUser(t, db, sessions, "chgemaildup@test.com", "superadmin")
-	hash, _ := auth.HashPassword("AnotherPassword1")
+	hash, _ := auth.HashPassword(context.Background(), "AnotherPassword1")
 	db.CreateUser(ctx, "existing@test.com", hash, "Existing User", "client")
 
 	form := url.Values{

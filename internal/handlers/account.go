@@ -24,13 +24,15 @@ func NewAccountHandler(db *models.DB, sessions *auth.SessionStore, engine *rende
 func (h *AccountHandler) AccountSettingsPage(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 
-	h.engine.Render(w, r, "account_settings.html", render.PageData{
+	if err := h.engine.Render(w, r, "account_settings.html", render.PageData{
 		Title:       "Account Settings",
 		User:        user,
 		Orgs:        middleware.GetOrgs(r),
 		Projects:    middleware.GetProjects(r),
 		CurrentPath: r.URL.Path,
-	})
+	}); err != nil {
+		log.Printf("rendering account settings: %v", err)
+	}
 }
 
 func (h *AccountHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -42,25 +44,26 @@ func (h *AccountHandler) ChangePassword(w http.ResponseWriter, r *http.Request) 
 	confirmPassword := r.FormValue("confirm_password")
 
 	// Validate
-	flashMsg := ""
-	if currentPassword == "" || newPassword == "" || confirmPassword == "" {
+	var flashMsg string
+	switch {
+	case currentPassword == "" || newPassword == "" || confirmPassword == "":
 		flashMsg = "All fields are required"
-	} else if len(newPassword) < 12 {
+	case len(newPassword) < 12:
 		flashMsg = "New password must be at least 12 characters"
-	} else if newPassword != confirmPassword {
+	case newPassword != confirmPassword:
 		flashMsg = "New passwords do not match"
 	}
 
 	if flashMsg == "" {
 		// Verify current password
-		ok, err := auth.VerifyPassword(currentPassword, user.PasswordHash)
+		ok, err := auth.VerifyPassword(r.Context(), currentPassword, user.PasswordHash)
 		if err != nil || !ok {
 			flashMsg = "Current password is incorrect"
 		}
 	}
 
 	if flashMsg == "" {
-		hash, err := auth.HashPassword(newPassword)
+		hash, err := auth.HashPassword(r.Context(), newPassword)
 		if err != nil {
 			log.Printf("hashing password: %v", err)
 			flashMsg = "Failed to update password"
@@ -69,7 +72,7 @@ func (h *AccountHandler) ChangePassword(w http.ResponseWriter, r *http.Request) 
 			flashMsg = "Failed to update password"
 		} else {
 			// Invalidate other sessions for security
-			h.sessions.DeleteOtherSessions(r.Context(), user.ID, sess.ID)
+			_ = h.sessions.DeleteOtherSessions(r.Context(), user.ID, sess.ID)
 			h.renderPage(w, r, user, "Password updated successfully", "success")
 			return
 		}
@@ -90,7 +93,7 @@ func (h *AccountHandler) ChangeEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if flashMsg == "" {
-		ok, err := auth.VerifyPassword(password, user.PasswordHash)
+		ok, err := auth.VerifyPassword(r.Context(), password, user.PasswordHash)
 		if err != nil || !ok {
 			flashMsg = "Password is incorrect"
 		}
@@ -123,7 +126,7 @@ func (h *AccountHandler) ChangeEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AccountHandler) renderPage(w http.ResponseWriter, r *http.Request, user *models.User, flash, flashType string) {
-	h.engine.Render(w, r, "account_settings.html", render.PageData{
+	if err := h.engine.Render(w, r, "account_settings.html", render.PageData{
 		Title:       "Account Settings",
 		User:        user,
 		Orgs:        middleware.GetOrgs(r),
@@ -131,5 +134,7 @@ func (h *AccountHandler) renderPage(w http.ResponseWriter, r *http.Request, user
 		CurrentPath: "/account/settings",
 		Flash:       flash,
 		FlashType:   flashType,
-	})
+	}); err != nil {
+		log.Printf("rendering account settings: %v", err)
+	}
 }

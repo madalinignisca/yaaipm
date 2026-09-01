@@ -6,10 +6,19 @@
 # Go
 /forgedesk
 /orchestrator
+/server
 /vendor/
 
-# Tailwind
+# Tailwind / DaisyUI standalone tooling (downloaded on demand by scripts/css.sh)
 node_modules/
+/bin/tailwindcss
+/bin/daisyui.mjs
+/bin/daisyui-theme.mjs
+
+# golangci-lint pinned by scripts/lint.sh (see .golangci-version)
+/bin/golangci-lint
+/bin/.golangci-lint.version
+/static/css/tw.css
 
 # IDE
 .idea/
@@ -30,3 +39,15 @@ static/js/bundle.js
 # E2E test artifacts
 e2e/test-results/
 e2e/tests/.auth-state.json
+
+# Local agent / tool caches (Claude Code, Playwright MCP, Serena, custom remember)
+.claude/
+.playwright-mcp/
+.remember/
+.serena/
+.superpowers/
+
+# Working-tree scratch (root-only patterns so nested assets stay tracked)
+/*.png
+/REVIEW-*.md
+/assets/

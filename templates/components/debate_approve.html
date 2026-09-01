@@ -1,0 +1,14 @@
+{{define "debate_approve.html"}}
+{{if .OOB}}<span id="debate-approve-zone" hx-swap-oob="true" class="flex items-center gap-3 flex-wrap">{{else}}<span id="debate-approve-zone" class="flex items-center gap-3 flex-wrap">{{end}}
+  <form hx-post="/tickets/{{.TicketID}}/debate/approve"
+        hx-confirm="Save this text to the ticket and finish refining?">
+    {{csrfField}}
+    <button type="submit" class="btn btn-success btn-sm" data-testid="debate-approve"
+            title="Saves this text to the ticket and finishes refining"
+            {{if .Pending}}disabled{{end}}>
+      ✓ Use this version
+    </button>
+  </form>
+  {{if .Pending}}<span class="text-xs text-base-content/50">Accept or dismiss the pending suggestion first</span>{{end}}
+</span>
+{{end}}
