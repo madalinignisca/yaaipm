@@ -57,7 +57,7 @@ func (d *Dispatcher) ProcessTickets(ctx context.Context) {
 			agentMode = *t.AgentMode
 		}
 
-		agentName := "claude"
+		agentName := agentClaude
 		if t.AgentName != nil {
 			agentName = *t.AgentName
 		}
@@ -75,7 +75,7 @@ func (d *Dispatcher) ProcessTickets(ctx context.Context) {
 
 // handlePlan assembles context, calls Claude to generate a plan, and posts it as a comment.
 func (d *Dispatcher) handlePlan(ctx context.Context, ticket models.Ticket) {
-	agentName := "claude"
+	agentName := agentClaude
 	if ticket.AgentName != nil {
 		agentName = *ticket.AgentName
 	}
@@ -127,7 +127,7 @@ func (d *Dispatcher) handlePlan(ctx context.Context, ticket models.Ticket) {
 
 // handleImplement creates a worktree, runs the agent CLI, commits, and pushes.
 func (d *Dispatcher) handleImplement(ctx context.Context, ticket models.Ticket) {
-	agentName := "claude"
+	agentName := agentClaude
 	if ticket.AgentName != nil {
 		agentName = *ticket.AgentName
 	}
@@ -159,8 +159,8 @@ func (d *Dispatcher) handleImplement(ctx context.Context, ticket models.Ticket) 
 	}
 
 	// 5. Ensure repo is cloned / up to date
-	if _, err := d.workspace.EnsureRepo(ctx, org.Slug, pctx.Project.Slug, pctx.Project.RepoURL); err != nil {
-		d.postError(ctx, ticket, agentName, fmt.Errorf("ensuring repo: %w", err))
+	if _, repoErr := d.workspace.EnsureRepo(ctx, org.Slug, pctx.Project.Slug, pctx.Project.RepoURL); repoErr != nil {
+		d.postError(ctx, ticket, agentName, fmt.Errorf("ensuring repo: %w", repoErr))
 		return
 	}
 
@@ -174,7 +174,7 @@ func (d *Dispatcher) handleImplement(ctx context.Context, ticket models.Ticket) 
 
 	// 7. Post starting comment
 	startBody := fmt.Sprintf("[Orchestrator] Starting implementation with **%s** on branch `%s`.", agentName, branchName)
-	d.db.CreateComment(ctx, ticket.ID, nil, &agentName, startBody)
+	_, _ = d.db.CreateComment(ctx, ticket.ID, nil, &agentName, startBody)
 
 	// 8. Build prompt and run agent
 	prompt := buildImplementPrompt(pctx)
@@ -183,8 +183,8 @@ func (d *Dispatcher) handleImplement(ctx context.Context, ticket models.Ticket) 
 	// 9. Post agent output as comment (even on error — partial output is useful)
 	if output != "" {
 		outputBody := fmt.Sprintf("## Agent Output\n\n```\n%s\n```", truncate(output, 10000))
-		if _, err := d.db.CreateComment(ctx, ticket.ID, nil, &agentName, outputBody); err != nil {
-			log.Printf("posting agent output on ticket %s: %v", ticket.ID, err)
+		if _, commentErr := d.db.CreateComment(ctx, ticket.ID, nil, &agentName, outputBody); commentErr != nil {
+			log.Printf("posting agent output on ticket %s: %v", ticket.ID, commentErr)
 		}
 	}
 
@@ -202,10 +202,10 @@ func (d *Dispatcher) handleImplement(ctx context.Context, ticket models.Ticket) 
 
 	if committed {
 		pushBody := fmt.Sprintf("[Orchestrator] Code pushed to branch `%s`. Ready for review.", branchName)
-		d.db.CreateComment(ctx, ticket.ID, nil, &agentName, pushBody)
+		_, _ = d.db.CreateComment(ctx, ticket.ID, nil, &agentName, pushBody)
 	} else {
 		noChangeBody := "[Orchestrator] Agent completed but produced no file changes."
-		d.db.CreateComment(ctx, ticket.ID, nil, &agentName, noChangeBody)
+		_, _ = d.db.CreateComment(ctx, ticket.ID, nil, &agentName, noChangeBody)
 	}
 
 	// 11. Transition to testing and clear agent_mode
@@ -229,8 +229,8 @@ func (d *Dispatcher) postError(ctx context.Context, ticket models.Ticket, agentN
 	}
 
 	// Clear agent_mode to prevent infinite retry
-	if err := d.db.UpdateTicketAgentMode(ctx, ticket.ID, nil, ticket.AgentName); err != nil {
-		log.Printf("clearing agent_mode on ticket %s: %v", ticket.ID, err)
+	if clearErr := d.db.UpdateTicketAgentMode(ctx, ticket.ID, nil, ticket.AgentName); clearErr != nil {
+		log.Printf("clearing agent_mode on ticket %s: %v", ticket.ID, clearErr)
 	}
 }
 

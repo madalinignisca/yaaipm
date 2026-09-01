@@ -29,6 +29,15 @@ func (h *CommentHandler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cross-tenant guard: clients may only comment on tickets in orgs
+	// they belong to. Uses the lite (single-join) variant — we don't
+	// need the ticket body here. 404 mirrors the ticket-read path;
+	// real DB errors surface as 500. (#25)
+	if err := authorizeTicketOrgAccess(r.Context(), h.db, user, ticketID); err != nil {
+		respondAuthzError(w, err, "Ticket not found")
+		return
+	}
+
 	comment, err := h.db.CreateComment(r.Context(), ticketID, &user.ID, nil, body)
 	if err != nil {
 		log.Printf("creating comment: %v", err)
@@ -36,12 +45,14 @@ func (h *CommentHandler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.db.CreateActivity(r.Context(), ticketID, &user.ID, nil, "comment", "{}")
+	_ = h.db.CreateActivity(r.Context(), ticketID, &user.ID, nil, "comment", "{}")
 
 	// Return the new comment as an HTMX partial (no reactions yet on a brand-new comment)
-	h.engine.RenderPartial(w, "comment.html", map[string]any{
+	if err := h.engine.RenderPartial(w, "comment.html", map[string]any{
 		"Comment":          comment,
-		"UserName":         user.Name,
+		"AuthorName":       models.CommentAuthorName(comment.AgentName, &user.Name),
 		"CommentReactions": []models.ReactionGroup(nil),
-	})
+	}); err != nil {
+		log.Printf("rendering comment partial: %v", err)
+	}
 }

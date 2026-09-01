@@ -72,6 +72,14 @@ services:
       S3_REGION: "us-east-1"
       S3_PUBLIC_BUCKET: "forgedesk-test"
       S3_FORCE_PATH_STYLE: "true"
+      DEBATE_REFINER_MODE: "fake"
+      # The suite drives register -> login -> 2FA-setup back to back for every
+      # user it needs. Production's 0.5 req/s burst 5 throttles the TOTP verify
+      # POST partway through, 2FA silently never completes, and every later page
+      # redirects to /setup-2fa — which surfaces as "projectId not found" and a
+      # fully skipped suite, looking nothing like rate limiting (#136).
+      AUTH_RATE_LIMIT_RPS: "100"
+      AUTH_RATE_LIMIT_BURST: "200"
     ports:
       - "8081:8080"
     healthcheck:

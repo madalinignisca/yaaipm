@@ -1,118 +1,133 @@
 {{define "content"}}
 {{with .Data}}
-<div>
-    <!-- Month Picker -->
-    <div class="flex items-center justify-between mb-lg">
-        <h1>Organization Costs — {{.Month}}</h1>
-        <div class="flex items-center gap-sm">
-            <a href="?month={{.PrevMonth}}" class="btn btn-secondary btn-sm">&larr; Prev</a>
-            <span class="text-sm text-muted">{{.Month}}</span>
-            <a href="?month={{.NextMonth}}" class="btn btn-secondary btn-sm">Next &rarr;</a>
+<div class="max-w-6xl mx-auto p-6 flex flex-col gap-6">
+    <header class="flex items-center justify-between flex-wrap gap-3">
+        <h1 class="text-2xl font-semibold tracking-tight">
+            Organization Costs — {{.Month}}
+        </h1>
+        <div class="flex items-center gap-2">
+            <a href="?month={{.PrevMonth}}" class="btn btn-ghost btn-sm">← Prev</a>
+            <span class="text-sm text-base-content/70 px-2 font-medium">{{.Month}}</span>
+            <a href="?month={{.NextMonth}}" class="btn btn-ghost btn-sm">Next →</a>
         </div>
-    </div>
+    </header>
 
-    <!-- Per-Project Infrastructure Costs -->
+    {{/* Per-Project Infrastructure Costs */}}
     {{if .ProjectCosts}}
-    <div class="mb-lg">
-        <h2 class="mb-sm">Infrastructure Costs by Project</h2>
+    <section class="flex flex-col gap-4">
+        <h2 class="text-lg font-semibold">Infrastructure Costs by Project</h2>
         {{range .ProjectCosts}}
-        <div class="card mb-md">
-            <h3 class="mb-sm">{{.Project.Name}}</h3>
-            <div class="table-wrap">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Category</th>
-                            <th>Name</th>
-                            <th style="text-align:right">Amount</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{range .Costs}}
-                        <tr>
-                            <td class="cost-category">{{humanize .Category}}</td>
-                            <td>{{if .Name}}{{.Name}}{{else}}<span class="text-muted">—</span>{{end}}</td>
-                            <td style="text-align:right;font-weight:500">{{formatCents .AmountCents $.Org.CurrencyCode}}</td>
-                        </tr>
-                        {{end}}
-                    </tbody>
-                    <tfoot>
-                        <tr>
-                            <td colspan="2" style="font-weight:600">Project Subtotal</td>
-                            <td style="text-align:right;font-weight:600">{{formatCents .InfraTotal $.Org.CurrencyCode}}</td>
-                        </tr>
-                    </tfoot>
-                </table>
+        <div class="card bg-base-100 border border-base-300 shadow-sm">
+            <div class="card-body p-5 gap-3">
+                <h3 class="font-semibold">{{.Project.Name}}</h3>
+                <div class="overflow-x-auto">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr class="text-base-content/70">
+                                <th>Category</th>
+                                <th>Name</th>
+                                <th class="text-right">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{range .Costs}}
+                            <tr>
+                                <td class="font-mono text-xs">{{humanize .Category}}</td>
+                                <td>{{if .Name}}{{.Name}}{{else}}<span class="text-base-content/50">—</span>{{end}}</td>
+                                <td class="text-right font-medium">{{formatCents .AmountCents $.Org.CurrencyCode}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                        <tfoot>
+                            <tr>
+                                <td colspan="2" class="font-semibold">Project Subtotal</td>
+                                <td class="text-right font-semibold">{{formatCents .InfraTotal $.Org.CurrencyCode}}</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
             </div>
         </div>
         {{end}}
-    </div>
+    </section>
     {{else}}
-    <div class="empty-state mb-lg" style="padding:1.5rem">
-        <p class="text-muted">No infrastructure costs for this month.</p>
+    <div class="card bg-base-100 border border-base-300">
+        <div class="card-body p-6 text-center text-base-content/60 text-sm">
+            No infrastructure costs for this month.
+        </div>
     </div>
     {{end}}
 
-    <!-- Org-wide AI Usage -->
-    <div class="mb-lg">
-        <h2 class="mb-sm">AI Usage</h2>
+    {{/* Org-wide AI Usage */}}
+    <section class="flex flex-col gap-3">
+        <h2 class="text-lg font-semibold">AI Usage</h2>
         {{if .AIUsage}}
-        <div class="table-wrap">
-            <table class="table">
-                <thead>
-                    <tr>
-                        {{if .CanEdit}}<th>Model</th>{{end}}
-                        <th>Type</th>
-                        <th style="text-align:right">Count</th>
-                        {{if .CanEdit}}
-                        <th style="text-align:right">Input Tokens</th>
-                        <th style="text-align:right">Output Tokens</th>
-                        {{end}}
-                        <th style="text-align:right">Cost</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {{range .AIUsage}}
-                    <tr>
-                        {{if $.Data.CanEdit}}<td class="text-muted">{{.Model}}</td>{{end}}
-                        <td style="font-weight:500">{{.Label}}</td>
-                        <td style="text-align:right">{{.EntryCount}}</td>
-                        {{if $.Data.CanEdit}}
-                        <td style="text-align:right">{{.InputTokens}}</td>
-                        <td style="text-align:right">{{.OutputTokens}}</td>
-                        {{end}}
-                        <td style="text-align:right;font-weight:500">{{formatCents .TotalCents $.Org.CurrencyCode}}</td>
-                    </tr>
-                    {{end}}
-                </tbody>
-                <tfoot>
-                    <tr>
-                        <td colspan="{{if .CanEdit}}5{{else}}2{{end}}" style="font-weight:600">AI Subtotal</td>
-                        {{if .CanEdit}}
-                        <td style="text-align:right;font-weight:600">
-                            {{formatCents .AITotal $.Org.CurrencyCode}}
-                            {{if gt .AIMargin 0}}
-                            <span class="text-sm text-muted" style="display:block">(billed: {{formatCents .AITotalWithMargin $.Org.CurrencyCode}} at +{{.AIMargin}}%)</span>
+        <div class="card bg-base-100 border border-base-300 shadow-sm">
+            <div class="card-body p-5">
+                <div class="overflow-x-auto">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr class="text-base-content/70">
+                                {{if .CanEdit}}<th>Model</th>{{end}}
+                                <th>Type</th>
+                                <th class="text-right">Count</th>
+                                {{if .CanEdit}}
+                                <th class="text-right">Input Tokens</th>
+                                <th class="text-right">Output Tokens</th>
+                                {{end}}
+                                <th class="text-right">Cost</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{range .AIUsage}}
+                            <tr>
+                                {{if $.Data.CanEdit}}<td class="font-mono text-xs text-base-content/70">{{.Model}}</td>{{end}}
+                                <td class="font-medium">{{.Label}}</td>
+                                <td class="text-right">{{.EntryCount}}</td>
+                                {{if $.Data.CanEdit}}
+                                <td class="text-right">{{.InputTokens}}</td>
+                                <td class="text-right">{{.OutputTokens}}</td>
+                                {{end}}
+                                <td class="text-right font-medium">{{formatCents .TotalCents $.Org.CurrencyCode}}</td>
+                            </tr>
                             {{end}}
-                        </td>
-                        {{else}}
-                        <td style="text-align:right;font-weight:600">{{formatCents .AITotalWithMargin $.Org.CurrencyCode}}</td>
-                        {{end}}
-                    </tr>
-                </tfoot>
-            </table>
+                        </tbody>
+                        <tfoot>
+                            <tr>
+                                <td colspan="{{if .CanEdit}}5{{else}}2{{end}}" class="font-semibold">AI Subtotal</td>
+                                {{if .CanEdit}}
+                                <td class="text-right font-semibold">
+                                    {{formatCents .AITotal $.Org.CurrencyCode}}
+                                    {{if gt .AIMargin 0}}
+                                    <span class="block text-xs text-base-content/60 font-normal">
+                                        (billed: {{formatCents .AITotalWithMargin $.Org.CurrencyCode}} at +{{.AIMargin}}%)
+                                    </span>
+                                    {{end}}
+                                </td>
+                                {{else}}
+                                <td class="text-right font-semibold">{{formatCents .AITotalWithMargin $.Org.CurrencyCode}}</td>
+                                {{end}}
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
         </div>
         {{else}}
-        <div class="empty-state" style="padding:1.5rem">
-            <p class="text-muted">No AI usage for this month.</p>
+        <div class="card bg-base-100 border border-base-300">
+            <div class="card-body p-6 text-center text-base-content/60 text-sm">
+                No AI usage for this month.
+            </div>
         </div>
         {{end}}
-    </div>
+    </section>
 
-    <!-- Grand Total -->
-    <div class="card" style="text-align:right">
-        <span class="text-muted" style="margin-right:.5rem">Total for {{.Month}}:</span>
-        <span class="cost-total">{{formatCents .GrandTotal $.Org.CurrencyCode}}</span>
+    {{/* Grand Total */}}
+    <div class="card bg-primary/5 border border-primary/20">
+        <div class="card-body p-5 flex-row items-center justify-between">
+            <span class="text-base-content/70">Total for {{.Month}}:</span>
+            <span class="text-2xl font-semibold">{{formatCents .GrandTotal $.Org.CurrencyCode}}</span>
+        </div>
     </div>
 </div>
 {{end}}

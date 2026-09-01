@@ -4,10 +4,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/mail"
@@ -15,6 +18,8 @@ import (
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/render"
 )
+
+const statusPending = "pending"
 
 type InviteHandler struct {
 	db           *models.DB
@@ -43,7 +48,7 @@ func hashInviteToken(raw string) string {
 	return hex.EncodeToString(h[:])
 }
 
-func generateInviteToken() (raw string, hash string, err error) {
+func generateInviteToken() (raw, hash string, err error) {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return "", "", err
@@ -60,7 +65,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 
 	inv, err := h.db.GetInvitationByToken(r.Context(), tokenHash)
 	if err != nil {
-		h.engine.Render(w, r, "invite_register.html", render.PageData{
+		_ = h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Invalid Invitation",
 			Flash: "This invitation link is invalid or has expired.", FlashType: "error",
 		})
@@ -69,7 +74,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 
 	// If user already exists, redirect to login
 	if _, err := h.db.GetUserByEmail(r.Context(), inv.Email); err == nil {
-		h.engine.Render(w, r, "login.html", render.PageData{
+		_ = h.engine.Render(w, r, "login.html", render.PageData{
 			Title: "Login",
 			Flash: "You already have an account. Please log in to accept the invitation.", FlashType: "success",
 		})
@@ -88,7 +93,7 @@ func (h *InviteHandler) InviteRegisterPage(w http.ResponseWriter, r *http.Reques
 		inviterName = inviter.Name
 	}
 
-	h.engine.Render(w, r, "invite_register.html", render.PageData{
+	_ = h.engine.Render(w, r, "invite_register.html", render.PageData{
 		Title: "Join " + orgName,
 		Data: map[string]any{
 			"Email":       inv.Email,
@@ -106,7 +111,7 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 
 	inv, err := h.db.GetInvitationByToken(r.Context(), tokenHash)
 	if err != nil {
-		h.engine.Render(w, r, "invite_register.html", render.PageData{
+		_ = h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Invalid Invitation",
 			Flash: "This invitation link is invalid or has expired.", FlashType: "error",
 		})
@@ -128,7 +133,7 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderErr := func(msg string) {
-		h.engine.Render(w, r, "invite_register.html", render.PageData{
+		_ = h.engine.Render(w, r, "invite_register.html", render.PageData{
 			Title: "Join " + orgName, Flash: msg, FlashType: "error",
 			Data: map[string]any{
 				"Email":       inv.Email,
@@ -150,30 +155,31 @@ func (h *InviteHandler) InviteRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use email from invitation, not from form
-	hash, err := auth.HashPassword(password)
+	hash, err := auth.HashPassword(r.Context(), password)
 	if err != nil {
 		log.Printf("hashing password: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
-	user, err := h.db.CreateUser(r.Context(), inv.Email, hash, name, auth.RoleClient)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
-			renderErr("An account with this email already exists. Please log in.")
-			return
-		}
-		log.Printf("creating user from invite: %v", err)
+	// Create user, mark invitation accepted, and add org membership
+	// atomically so a transient failure on any downstream write cannot
+	// leave a user account with no org membership and a half-consumed
+	// invitation. The session is created only after Commit succeeds. (#28)
+	user, err := h.db.AcceptInviteTx(r.Context(), inv.Email, hash, name, auth.RoleClient, inv.ID, inv.OrgID, inv.OrgRole)
+	switch {
+	case err == nil:
+		// fallthrough to session creation
+	case errors.Is(err, models.ErrInvitationNotAcceptable):
+		renderErr("This invitation link is invalid or has expired.")
+		return
+	case strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique"):
+		renderErr("An account with this email already exists. Please log in.")
+		return
+	default:
+		log.Printf("accepting invite: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
-	}
-
-	// Accept invitation and add org membership
-	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); err != nil {
-		log.Printf("accepting invitation: %v", err)
-	}
-	if err := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
-		log.Printf("adding org member from invite: %v", err)
 	}
 
 	// Create session
@@ -213,24 +219,51 @@ func (h *InviteHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if inv.Status != "pending" || inv.ExpiresAt.Before(time.Now()) {
+	if inv.Status != statusPending || inv.ExpiresAt.Before(time.Now()) {
 		http.Error(w, "Invitation is no longer valid", http.StatusGone)
 		return
 	}
 
-	if err := h.db.AddOrgMember(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
-		log.Printf("adding org member on accept: %v", err)
+	// #31: AddOrgMember is an upsert that would overwrite role on conflict,
+	// so it is not safe to use when we want to refuse role changes. Use an
+	// atomic INSERT ... ON CONFLICT DO NOTHING instead. If the row was not
+	// inserted, the user was already a member (via another path — direct
+	// admin add, prior accept, etc.) and we deliberately leave the
+	// existing role untouched. Any real datastore error is propagated as
+	// 500 so operational incidents are not masked as success. The
+	// returned `inserted` flag is informational only — it doesn't affect
+	// the response (see the status-reconciliation note below).
+	// (#31 — review feedback)
+	if _, err := h.db.InsertOrgMembershipIfAbsent(r.Context(), user.ID, inv.OrgID, inv.OrgRole); err != nil {
+		log.Printf("inserting org member on accept: %v", err)
 		http.Error(w, "Failed to join organization", http.StatusInternalServerError)
 		return
 	}
 
-	if err := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); err != nil {
-		log.Printf("updating invitation status: %v", err)
+	// Mark the invitation accepted regardless of whether the insert was a
+	// no-op. Two reasons: (1) self-healing retry — if a previous accept
+	// inserted the membership but UpdateInvitationStatus failed (DB
+	// blip), the retry still reconciles the pending record; (2) the
+	// invitation's purpose ("make this user a member") is already
+	// satisfied when the user is in the org via any path, so a
+	// remaining "pending" state serves no purpose and clutters the
+	// dashboard. Log but do not fail on a status-update error — the
+	// membership is what matters for access.
+	// (#31 — review feedback on 4ef2e0b)
+	if statusErr := h.db.UpdateInvitationStatus(r.Context(), inv.ID, "accepted"); statusErr != nil {
+		log.Printf("reconciling invitation status: %v", statusErr)
 	}
 
-	// Return empty string to remove the card via hx-swap="outerHTML"
+	// Return 200 with an empty body. hx-swap="outerHTML" on the dashboard
+	// relies on a 2xx response to remove the invite card from the DOM; a
+	// 409 here would leave a stale card that the user can re-click,
+	// triggering a 410 Gone the second time and a confusing "broken app"
+	// experience until a full page refresh. Both the "just inserted" and
+	// "already a member, status reconciled" cases are logically success
+	// from the user's perspective — the invitation is consumed and the
+	// user is in the org. (#31 — review feedback from Codex on 487541c)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(""))
+	_, _ = w.Write([]byte(""))
 }
 
 // DeclineInvitation declines a pending invitation.
@@ -249,7 +282,7 @@ func (h *InviteHandler) DeclineInvitation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if inv.Status != "pending" {
+	if inv.Status != statusPending {
 		http.Error(w, "Invitation is no longer valid", http.StatusGone)
 		return
 	}
@@ -261,10 +294,63 @@ func (h *InviteHandler) DeclineInvitation(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(""))
+	_, _ = w.Write([]byte(""))
 }
 
 // RevokeInvitation revokes a pending invitation (org admin action).
+// InvitationList renders the pending-invitations partial for one org.
+//
+// Exists so the invite form's htmx.trigger('#invitation-list', 'refresh')
+// has something to call: the container previously had no hx-get, so the
+// event fired into nothing and the list stayed stale until a manual
+// reload (#92).
+//
+// Manager-gated, not merely member-gated: pending invitations carry
+// invitee email addresses, and the template already renders this section
+// behind CanManage. An endpoint that returns the same markup has to
+// enforce the same rule — a template guard is not access control.
+func (h *InviteHandler) InvitationList(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUser(r)
+	slug := r.PathValue("orgSlug")
+
+	org, err := h.db.GetOrgBySlug(r.Context(), slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "Organization not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("invitation list: looking up org %q: %v", slug, err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		log.Printf("invitation list authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	invitations, err := h.db.ListOrgInvitations(r.Context(), org.ID)
+	if err != nil {
+		log.Printf("invitation list: loading invitations for org %s: %v", org.ID, err)
+		http.Error(w, "Failed to load invitations", http.StatusInternalServerError)
+		return
+	}
+
+	// CanManage is unconditionally true: the gate above already refused
+	// anyone who is not a manager, so reaching here proves it.
+	if err := h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
+		"Invitations": invitations,
+		"OrgSlug":     org.Slug,
+		"CanManage":   true,
+	}); err != nil {
+		log.Printf("rendering invitation list partial: %v", err)
+	}
+}
+
 func (h *InviteHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUser(r)
 	orgSlug := r.PathValue("orgSlug")
@@ -276,7 +362,12 @@ func (h *InviteHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !canManageOrg(h.db, r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("invitation manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -295,11 +386,13 @@ func (h *InviteHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request)
 
 	// Re-render invitation list
 	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
-	h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
+	if err := h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
 		"Invitations": invitations,
 		"OrgSlug":     org.Slug,
 		"CanManage":   true,
-	})
+	}); err != nil {
+		log.Printf("rendering invitation list partial: %v", err)
+	}
 }
 
 // ResendInvitation generates a new token and resends the invitation email.
@@ -314,7 +407,12 @@ func (h *InviteHandler) ResendInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !canManageOrg(h.db, r, user, org.ID) {
+	if canManage, authErr := authorizeOrgManage(r.Context(), h.db, user, org.ID); authErr != nil {
+		// Could not determine the answer — infrastructure, not a denial.
+		log.Printf("invitation manage authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	} else if !canManage {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -325,7 +423,7 @@ func (h *InviteHandler) ResendInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if inv.Status != "pending" {
+	if inv.Status != statusPending {
 		http.Error(w, "Only pending invitations can be resent", http.StatusBadRequest)
 		return
 	}
@@ -351,21 +449,11 @@ func (h *InviteHandler) ResendInvitation(w http.ResponseWriter, r *http.Request)
 
 	// Re-render invitation list
 	invitations, _ := h.db.ListOrgInvitations(r.Context(), org.ID)
-	h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
+	if err := h.engine.RenderPartial(w, "invitation_list.html", map[string]any{
 		"Invitations": invitations,
 		"OrgSlug":     org.Slug,
 		"CanManage":   true,
-	})
-}
-
-// canManageOrg is a shared helper to check org management permission.
-func canManageOrg(db *models.DB, r *http.Request, user *models.User, orgID string) bool {
-	if auth.IsStaffOrAbove(user.Role) {
-		return true
+	}); err != nil {
+		log.Printf("rendering invitation list partial: %v", err)
 	}
-	m, err := db.GetOrgMembership(r.Context(), user.ID, orgID)
-	if err != nil {
-		return false
-	}
-	return auth.CanManageOrg(m.Role)
 }

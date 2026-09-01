@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, verify2FA, fullLogin, generateTOTP } = require('./helpers');
+const { useSession, rootSession, inviteAndRegisterUser, generateTOTP } = require('./helpers');
 
 const superadminUser = {
   name: 'RBAC Superadmin',
@@ -13,8 +13,11 @@ const clientUser = {
   password: 'E2ETestPassword123!',
 };
 
-let superadminTotpSecret = '';
-let clientTotpSecret = '';
+// The shared root session is the first registered user, therefore superadmin.
+// The client is created through an invite, which assigns RoleClient — the two
+// identities this spec exists to contrast (#136).
+let superadminCookies = [];
+let clientCookies = [];
 let projectId = '';
 let featureTicketId = '';
 let bugTicketId = '';
@@ -29,14 +32,9 @@ test.describe.serial('RBAC Journeys', () => {
   test('setup: register superadmin and create data', async ({ browser }) => {
     const page = await browser.newPage();
 
-    // Register superadmin (first user in this test run)
-    await registerUser(page, superadminUser);
-    await loginUser(page, superadminUser);
-    const result = await setup2FA(page);
-    superadminTotpSecret = result.secret;
-
-    // Wait for dashboard/redirect after 2FA setup
-    await page.waitForURL(url => !url.href.includes('setup-2fa'), { timeout: 10000 }).catch(() => {});
+    // The shared root session: first registered user, therefore superadmin.
+    superadminCookies = rootSession().cookies;
+    await useSession(page, superadminCookies);
 
     // Create org
     await page.request.post('/orgs', { form: { name: 'RBAC Org' } });
@@ -105,56 +103,29 @@ test.describe.serial('RBAC Journeys', () => {
       }
     }
 
-    // Invite the client user to the org
-    const inviteResp = await page.request.post('/orgs/' + orgSlug + '/invitations', {
-      form: { email: clientUser.email, role: 'member' },
+    // Invite the client. inviteAndRegisterUser redeems the invite in a fresh
+    // browser context and returns the new session; the old hand-rolled version
+    // had a "register normally" fallback that could not work (registration is
+    // first-user-only) and would have quietly produced a user OUTSIDE the org,
+    // making every membership assertion below meaningless.
+    const client = await inviteAndRegisterUser(page, {
+      orgSlug,
+      email: clientUser.email,
+      name: clientUser.name,
+      password: clientUser.password,
+      role: 'member',
     });
-    expect(inviteResp.status()).toBeLessThan(400);
-
-    // Parse invite URL from the response HTML
-    const inviteHtml = await inviteResp.text();
-    const inviteMatch = inviteHtml.match(/value="([^"]*\/invite\/[^"]+)"/);
-    let inviteUrl = '';
-    if (inviteMatch) {
-      inviteUrl = inviteMatch[1];
-    }
+    clientCookies = client.cookies;
 
     await page.close();
-
-    // Register client user via the invite link
-    const clientPage = await browser.newPage();
-    if (inviteUrl) {
-      // Navigate to the invite URL to register
-      await clientPage.goto(inviteUrl);
-      await clientPage.waitForLoadState('networkidle');
-
-      // Fill the invite registration form (email is pre-filled from invitation)
-      await clientPage.fill('input[name="name"]', clientUser.name);
-      await clientPage.locator('input[name="password"]').evaluate(el => el.removeAttribute('minlength'));
-      await clientPage.fill('input[name="password"]', clientUser.password);
-      await clientPage.click('button[type="submit"]');
-      await clientPage.waitForLoadState('networkidle');
-
-      // Should redirect to 2FA setup
-      const clientResult = await setup2FA(clientPage);
-      clientTotpSecret = clientResult.secret;
-    } else {
-      // Fallback: register normally (client won't be in the org, tests will adapt)
-      await registerUser(clientPage, clientUser);
-      await loginUser(clientPage, clientUser);
-      const clientResult = await setup2FA(clientPage);
-      clientTotpSecret = clientResult.secret;
-    }
-    await clientPage.close();
   });
 
   // ──────────────────────────────────────────────
   // Superadmin journeys
   // ──────────────────────────────────────────────
   test('superadmin: can access admin panel', async ({ page }) => {
-    test.skip(!superadminTotpSecret, 'Superadmin not set up');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/admin');
     await page.waitForLoadState('networkidle');
 
@@ -162,9 +133,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can access org page', async ({ page }) => {
-    test.skip(!superadminTotpSecret, 'Superadmin not set up');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/orgs/' + orgSlug);
     await page.waitForLoadState('networkidle');
 
@@ -172,9 +142,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can access project brief', async ({ page }) => {
-    test.skip(!superadminTotpSecret, 'Superadmin not set up');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/brief');
     await page.waitForLoadState('networkidle');
 
@@ -182,9 +151,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can access project features', async ({ page }) => {
-    test.skip(!superadminTotpSecret, 'Superadmin not set up');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/features');
     await page.waitForLoadState('networkidle');
 
@@ -193,9 +161,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can access project bugs', async ({ page }) => {
-    test.skip(!superadminTotpSecret, 'Superadmin not set up');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/bugs');
     await page.waitForLoadState('networkidle');
 
@@ -204,9 +171,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can access project gantt', async ({ page }) => {
-    test.skip(!superadminTotpSecret, 'Superadmin not set up');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/gantt');
     await page.waitForLoadState('networkidle');
 
@@ -214,9 +180,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can access project archived tab', async ({ page }) => {
-    test.skip(!superadminTotpSecret, 'Superadmin not set up');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/archived');
     await page.waitForLoadState('networkidle');
 
@@ -225,9 +190,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can access project costs', async ({ page }) => {
-    test.skip(!superadminTotpSecret, 'Superadmin not set up');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/costs');
     await page.waitForLoadState('networkidle');
 
@@ -235,9 +199,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: ticket detail shows staff controls', async ({ page }) => {
-    test.skip(!superadminTotpSecret || !featureTicketId, 'Setup incomplete');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
     await page.goto('/tickets/' + featureTicketId);
     await page.waitForLoadState('networkidle');
 
@@ -249,9 +212,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can create tickets', async ({ page }) => {
-    test.skip(!superadminTotpSecret || !projectId, 'Setup incomplete');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
 
     const response = await page.request.post('/tickets', {
       form: {
@@ -268,9 +230,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('superadmin: can update ticket status', async ({ page }) => {
-    test.skip(!superadminTotpSecret || !featureTicketId, 'Setup incomplete');
 
-    await fullLogin(page, { ...superadminUser, totpSecret: superadminTotpSecret });
+    await useSession(page, superadminCookies);
 
     const response = await page.request.fetch('/tickets/' + featureTicketId + '/status', {
       method: 'PATCH',
@@ -284,18 +245,16 @@ test.describe.serial('RBAC Journeys', () => {
   // Client/member journeys
   // ──────────────────────────────────────────────
   test('client: cannot access admin panel (403)', async ({ page }) => {
-    test.skip(!clientTotpSecret, 'Client not set up');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
 
     const response = await page.request.get('/admin');
     expect(response.status()).toBe(403);
   });
 
   test('client: can access their org page', async ({ page }) => {
-    test.skip(!clientTotpSecret, 'Client not set up');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
     await page.goto('/orgs/' + orgSlug);
     await page.waitForLoadState('networkidle');
 
@@ -303,9 +262,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('client: can access project brief', async ({ page }) => {
-    test.skip(!clientTotpSecret, 'Client not set up');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/brief');
     await page.waitForLoadState('networkidle');
 
@@ -313,9 +271,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('client: can access project features', async ({ page }) => {
-    test.skip(!clientTotpSecret, 'Client not set up');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/features');
     await page.waitForLoadState('networkidle');
 
@@ -324,9 +281,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('client: can access project bugs', async ({ page }) => {
-    test.skip(!clientTotpSecret, 'Client not set up');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/bugs');
     await page.waitForLoadState('networkidle');
 
@@ -335,9 +291,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('client: can access project gantt', async ({ page }) => {
-    test.skip(!clientTotpSecret, 'Client not set up');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
     await page.goto('/orgs/' + orgSlug + '/projects/' + projSlug + '/gantt');
     await page.waitForLoadState('networkidle');
 
@@ -345,18 +300,16 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('client: cannot access archived tab (403)', async ({ page }) => {
-    test.skip(!clientTotpSecret, 'Client not set up');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
 
     const response = await page.request.get('/orgs/' + orgSlug + '/projects/' + projSlug + '/archived');
     expect(response.status()).toBe(403);
   });
 
   test('client: ticket detail does NOT show staff dropdown', async ({ page }) => {
-    test.skip(!clientTotpSecret || !featureTicketId, 'Setup incomplete');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
     await page.goto('/tickets/' + featureTicketId);
     await page.waitForLoadState('networkidle');
 
@@ -368,9 +321,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('client: can create tickets', async ({ page }) => {
-    test.skip(!clientTotpSecret || !projectId, 'Setup incomplete');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
 
     const response = await page.request.post('/tickets', {
       form: {
@@ -387,9 +339,8 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('client: can post comments', async ({ page }) => {
-    test.skip(!clientTotpSecret || !featureTicketId, 'Setup incomplete');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
     await page.goto('/tickets/' + featureTicketId);
     await page.waitForLoadState('networkidle');
 
@@ -404,18 +355,16 @@ test.describe.serial('RBAC Journeys', () => {
   });
 
   test('client: cannot archive tickets (403)', async ({ page }) => {
-    test.skip(!clientTotpSecret || !featureTicketId, 'Setup incomplete');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
 
     const response = await page.request.post('/tickets/' + featureTicketId + '/archive');
     expect(response.status()).toBe(403);
   });
 
   test('client: cannot delete tickets (403)', async ({ page }) => {
-    test.skip(!clientTotpSecret || !featureTicketId, 'Setup incomplete');
 
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+    await useSession(page, clientCookies);
 
     const response = await page.request.fetch('/tickets/' + featureTicketId, {
       method: 'DELETE',
@@ -463,15 +412,25 @@ test.describe.serial('RBAC Journeys', () => {
     await context.close();
   });
 
-  test('unauthenticated: register page is accessible', async ({ browser }) => {
+  // Was "register page is accessible", which was only ever true on an empty
+  // database. Registration is FIRST-USER-ONLY: RegisterPage redirects and
+  // Register 403s once CountUsers > 0. That is a real access-control rule and
+  // this asserts it, rather than asserting a form that must not be reachable.
+  test('unauthenticated: registration is closed once an account exists', async ({ browser }) => {
     const context = await browser.newContext();
     const page = await context.newPage();
 
     await page.goto('/register');
     await page.waitForLoadState('networkidle');
 
-    await expect(page.locator('input[name="name"]')).toBeVisible();
-    await expect(page.locator('input[name="email"]')).toBeVisible();
+    expect(page.url()).toContain('/login');
+    await expect(page.locator('input[name="name"]')).toHaveCount(0);
+
+    // The POST must be refused too, not merely hidden from the UI.
+    const resp = await page.request.post('/register', {
+      form: { name: 'Interloper', email: 'interloper@forgedesk.test', password: 'E2ETestPassword123!' },
+    });
+    expect(resp.status()).toBe(403);
 
     await page.close();
     await context.close();

@@ -6,45 +6,78 @@ import (
 	"fmt"
 	"html"
 	"html/template"
-	"io/fs"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
 
+	gorillacsrf "filippo.io/csrf/gorilla"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/styles"
-	gorillacsrf "github.com/gorilla/csrf"
+	"github.com/madalin/forgedesk/internal/diff"
 	"github.com/madalin/forgedesk/internal/models"
 	"github.com/madalin/forgedesk/internal/static"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/yuin/goldmark"
+	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/util"
-	highlighting "github.com/yuin/goldmark-highlighting/v2"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+)
+
+// DaisyUI badge variant names. Package-level constants so the three
+// {status,priority,provider}BadgeClass FuncMap helpers share one
+// canonical literal each (satisfies goconst + keeps refactors cheap).
+const (
+	badgeGhost   = "badge-ghost"
+	badgeInfo    = "badge-info"
+	badgeSuccess = "badge-success"
+	badgeWarning = "badge-warning"
+	badgePrimary = "badge-primary"
+	badgeError   = "badge-error"
 )
 
 type Engine struct {
 	templates        map[string]*template.Template
 	AssistantEnabled bool
+	// StorageEnabled is false when no object store is configured. The upload
+	// routes are not even registered in that case (cmd/server/main.go), so
+	// templates must not offer controls that would 404 (#153).
+	StorageEnabled bool
 }
 
 // PageData holds common data passed to every template.
 type PageData struct {
-	Title            string
+	Data             any
+	ActiveProject    *models.Project
 	User             *models.User
 	Org              *models.Organization
-	Orgs             []models.Organization
-	Projects         []models.Project   // projects for sidebar (selected org)
-	ActiveProject    *models.Project    // current project (nil if not on a project page)
-	ActiveTab        string             // "brief", "features", "bugs", "gantt", "costs", "archived", "settings"
+	FlashType        string
+	ActiveTab        string
 	CSRFToken        string
 	Flash            string
-	FlashType        string // "success", "error", "warning"
+	Title            string
 	CurrentPath      string
-	Data             any
+	ProjectID        string
+	Projects         []models.Project
+	Orgs             []models.Organization
 	AssistantEnabled bool
-	ProjectID        string // set on project pages for the AI assistant
+	StorageEnabled   bool
+}
+
+// staticFuncMap returns template helpers that are pure functions with
+// no dependency on NewEngine's closed-over locals (assetFunc,
+// highlightCSSStr, md, sanitizer). Extracted so render_test.go can
+// exercise the helpers in isolation without constructing a full Engine.
+func staticFuncMap() template.FuncMap {
+	return template.FuncMap{
+		// renderInlineDiff renders a word-level prose diff between two
+		// texts (debate suggestion "What changed" tab). Sanitization
+		// lives in diff.RenderInlineHTML — see that package's audit.
+		"renderInlineDiff": diff.RenderInlineHTML,
+	}
 }
 
 func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) {
@@ -92,16 +125,16 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 				lang, _ := c.Language()
 				if string(lang) == "mermaid" {
 					if entering {
-						w.WriteString(`<pre class="mermaid">`)
+						_, _ = w.WriteString(`<pre class="mermaid">`)
 					} else {
-						w.WriteString("</pre>")
+						_, _ = w.WriteString("</pre>")
 					}
 					return
 				}
 				if entering {
-					w.WriteString("<pre class=\"chroma\"><code>")
+					_, _ = w.WriteString("<pre class=\"chroma\"><code>")
 				} else {
-					w.WriteString("</code></pre>")
+					_, _ = w.WriteString("</code></pre>")
 				}
 			}),
 		),
@@ -139,45 +172,54 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 			return t.Format("2006-01-02")
 		},
-		"upper": strings.ToUpper,
-		"lower": strings.ToLower,
-		"title": strings.Title,
+		"upper":     strings.ToUpper,
+		"lower":     strings.ToLower,
+		"title":     cases.Title(language.Und).String,
 		"hasPrefix": strings.HasPrefix,
 		"contains":  strings.Contains,
-		"statusColor": func(status string) string {
+		// statusBadgeClass maps a ticket status to a DaisyUI badge
+		// variant. The legacy hand-CSS helper (statusColor returning
+		// "yellow"/"orange"/etc.) was removed in PR-6 when app.css
+		// went away; all templates now consume DaisyUI class names
+		// directly.
+		"statusBadgeClass": func(status string) string {
 			switch status {
 			case "backlog":
-				return "gray"
+				return badgeGhost
 			case "ready":
-				return "blue"
+				return badgeInfo
 			case "planning", "plan_review":
-				return "purple"
+				return badgePrimary
 			case "implementing":
-				return "yellow"
+				return badgeWarning
 			case "testing":
-				return "orange"
+				return badgeWarning
 			case "review":
-				return "indigo"
+				return badgePrimary
 			case "done":
-				return "green"
+				return badgeSuccess
 			case "cancelled":
-				return "red"
+				return badgeError
 			default:
-				return "gray"
+				return badgeGhost
 			}
 		},
-		"priorityColor": func(p string) string {
+		"priorityBadgeClass": func(p string) string {
+			// Preserves a 4-level visual hierarchy (error > warning
+			// > info > ghost) matching the legacy red/orange/yellow/
+			// gray palette; both high+medium mapping to warning would
+			// collapse two adjacent levels into one badge color.
 			switch p {
 			case "critical":
-				return "red"
+				return badgeError
 			case "high":
-				return "orange"
+				return badgeWarning
 			case "medium":
-				return "yellow"
+				return badgeInfo
 			case "low":
-				return "gray"
+				return badgeGhost
 			default:
-				return "gray"
+				return badgeGhost
 			}
 		},
 		"derefStr": func(s *string) string {
@@ -224,6 +266,74 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 			return template.JS(b)
 		},
+		// providerLabel maps an internal provider key (claude / gemini /
+		// openai) to its user-facing brand name. Computed server-side so
+		// the debate template doesn't have to put {{if}}{{end}} branches
+		// inside HTML attribute values — html/template's context-aware
+		// escaper silently emits partial output when an attribute value
+		// contains conditional pipelines.
+		"providerLabel": func(name string) string {
+			switch name {
+			case "claude":
+				return "Claude"
+			case "gemini":
+				return "Gemini"
+			case "openai":
+				return "ChatGPT"
+			default:
+				return name
+			}
+		},
+		// providerBadgeClass returns a DaisyUI badge variant name for
+		// the given provider, used by the debate page's provider-chip
+		// markup. Mapping is brand-adjacent (Claude warm, ChatGPT teal,
+		// Gemini blue) using DaisyUI's semantic color tokens so the
+		// chip reflects active theme colors rather than hard-coded hex.
+		"providerBadgeClass": func(name string) string {
+			switch name {
+			case "claude":
+				return badgeWarning
+			case "openai":
+				return badgeSuccess
+			case "gemini":
+				return badgeInfo
+			default:
+				return badgeGhost
+			}
+		},
+		// derefInt unwraps nullable *int fields for safe template-side
+		// display; zero substitutes for nil. Used by debate_effort_chip.html
+		// for the effort_score / effort_hours columns.
+		"derefInt": func(p *int) int {
+			if p == nil {
+				return 0
+			}
+			return *p
+		},
+		// relTime renders a nullable *time.Time as "just now" / "5m ago"
+		// / "2h ago" / "3d ago" for the effort chip's "last scored"
+		// indicator. Returns an em-dash for nil so the template can
+		// always substitute it into a sentence fragment.
+		"relTime": func(t *time.Time) string {
+			if t == nil {
+				return "—"
+			}
+			d := time.Since(*t)
+			switch {
+			case d < time.Minute:
+				return "just now"
+			case d < time.Hour:
+				return fmt.Sprintf("%dm ago", int(d.Minutes()))
+			case d < 24*time.Hour:
+				return fmt.Sprintf("%dh ago", int(d.Hours()))
+			default:
+				return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+			}
+		},
+		// mul multiplies two ints; used by the effort-bar-vertical's
+		// inline CSS calc() for the score-pointer position
+		// (score * 10% per band point).
+		"mul": func(a, b int) int { return a * b },
 		"formatBytes": func(b int64) string {
 			const unit = 1024
 			if b < unit {
@@ -261,6 +371,8 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 			}
 		},
 	}
+	// Stateless helpers from staticFuncMap() (defined above) are merged in after the literal — see that function's doc for the extraction criterion.
+	maps.Copy(funcMap, staticFuncMap())
 
 	layoutFiles, err := filepath.Glob(filepath.Join(templatesDir, "layouts", "*.html"))
 	if err != nil {
@@ -279,36 +391,39 @@ func NewEngine(templatesDir string, manifest *static.Manifest) (*Engine, error) 
 	}
 
 	for _, pattern := range pagePatterns {
-		pages, err := filepath.Glob(pattern)
-		if err != nil {
-			return nil, err
+		pages, globErr := filepath.Glob(pattern)
+		if globErr != nil {
+			return nil, globErr
 		}
 		for _, page := range pages {
 			files := append(append([]string{page}, layoutFiles...), componentFiles...)
 			name := filepath.Base(page)
-			t, err := template.New(name).Funcs(funcMap).ParseFiles(files...)
-			if err != nil {
-				return nil, fmt.Errorf("parsing %s: %w", name, err)
+			t, parseErr := template.New(name).Funcs(funcMap).ParseFiles(files...)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parsing %s: %w", name, parseErr)
 			}
 			e.templates[name] = t
 		}
 	}
 
-	// Parse standalone partials (HTMX fragments, no layout)
-	err = filepath.WalkDir(filepath.Join(templatesDir, "components"), func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".html") {
-			return err
+	// Standalone partials (HTMX fragments, no layout) are parsed
+	// once into a shared template set so each partial can reference
+	// sibling components via {{template "other.html" ...}} without
+	// O(N^2) re-parsing at startup. Previously each partial was
+	// parsed in isolation; the comment partial's {{template
+	// "reactions.html" ...}} include then failed at Execute time
+	// with "no such template", and since html/template buffers
+	// output until success, the partial silently emitted nothing —
+	// newly posted comments disappeared until a full page reload
+	// re-rendered them. (#37)
+	if len(componentFiles) > 0 {
+		partialSet, parseErr := template.New("partials").Funcs(funcMap).ParseFiles(componentFiles...)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing component partials: %w", parseErr)
 		}
-		name := "partial:" + filepath.Base(path)
-		t, err := template.New(filepath.Base(path)).Funcs(funcMap).ParseFiles(path)
-		if err != nil {
-			return fmt.Errorf("parsing partial %s: %w", path, err)
+		for _, path := range componentFiles {
+			e.templates["partial:"+filepath.Base(path)] = partialSet
 		}
-		e.templates[name] = t
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	return e, nil
@@ -339,7 +454,13 @@ func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, dat
 		return fmt.Errorf("template %q not found", name)
 	}
 	data.AssistantEnabled = e.AssistantEnabled
-	data.CSRFToken = gorillacsrf.Token(r)
+	data.StorageEnabled = e.StorageEnabled
+	// filippo.io/csrf/gorilla uses header-based CSRF (Origin /
+	// Sec-Fetch-Site); Token/TemplateField are shim no-ops kept for
+	// source compatibility. Removing these call sites would also
+	// require removing references from every template that emits a
+	// hidden field, which is a separate cleanup.
+	data.CSRFToken = gorillacsrf.Token(r) //nolint:staticcheck // filippo.io/csrf/gorilla shim — no-op
 
 	// Clone template with request-specific CSRF funcs
 	t, err := t.Clone()
@@ -348,10 +469,10 @@ func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, dat
 	}
 	t.Funcs(template.FuncMap{
 		"csrfField": func() template.HTML {
-			return template.HTML(gorillacsrf.TemplateField(r))
+			return gorillacsrf.TemplateField(r) //nolint:staticcheck // filippo.io/csrf/gorilla shim — no-op
 		},
 		"csrfToken": func() string {
-			return gorillacsrf.Token(r)
+			return gorillacsrf.Token(r) //nolint:staticcheck // filippo.io/csrf/gorilla shim — no-op
 		},
 	})
 
@@ -360,18 +481,24 @@ func (e *Engine) Render(w http.ResponseWriter, r *http.Request, name string, dat
 }
 
 // RenderPartial renders an HTMX partial (no layout).
+// All partial keys share one template set parsed from the components/
+// directory (see Engine construction), so we execute by base-name
+// rather than relying on the set's default template.
 func (e *Engine) RenderPartial(w http.ResponseWriter, name string, data any) error {
 	key := "partial:" + name
 	t, ok := e.templates[key]
 	if !ok {
-		// Fall back to direct template name
+		// Fall back to direct template name (for tests that register
+		// custom templates outside the components/ walk).
 		t, ok = e.templates[name]
 		if !ok {
 			return fmt.Errorf("partial template %q not found", name)
 		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		return t.Execute(w, data)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return t.Execute(w, data)
+	return t.ExecuteTemplate(w, name, data)
 }
 
 // RenderError renders an error page.

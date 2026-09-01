@@ -18,14 +18,14 @@ const (
 )
 
 type Session struct {
+	ExpiresAt         time.Time
+	SelectedOrgID     *string
 	ID                string
 	UserID            string
-	TwoFactorVerified bool
-	MustSetup2FA      bool
 	IPAddress         string
 	UserAgent         string
-	SelectedOrgID     *string
-	ExpiresAt         time.Time
+	TwoFactorVerified bool
+	MustSetup2FA      bool
 }
 
 type SessionStore struct {

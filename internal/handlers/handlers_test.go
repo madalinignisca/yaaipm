@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/madalin/forgedesk/internal/ai"
 	"github.com/madalin/forgedesk/internal/auth"
 	"github.com/madalin/forgedesk/internal/config"
 	"github.com/madalin/forgedesk/internal/mail"
@@ -44,7 +45,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	authH := NewAuthHandler(db, sessions, engine, aesKey, false)
 	dashH := NewDashboardHandler(db, engine)
 	orgH := NewOrgHandler(db, engine, sessions, mailer, baseURL, nil)
-	projH := NewProjectHandler(db, engine)
+	projH := NewProjectHandler(db, engine, []string{ai.ProviderGemini})
 	ticketH := NewTicketHandler(db, engine, nil, &config.Config{})
 	commentH := NewCommentHandler(db, engine)
 	adminH := NewAdminHandler(db, engine)
@@ -85,6 +86,8 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Get("/orgs/{orgSlug}", orgH.OrgPage)
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
 		r.Post("/orgs/{orgSlug}/settings/business", orgH.UpdateBusinessDetails)
+		r.Post("/orgs/{orgSlug}/settings/budget", orgH.UpdateMonthlyBudget)
+		r.Get("/orgs/{orgSlug}/invitations/list", inviteH.InvitationList)
 		r.Post("/orgs/{orgSlug}/invitations", orgH.InviteMember)
 		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
 		r.Post("/orgs/{orgSlug}/projects", projH.CreateProject)
@@ -95,6 +98,7 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/gantt", projH.ProjectGantt)
 		r.Post("/tickets", ticketH.CreateTicket)
 		r.Get("/tickets/{ticketID}", ticketH.TicketDetail)
+		r.Put("/tickets/{ticketID}", ticketH.UpdateTicket)
 		r.Patch("/tickets/{ticketID}/status", ticketH.UpdateStatus)
 		r.Patch("/tickets/{ticketID}/agent", ticketH.UpdateAgentMode)
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
@@ -116,12 +120,19 @@ func setupTestRouter(t *testing.T) (*chi.Mux, *models.DB, *auth.SessionStore, *r
 	return r, db, sessions, engine
 }
 
+// setupTestRouterOnly returns just the router for tests that don't need DB/sessions/engine.
+func setupTestRouterOnly(t *testing.T) *chi.Mux {
+	t.Helper()
+	router, _, _, _ := setupTestRouter(t) //nolint:dogsled // test helper
+	return router
+}
+
 // createAuthenticatedUser creates a fully authenticated user and returns the session cookie.
 func createAuthenticatedUser(t *testing.T, db *models.DB, sessions *auth.SessionStore, email, role string) *http.Cookie {
 	t.Helper()
 	ctx := context.Background()
 
-	hash, _ := auth.HashPassword("TestPassword123!")
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
 	user, err := db.CreateUser(ctx, email, hash, "Test User", role)
 	if err != nil {
 		t.Fatalf("creating user: %v", err)
@@ -130,7 +141,7 @@ func createAuthenticatedUser(t *testing.T, db *models.DB, sessions *auth.Session
 	// Mark 2FA as done so user is fully authenticated
 	db.Pool.Exec(ctx, `UPDATE users SET must_setup_2fa = false WHERE id = $1`, user.ID)
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", http.NoBody)
 	token, err := sessions.CreateSession(ctx, user.ID, false, req)
 	if err != nil {
 		t.Fatal(err)
@@ -139,13 +150,15 @@ func createAuthenticatedUser(t *testing.T, db *models.DB, sessions *auth.Session
 	sess, _ := sessions.GetSession(ctx, token)
 	sessions.MarkTwoFactorVerified(ctx, sess.ID)
 
-	return &http.Cookie{Name: auth.SessionCookieName, Value: token}
+	// HttpOnly/Secure are ignored by http.Request.AddCookie (which only reads Name/Value)
+	// but setting them silences a static-analysis rule that flags cookie struct literals.
+	return &http.Cookie{Name: auth.SessionCookieName, Value: token, HttpOnly: true, Secure: true}
 }
 
 func TestLoginPageRenders(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req := httptest.NewRequest(http.MethodGet, "/login", http.NoBody)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -158,9 +171,9 @@ func TestLoginPageRenders(t *testing.T) {
 }
 
 func TestRegisterPageRenders(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/register", nil)
+	req := httptest.NewRequest(http.MethodGet, "/register", http.NoBody)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -173,7 +186,7 @@ func TestRegisterPageRenders(t *testing.T) {
 }
 
 func TestRegisterAndLogin(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
 	// Register (first user = superadmin)
 	form := url.Values{"name": {"Admin"}, "email": {"admin@test.com"}, "password": {"SecurePassword123!"}}
@@ -223,7 +236,7 @@ func TestRegisterAndLogin(t *testing.T) {
 }
 
 func TestRegisterShortPassword(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
 	form := url.Values{"name": {"Short"}, "email": {"short@test.com"}, "password": {"short"}}
 	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
@@ -237,7 +250,7 @@ func TestRegisterShortPassword(t *testing.T) {
 }
 
 func TestRegisterMissingFields(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
 	form := url.Values{"name": {""}, "email": {""}, "password": {""}}
 	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
@@ -254,7 +267,7 @@ func TestLoginWrongPassword(t *testing.T) {
 	r, db, _, _ := setupTestRouter(t)
 	ctx := context.Background()
 
-	hash, _ := auth.HashPassword("CorrectPassword1")
+	hash, _ := auth.HashPassword(context.Background(), "CorrectPassword1")
 	db.CreateUser(ctx, "wrong@test.com", hash, "Wrong", "client")
 
 	form := url.Values{"email": {"wrong@test.com"}, "password": {"WrongPassword11"}}
@@ -272,7 +285,7 @@ func TestLoginWrongPassword(t *testing.T) {
 }
 
 func TestLoginNonexistentUser(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
 	form := url.Values{"email": {"ghost@test.com"}, "password": {"doesntmatter1"}}
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
@@ -286,9 +299,9 @@ func TestLoginNonexistentUser(t *testing.T) {
 }
 
 func TestDashboardRequiresAuth(t *testing.T) {
-	r, _, _, _ := setupTestRouter(t)
+	r := setupTestRouterOnly(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -301,7 +314,7 @@ func TestDashboardAuthenticated(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	cookie := createAuthenticatedUser(t, db, sessions, "dash@test.com", "superadmin")
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -341,7 +354,7 @@ func TestOrgPage(t *testing.T) {
 
 	db.CreateOrg(ctx, "View Org", "view-org")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/view-org", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/view-org", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -378,7 +391,7 @@ func TestProjectBriefPage(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Brief Org", "brief-org")
 	db.CreateProject(ctx, org.ID, "Brief Project", "brief-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/brief-org/projects/brief-proj/brief", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/brief-org/projects/brief-proj/brief", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -396,7 +409,7 @@ func TestProjectFeaturesPage(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Feat Org", "feat-org")
 	db.CreateProject(ctx, org.ID, "Feat Project", "feat-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/feat-org/projects/feat-proj/features", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/feat-org/projects/feat-proj/features", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -414,7 +427,7 @@ func TestProjectBugsPage(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Bugs Org", "bugs-org")
 	db.CreateProject(ctx, org.ID, "Bugs Project", "bugs-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/bugs-org/projects/bugs-proj/bugs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/bugs-org/projects/bugs-proj/bugs", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -432,7 +445,7 @@ func TestProjectGanttPage(t *testing.T) {
 	org, _ := db.CreateOrg(ctx, "Gantt Org", "gantt-org")
 	db.CreateProject(ctx, org.ID, "Gantt Project", "gantt-proj")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/gantt-org/projects/gantt-proj/gantt", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/gantt-org/projects/gantt-proj/gantt", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -483,7 +496,7 @@ func TestTicketDetail(t *testing.T) {
 	}
 	db.CreateTicket(ctx, ticket)
 
-	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/tickets/"+ticket.ID, http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -560,12 +573,61 @@ func TestCreateComment(t *testing.T) {
 	}
 }
 
+// TestCreateCommentRendersMarkdownInPartial locks in #37: the HTMX
+// partial returned by CreateComment must render markdown through
+// the template's markdown helper (and apply the `prose` class) so
+// a freshly-posted comment looks the same as after a full-page
+// reload. Previously the partial emitted raw BodyMarkdown.
+func TestCreateCommentRendersMarkdownInPartial(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	cookie := createAuthenticatedUser(t, db, sessions, "mdcomment@test.com", "superadmin")
+	ctx := context.Background()
+
+	org, _ := db.CreateOrg(ctx, "MD Org", "md-org")
+	proj, _ := db.CreateProject(ctx, org.ID, "MD Proj", "md-proj")
+	user, _ := db.GetUserByEmail(ctx, "mdcomment@test.com")
+	ticket := &models.Ticket{
+		ProjectID: proj.ID, Type: "task", Title: "MD Task",
+		Status: "backlog", Priority: "medium", CreatedBy: user.ID,
+	}
+	db.CreateTicket(ctx, ticket)
+
+	// Post a comment containing markdown syntax — bold + inline code.
+	form := url.Values{"body": {"This is **bold** and `code`."}}
+	req := httptest.NewRequest(http.MethodPost, "/tickets/"+ticket.ID+"/comments", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	// Markdown renderer should convert ** to <strong> and ` to <code>.
+	if !strings.Contains(body, "<strong>bold</strong>") {
+		t.Errorf("partial did not render bold markdown: %q", body)
+	}
+	if !strings.Contains(body, "<code>code</code>") {
+		t.Errorf("partial did not render inline code markdown: %q", body)
+	}
+	// The prose class should be applied (parity with full page).
+	if !strings.Contains(body, `comment-body prose`) {
+		t.Errorf("partial missing 'prose' class: %q", body)
+	}
+	// The raw, un-rendered markdown should NOT appear in the output.
+	if strings.Contains(body, "**bold**") {
+		t.Errorf("partial emitted raw markdown instead of rendered HTML: %q", body)
+	}
+}
+
 func TestAdminPageSuperadminOnly(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 
 	// Client should be forbidden
 	clientCookie := createAuthenticatedUser(t, db, sessions, "client@test.com", "client")
-	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin", http.NoBody)
 	req.AddCookie(clientCookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -576,7 +638,7 @@ func TestAdminPageSuperadminOnly(t *testing.T) {
 
 	// Superadmin should see admin page
 	adminCookie := createAuthenticatedUser(t, db, sessions, "admin@test.com", "superadmin")
-	req2 := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/admin", http.NoBody)
 	req2.AddCookie(adminCookie)
 	rec2 := httptest.NewRecorder()
 	r.ServeHTTP(rec2, req2)
@@ -593,7 +655,7 @@ func TestLogout(t *testing.T) {
 	r, db, sessions, _ := setupTestRouter(t)
 	cookie := createAuthenticatedUser(t, db, sessions, "logout@test.com", "superadmin")
 
-	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req := httptest.NewRequest(http.MethodPost, "/logout", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -665,7 +727,7 @@ func TestOrgSettingsPage(t *testing.T) {
 
 	db.CreateOrg(ctx, "Settings Org", "settings-org")
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/settings-org/settings", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orgs/settings-org/settings", http.NoBody)
 	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -675,5 +737,186 @@ func TestOrgSettingsPage(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Members") {
 		t.Error("should contain Members section")
+	}
+}
+
+// A non-member must not be able to read another organization's settings.
+// Before the fix, OrgSettings resolved the org by slug and rendered it
+// unconditionally: the only GetOrgMembership call was used to compute a
+// canManage flag for showing forms, and its error was swallowed — so a
+// non-member simply got canManage=false and the page still rendered,
+// leaking the victim org's name and its full member roster (each member's
+// name, email address, platform role and org role) across tenants.
+//
+// The business-details card and pending invitations happen to be hidden by
+// template guards ({{if or .IsStaff .CanManage}}), so they did NOT leak —
+// but that is the template coincidentally covering for a missing handler
+// gate, not access control. Assert on the roster, which did.
+func TestOrgSettingsPage_NonMemberForbidden(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	// Victim org, with data worth leaking.
+	victim, err := db.CreateOrg(ctx, "Victim Org", "victim-org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	// A member whose identity must not cross the tenant boundary.
+	hash, _ := auth.HashPassword(context.Background(), "TestPassword123!")
+	insider, err := db.CreateUser(ctx, "insider@victim.test", hash, "Victim Insider", "client")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, 'owner')`,
+		insider.ID, victim.ID); err != nil {
+		t.Fatalf("seed victim membership: %v", err)
+	}
+
+	// An authenticated CLIENT who belongs to no org at all. The first
+	// registered user is auto-promoted to superadmin, so create a throwaway
+	// first before the one under test.
+	createAuthenticatedUser(t, db, sessions, "first-superadmin@test.com", "superadmin")
+	outsider := createAuthenticatedUser(t, db, sessions, "outsider@test.com", "client")
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/victim-org/settings", http.NoBody)
+	req.AddCookie(outsider)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	// 404, not 403: authorizeOrgAccess deliberately collapses "not your
+	// org" into "no such org" so probing cannot enumerate organizations.
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("non-member GET org settings: got %d, want 404", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, leaked := range []string{"insider@victim.test", "Victim Insider"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("response leaked %q across tenants", leaked)
+		}
+	}
+
+	// The response for a real-but-forbidden org must be indistinguishable
+	// from one for an org that does not exist — otherwise the status code
+	// itself confirms which slugs are real.
+	missReq := httptest.NewRequest(http.MethodGet, "/orgs/no-such-org-at-all/settings", http.NoBody)
+	missReq.AddCookie(outsider)
+	missRec := httptest.NewRecorder()
+	r.ServeHTTP(missRec, missReq)
+	if missRec.Code != rec.Code {
+		t.Errorf("org enumeration: existing-but-forbidden org returned %d but nonexistent org returned %d — these must match",
+			rec.Code, missRec.Code)
+	}
+}
+
+// Members of the org must still get in — the fix must not lock out the
+// people the page is for.
+func TestOrgSettingsPage_MemberAllowed(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	createAuthenticatedUser(t, db, sessions, "first-sa@test.com", "superadmin")
+	memberCookie := createAuthenticatedUser(t, db, sessions, "member@test.com", "client")
+
+	var userID string
+	if err := db.Pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE email = 'member@test.com'`).Scan(&userID); err != nil {
+		t.Fatalf("look up member: %v", err)
+	}
+	org, err := db.CreateOrg(ctx, "Member Org", "member-org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	// Plain 'member' — the weakest membership, so this pins that the fix
+	// gates on membership existing, not on management rights.
+	if _, err := db.Pool.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, 'member')`,
+		userID, org.ID); err != nil {
+		t.Fatalf("add membership: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/member-org/settings", http.NoBody)
+	req.AddCookie(memberCookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("member GET org settings: got %d, want 200", rec.Code)
+	}
+}
+
+// A non-member must not be able to tell whether an org exists. OrgPage
+// was correctly gated on membership, but answered 403 for a real org and
+// 404 for a missing one — so the status code alone confirmed which slugs
+// were real. Slugs are slugify(name), so that turns a guessing game into
+// an enumeration of the client list (issue #127).
+func TestOrgPage_NonMemberCannotDistinguishExistence(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	if _, err := db.CreateOrg(ctx, "Real Org", "real-org"); err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	// First registered user is auto-promoted to superadmin, so burn one
+	// before creating the client under test.
+	createAuthenticatedUser(t, db, sessions, "first-sa-orgpage@test.com", "superadmin")
+	outsider := createAuthenticatedUser(t, db, sessions, "outsider-orgpage@test.com", "client")
+
+	get := func(slug string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/orgs/"+slug, http.NoBody)
+		req.AddCookie(outsider)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	existing := get("real-org")
+	missing := get("no-such-org-anywhere")
+
+	if existing.Code != http.StatusNotFound {
+		t.Errorf("non-member GET existing org: got %d, want 404", existing.Code)
+	}
+	if existing.Code != missing.Code {
+		t.Errorf("enumeration oracle: existing-but-forbidden org returned %d, nonexistent returned %d — these must match",
+			existing.Code, missing.Code)
+	}
+	if strings.Contains(existing.Body.String(), "Real Org") {
+		t.Error("response leaked the org name to a non-member")
+	}
+}
+
+// The gate must not lock out the people the page is for.
+func TestOrgPage_MemberStillAllowed(t *testing.T) {
+	r, db, sessions, _ := setupTestRouter(t)
+	ctx := context.Background()
+
+	createAuthenticatedUser(t, db, sessions, "first-sa-orgpage2@test.com", "superadmin")
+	memberCookie := createAuthenticatedUser(t, db, sessions, "member-orgpage@test.com", "client")
+
+	var userID string
+	if err := db.Pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE email = 'member-orgpage@test.com'`).Scan(&userID); err != nil {
+		t.Fatalf("look up member: %v", err)
+	}
+	org, err := db.CreateOrg(ctx, "Member Org Page", "member-org-page")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	// Weakest membership on purpose: the gate checks membership exists,
+	// not management rights.
+	if _, err := db.Pool.Exec(ctx,
+		`INSERT INTO org_memberships (user_id, org_id, role) VALUES ($1, $2, 'member')`,
+		userID, org.ID); err != nil {
+		t.Fatalf("add membership: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/orgs/member-org-page", http.NoBody)
+	req.AddCookie(memberCookie)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("member GET org page: got %d, want 200", rec.Code)
 	}
 }

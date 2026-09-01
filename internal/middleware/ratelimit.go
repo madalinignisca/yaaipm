@@ -10,10 +10,10 @@ import (
 
 // RateLimiter provides per-IP rate limiting.
 type RateLimiter struct {
-	mu       sync.Mutex
 	visitors map[string]*visitorEntry
 	rate     rate.Limit
 	burst    int
+	mu       sync.Mutex
 }
 
 type visitorEntry struct {

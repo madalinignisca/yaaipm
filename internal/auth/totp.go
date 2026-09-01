@@ -12,7 +12,7 @@ import (
 )
 
 // GenerateTOTP creates a new TOTP key for a user, returning the secret and QR code PNG as base64.
-func GenerateTOTP(email string) (secret string, qrBase64 string, err error) {
+func GenerateTOTP(email string) (secret, qrBase64 string, err error) {
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      "ForgeDesk",
 		AccountName: email,
@@ -36,8 +36,8 @@ func GenerateTOTP(email string) (secret string, qrBase64 string, err error) {
 func ValidateTOTP(code, secret string) bool {
 	valid, _ := totp.ValidateCustom(code, secret, time.Now(), totp.ValidateOpts{
 		Period:    30,
-		Skew:     1,
-		Digits:   otp.DigitsSix,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
 		Algorithm: otp.AlgorithmSHA1,
 	})
 	return valid
