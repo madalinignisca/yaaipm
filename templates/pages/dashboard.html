@@ -1,102 +1,134 @@
 {{define "content"}}
-<div>
-    <div class="page-header">
-        <h1>{{if .Org}}{{.Org.Name}}{{else}}Dashboard{{end}}</h1>
+<div class="max-w-6xl mx-auto p-6">
+    <header class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-semibold tracking-tight">
+            {{if .Org}}{{.Org.Name}}{{else}}Dashboard{{end}}
+        </h1>
         {{if .User}}
-        <div class="flex items-center gap-md">
-        {{if .Org}}
-        <a href="/orgs/{{.Org.Slug}}/costs" class="btn btn-ghost btn-sm">Costs</a>
-        <a href="/orgs/{{.Org.Slug}}/settings" class="btn btn-ghost btn-sm">Settings</a>
-        {{end}}
-        <div class="dropdown" x-data="{ open: false }">
-            <button @click="open = !open" class="btn btn-primary">New...</button>
-            <div x-show="open" @click.outside="open = false" x-transition class="dropdown-menu" style="min-width:14rem">
-                {{if .Org}}
-                <form method="POST" action="/orgs/{{.Org.Slug}}/projects" class="dropdown-form" @click.stop>
-                    {{csrfField}}
-                    <label class="form-label">New Project</label>
-                    <input type="text" name="name" placeholder="Project name" required class="form-input mb-sm">
-                    <button type="submit" class="btn btn-primary btn-sm btn-block">Create Project</button>
-                </form>
-                {{end}}
-                <form method="POST" action="/orgs" class="dropdown-form" style="border-top:1px solid var(--gray-100)" @click.stop>
-                    {{csrfField}}
-                    <label class="form-label">New Organization</label>
-                    <input type="text" name="name" placeholder="Org name" required class="form-input mb-sm">
-                    <button type="submit" class="btn btn-primary btn-sm btn-block">Create Organization</button>
-                </form>
+        <div class="flex items-center gap-2">
+            {{if .Org}}
+            <a href="/orgs/{{.Org.Slug}}/costs" class="btn btn-ghost btn-sm">Costs</a>
+            <a href="/orgs/{{.Org.Slug}}/settings" class="btn btn-ghost btn-sm">Settings</a>
+            {{end}}
+            <div class="relative" x-data="{ open: false }">
+                <button @click="open = !open" class="btn btn-primary btn-sm">New…</button>
+                <div x-show="open" x-transition x-cloak @click.outside="open = false"
+                     class="absolute right-0 mt-2 w-72 bg-base-100 border border-base-300
+                            rounded-lg shadow-xl z-40 overflow-hidden">
+                    {{if .Org}}
+                    <form method="POST" action="/orgs/{{.Org.Slug}}/projects"
+                          class="p-3 flex flex-col gap-2" @click.stop>
+                        {{csrfField}}
+                        <label class="text-xs uppercase tracking-wider text-base-content/60 font-medium">
+                            New Project
+                        </label>
+                        <input type="text" name="name" placeholder="Project name" required
+                               class="input input-bordered input-sm w-full">
+                        <button type="submit" class="btn btn-primary btn-sm btn-block">
+                            Create Project
+                        </button>
+                    </form>
+                    {{end}}
+                    <form method="POST" action="/orgs"
+                          class="p-3 flex flex-col gap-2 border-t border-base-300" @click.stop>
+                        {{csrfField}}
+                        <label class="text-xs uppercase tracking-wider text-base-content/60 font-medium">
+                            New Organization
+                        </label>
+                        <input type="text" name="name" placeholder="Org name" required
+                               class="input input-bordered input-sm w-full">
+                        <button type="submit" class="btn btn-primary btn-sm btn-block">
+                            Create Organization
+                        </button>
+                    </form>
+                </div>
             </div>
         </div>
-        </div>
         {{end}}
-    </div>
+    </header>
 
     {{if .Org}}
     {{with .Data}}
-    <div class="grid grid-3">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {{range .}}
-        <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/brief" class="card card-hover">
-            <h3>{{.Name}}</h3>
-            <p class="text-muted text-sm" style="margin-top:.25rem">Created {{formatDate .CreatedAt}}</p>
+        <a href="/orgs/{{$.Org.Slug}}/projects/{{.Slug}}/brief"
+           class="card bg-base-100 border border-base-300 shadow-sm
+                  hover:shadow-md hover:border-primary/40 transition-all">
+            <div class="card-body p-5">
+                <h3 class="font-semibold text-base">{{.Name}}</h3>
+                <p class="text-xs text-base-content/60 mt-1">
+                    Created {{formatDate .CreatedAt}}
+                </p>
+            </div>
         </a>
         {{end}}
     </div>
     {{else}}
-    <div class="empty-state">
-        <p>No projects yet</p>
-        <p class="empty-subtitle">Create your first project to get started</p>
+    <div class="flex flex-col items-center py-16 text-center gap-1">
+        <p class="text-base font-medium text-base-content/80">No projects yet</p>
+        <p class="text-sm text-base-content/60">Create your first project to get started</p>
     </div>
     {{end}}
 
     {{else}}
 
-    {{/* Pending invitations section */}}
+    {{/* Pending invitations */}}
     {{with .Data}}
     {{with .PendingInvites}}
-    <div class="card mb-lg">
-        <h2 class="mb-md">Pending Invitations</h2>
-        <div class="divide-y">
-            {{range .}}
-            <div class="member-row" id="invite-card-{{.Invitation.ID}}">
-                <div class="member-info">
-                    <p><strong>{{.Organization.Name}}</strong></p>
-                    <p class="text-muted text-sm">Invited by {{.InviterName}} &middot; Role: {{.Invitation.OrgRole}}</p>
+    <div class="card bg-base-100 border border-base-300 shadow-sm mb-6">
+        <div class="card-body p-5 gap-3">
+            <h2 class="text-lg font-semibold">Pending Invitations</h2>
+            <div class="divide-y divide-base-300">
+                {{range .}}
+                <div class="flex items-center justify-between py-3" id="invite-card-{{.Invitation.ID}}">
+                    <div class="min-w-0">
+                        <p class="font-medium text-sm">{{.Organization.Name}}</p>
+                        <p class="text-xs text-base-content/60 mt-0.5">
+                            Invited by {{.InviterName}} · Role: {{.Invitation.OrgRole}}
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <button class="btn btn-primary btn-sm"
+                                hx-post="/invitations/{{.Invitation.ID}}/accept"
+                                hx-target="#invite-card-{{.Invitation.ID}}"
+                                hx-swap="outerHTML">
+                            Accept
+                        </button>
+                        <button class="btn btn-ghost btn-sm"
+                                hx-post="/invitations/{{.Invitation.ID}}/decline"
+                                hx-target="#invite-card-{{.Invitation.ID}}"
+                                hx-swap="outerHTML"
+                                hx-confirm="Decline invitation to {{.Organization.Name}}?">
+                            Decline
+                        </button>
+                    </div>
                 </div>
-                <div class="flex items-center gap-sm">
-                    <button class="btn btn-primary btn-sm"
-                            hx-post="/invitations/{{.Invitation.ID}}/accept"
-                            hx-target="#invite-card-{{.Invitation.ID}}"
-                            hx-swap="outerHTML">
-                        Accept
-                    </button>
-                    <button class="btn btn-ghost btn-sm"
-                            hx-post="/invitations/{{.Invitation.ID}}/decline"
-                            hx-target="#invite-card-{{.Invitation.ID}}"
-                            hx-swap="outerHTML"
-                            hx-confirm="Decline invitation to {{.Organization.Name}}?">
-                        Decline
-                    </button>
-                </div>
+                {{end}}
             </div>
-            {{end}}
         </div>
     </div>
     {{end}}
     {{end}}
 
     {{if .Orgs}}
-    <div class="grid grid-3">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {{range .Orgs}}
-        <a href="/orgs/{{.Slug}}" class="card card-hover">
-            <h3>{{.Name}}</h3>
-            <p class="text-muted text-sm" style="margin-top:.25rem">Created {{formatDate .CreatedAt}}</p>
+        <a href="/orgs/{{.Slug}}"
+           class="card bg-base-100 border border-base-300 shadow-sm
+                  hover:shadow-md hover:border-primary/40 transition-all">
+            <div class="card-body p-5">
+                <h3 class="font-semibold text-base">{{.Name}}</h3>
+                <p class="text-xs text-base-content/60 mt-1">
+                    Created {{formatDate .CreatedAt}}
+                </p>
+            </div>
         </a>
         {{end}}
     </div>
     {{else}}
-    <div class="empty-state">
-        <p>Welcome to ForgeDesk</p>
-        <p class="empty-subtitle">Create an organization to get started</p>
+    <div class="flex flex-col items-center py-16 text-center gap-1">
+        <p class="text-base font-medium text-base-content/80">Welcome to ForgeDesk</p>
+        <p class="text-sm text-base-content/60">Create an organization to get started</p>
     </div>
     {{end}}
     {{end}}

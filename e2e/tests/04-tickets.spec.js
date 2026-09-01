@@ -1,5 +1,10 @@
+// Sessions come from global setup: the app allows exactly one registration
+// ever (first-user-only), and logging in per test would replay a TOTP code
+// inside its 30s step, which ValidateTOTPOnce rejects (#136).
+let rootCookies = [];
+
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, fullLogin } = require('./helpers');
+const { useSession, rootSession } = require('./helpers');
 
 const testUser = {
   name: 'Ticket Admin',
@@ -12,10 +17,11 @@ let projectId = '';
 test.describe('Tickets & Comments', () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
-    await registerUser(page, testUser);
-    await loginUser(page, testUser);
-    const result = await setup2FA(page);
-    totpSecret = result.secret;
+    // Shared root session: see the note at the top of this file (#136).
+
+    rootCookies = rootSession().cookies;
+
+    await useSession(page, rootCookies);
 
     // Create org and project
     await page.request.post('/orgs', { form: { name: 'Ticket Org' } });
@@ -33,9 +39,8 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('create feature ticket', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
 
     const response = await page.request.post('/tickets', {
       form: {
@@ -52,9 +57,8 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('create bug ticket', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
 
     const response = await page.request.post('/tickets', {
       form: {
@@ -71,9 +75,8 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('features page shows features', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
     await page.waitForLoadState('networkidle');
 
@@ -81,9 +84,8 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('bugs page shows bugs', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/bugs');
     await page.waitForLoadState('networkidle');
 
@@ -91,9 +93,8 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('ticket detail page renders', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
 
     // Click on the feature ticket link
@@ -108,9 +109,8 @@ test.describe('Tickets & Comments', () => {
   });
 
   test('post comment on ticket via HTMX', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
 
     const ticketLink = page.locator('a:has-text("E2E Epic Feature")');
@@ -131,10 +131,49 @@ test.describe('Tickets & Comments', () => {
     }
   });
 
-  test('update ticket status', async ({ page }) => {
-    test.skip(!projectId, 'Project ID not found');
+  // #95: the ticket page rendered stored comments with a hardcoded "User"
+  // byline while the HTMX partial for a just-posted comment showed the real
+  // name, so reloading renamed the author. Only a browser sees both states,
+  // which is why this assertion lives here and not in a handler test.
+  //
+  // Deliberately written without the `if (await ...isVisible())` guard used
+  // by the tests above: a guard like that turns a missing ticket into a
+  // silent pass, and this test exists to catch a rendering regression.
+  test('comment author name survives a reload', async ({ page }) => {
 
-    await fullLogin(page, { ...testUser, totpSecret });
+    await useSession(page, rootCookies);
+    await page.goto('/orgs/ticket-org/projects/ticket-project/features');
+
+    await page.click('a:has-text("E2E Epic Feature")');
+    await page.waitForLoadState('networkidle');
+
+    const body = 'Comment authored by a named user';
+    await page.fill('textarea[name="body"]', body);
+    await page.click('button:has-text("Comment")');
+    await page.waitForTimeout(1000);
+
+    // Scope to the comment under test rather than counting bylines on the
+    // page: every comment on this ticket now has the same author (one shared
+    // session), so a global count says nothing about THIS comment.
+    const authorName = rootSession().user.name;
+    const mine = page.locator('#comments .comment').filter({ hasText: body });
+
+    // Freshly posted, via the HTMX partial.
+    await expect(mine).toHaveCount(1);
+    await expect(mine.locator('.comment-author')).toHaveText(authorName);
+
+    // Same comment after a full server-side re-render. Before #95 this
+    // flipped to the generic "User".
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await expect(mine).toHaveCount(1);
+    await expect(mine.locator('.comment-author')).toHaveText(authorName);
+    await expect(page.locator('#comments .comment-author').filter({ hasText: /^User$/ })).toHaveCount(0);
+  });
+
+  test('update ticket status', async ({ page }) => {
+
+    await useSession(page, rootCookies);
     await page.goto('/orgs/ticket-org/projects/ticket-project/features');
 
     const ticketLink = page.locator('a:has-text("E2E Epic Feature")');

@@ -1,0 +1,156 @@
+/* tw-input.css — Tailwind v4 + DaisyUI v5 source, compiled by
+   scripts/css.sh into static/css/tw.css.
+
+   Currently scoped to the Feature Debate page as a migration spike.
+   Do not import this from any template other than pages/debate.html
+   until the full app migration (v0.3.0) lands. */
+
+@import "tailwindcss";
+
+/* Suppress Tailwind's content scan on our own tooling. The standalone
+   CLI autoscans the working directory for class names; without these
+   excludes it would also walk the compiled daisyui bundle. */
+@source not "../../bin";
+@source not "../../bin/*.mjs";
+
+/* DaisyUI via the bundled .mjs plugins — downloaded by scripts/css.sh
+   into bin/. Path is relative to this CSS file. */
+@plugin "../../bin/daisyui.mjs" {
+  /* Restrict themes to what we actually want to ship:
+       - "corporate" — neutral corporate blue, closest to Linear/Asana
+       - "business"  — darker variant, for dark-mode default
+     Users can flip the active theme via <html data-theme="..."> */
+  themes: corporate --default, business --prefersdark;
+}
+
+/* --- Custom design tokens ------------------------------------------------
+   DaisyUI's `corporate` theme is close to Linear/Notion but reads a
+   little more "banking". Gentle overrides to push it toward the
+   Vercel/Supabase neutral-grayscale look: tighter radii, softer borders. */
+@plugin "../../bin/daisyui-theme.mjs" {
+  name: "forgedesk";
+  default: true;
+  prefersdark: false;
+  color-scheme: light;
+
+  /* Neutral near-white base stack */
+  --color-base-100: oklch(99% 0 0);
+  --color-base-200: oklch(97% 0 0);
+  --color-base-300: oklch(94% 0 0);
+  --color-base-content: oklch(22% 0.02 265);
+
+  /* Primary: cool indigo, Linear/Notion adjacent */
+  --color-primary: oklch(52% 0.22 270);
+  --color-primary-content: oklch(98% 0 0);
+
+  --color-secondary: oklch(62% 0.18 210);
+  --color-secondary-content: oklch(98% 0 0);
+
+  --color-accent: oklch(65% 0.22 160);
+  --color-accent-content: oklch(22% 0.02 265);
+
+  --color-neutral: oklch(28% 0.02 265);
+  --color-neutral-content: oklch(98% 0 0);
+
+  --color-info:    oklch(70% 0.18 220);
+  --color-success: oklch(65% 0.20 150);
+  --color-warning: oklch(78% 0.22 80);
+  --color-error:   oklch(62% 0.25 30);
+  --color-info-content:    oklch(98% 0 0);
+  --color-success-content: oklch(98% 0 0);
+  --color-warning-content: oklch(22% 0.05 80);
+  --color-error-content:   oklch(98% 0 0);
+
+  /* Tighter radii for the Linear feel */
+  --radius-selector: 0.375rem;
+  --radius-field:    0.375rem;
+  --radius-box:      0.5rem;
+
+  --size-selector: 0.25rem;
+  --size-field:    0.25rem;
+
+  --border: 1px;
+  --depth:  1;
+  --noise:  0;
+}
+
+/* --- Gantt chart ----------------------------------------------------------
+   Ported verbatim from the pre-migration app.css when it was deleted in
+   PR-6. static/js/app/gantt.js injects raw HTML with these class names at
+   runtime — rewriting it to use Tailwind utilities would be a separate
+   JS refactor. The block depends on legacy CSS variables (--gray-*,
+   --brand-*, --radius-lg) which are redefined at the top of this block
+   so the chart stays self-contained.
+
+   If you adjust the forgedesk theme colors, also verify the Gantt still
+   reads correctly — its today-line / today-cell use the brand accent. */
+:root {
+  --gantt-gray-50:  #f9fafb;
+  --gantt-gray-100: #f3f4f6;
+  --gantt-gray-200: #e5e7eb;
+  --gantt-gray-300: #d1d5db;
+  --gantt-gray-400: #9ca3af;
+  --gantt-gray-500: #6b7280;
+  --gantt-gray-600: #4b5563;
+  --gantt-gray-700: #374151;
+  --gantt-brand-500: #6366f1;
+  --gantt-brand-600: #4f46e5;
+  --gantt-radius-lg: 12px;
+}
+
+.gantt-container { border: 1px solid var(--gantt-gray-200); border-radius: var(--gantt-radius-lg); overflow: hidden; background: #fff; }
+.gantt-wrapper { display: flex; height: 500px; }
+
+.gantt-left { flex-shrink: 0; border-right: 1px solid var(--gantt-gray-200); background: var(--gantt-gray-50); overflow: hidden; }
+.gantt-left-header { display: flex; align-items: flex-end; padding: 0 .75rem .375rem; font-size: 0.75rem; font-weight: 600; color: var(--gantt-gray-500); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--gantt-gray-200); background: var(--gantt-gray-50); }
+.gantt-left-body { overflow: hidden; }
+.gantt-left-row { display: flex; align-items: center; gap: .375rem; padding: 0 .75rem; border-bottom: 1px solid var(--gantt-gray-100); font-size: 0.875rem; color: var(--gantt-gray-700); }
+.gantt-left-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.gantt-type-icon { font-size: .625rem; flex-shrink: 0; width: 1rem; text-align: center; }
+
+.gantt-right { flex: 1; overflow: auto; position: relative; }
+.gantt-right-inner { position: relative; }
+
+.gantt-header { position: sticky; top: 0; z-index: 3; background: var(--gantt-gray-50); border-bottom: 1px solid var(--gantt-gray-200); }
+.gantt-month-row { position: relative; height: 22px; }
+.gantt-month-span { position: absolute; top: 0; height: 22px; display: flex; align-items: center; padding-left: .5rem; font-size: 0.75rem; font-weight: 600; color: var(--gantt-gray-600); border-left: 1px solid var(--gantt-gray-200); white-space: nowrap; overflow: hidden; }
+.gantt-day-row { position: relative; height: 26px; }
+.gantt-day-cell { position: absolute; top: 0; height: 26px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--gantt-gray-400); border-left: 1px solid var(--gantt-gray-100); }
+.gantt-day-cell.gantt-weekend { color: var(--gantt-gray-300); background: rgba(0,0,0,.02); }
+.gantt-day-cell.gantt-today-cell { font-weight: 700; color: var(--gantt-brand-600); background: rgba(99,102,241,.08); }
+
+.gantt-body { position: relative; }
+.gantt-row-bg { position: absolute; left: 0; border-bottom: 1px solid var(--gantt-gray-100); }
+.gantt-row-alt { background: rgba(0,0,0,.015); }
+
+.gantt-weekend-col { position: absolute; top: 0; background: rgba(0,0,0,.025); pointer-events: none; }
+
+.gantt-today-line { position: absolute; top: 0; width: 2px; background: var(--gantt-brand-500); z-index: 2; opacity: .6; }
+
+.gantt-bar { position: absolute; border-radius: 4px; z-index: 1; display: flex; align-items: center; overflow: hidden; transition: opacity .15s; box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+.gantt-bar:hover { opacity: .85; box-shadow: 0 2px 6px rgba(0,0,0,.18); }
+.gantt-bar-feature { border-radius: 6px; }
+.gantt-bar-label { padding: 0 .5rem; font-size: 10px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Alpine x-cloak: hide pre-init content (seed form, changes pane) */
+[x-cloak] { display: none !important; }
+
+/* Debate inline diff (diff.RenderInlineHTML output). pre-wrap is what
+   keeps markdown line structure — the renderer emits raw \n, never <br>. */
+.diff-inline {
+  white-space: pre-wrap;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.diff-inline ins.diff-ins {
+  text-decoration: none;
+  border-radius: 0.25rem;
+  padding: 0 0.125rem;
+  background: color-mix(in oklab, var(--color-success) 25%, transparent);
+}
+/* browser-default line-through kept deliberately — matches the approved design mockup */
+.diff-inline del.diff-del {
+  border-radius: 0.25rem;
+  padding: 0 0.125rem;
+  background: color-mix(in oklab, var(--color-error) 18%, transparent);
+}

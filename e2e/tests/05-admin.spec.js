@@ -1,88 +1,68 @@
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, fullLogin } = require('./helpers');
-const { getState } = require('./auth-state');
+const { useSession, rootSession, inviteAndRegisterUser } = require('./helpers');
 
-test.describe('Admin Panel', () => {
-  // The superadmin is the first registered user (created in 01-auth tests).
-  // We retrieve their credentials from shared state.
-  let superAdmin;
-  let clientUser;
-  let clientTotpSecret = '';
+// Rewritten for #136. Previously this spec read the superadmin's credentials
+// out of a JSON file written by 01-auth (tests/auth-state.js), which made it
+// silently order-dependent, and skipped itself whenever that file was missing —
+// which was always, because 01-auth could not run either.
+//
+// It now uses the shared root session (the first registered user, therefore
+// superadmin) and creates a genuine non-superadmin through the invitation
+// flow, which assigns RoleClient.
+let rootCookies = [];
+let clientCookies = [];
 
+const ORG = { name: 'Admin Org', slug: 'admin-org' };
+const CLIENT_USER = {
+  name: 'Admin Spec Client',
+  email: 'e2e-admin-client@forgedesk.test',
+  password: 'E2ETestPassword123!',
+};
+
+test.describe.serial('Admin Panel', () => {
   test.beforeAll(async ({ browser }) => {
-    superAdmin = getState('superadmin');
-    if (!superAdmin) {
-      test.skip(true, 'Superadmin state not available (01-auth must run first)');
-    }
-
-    // Register a client user for the forbidden test
-    clientUser = {
-      name: 'Client User',
-      email: 'e2e-client@forgedesk.test',
-      password: 'E2ETestPassword123!',
-    };
+    rootCookies = rootSession().cookies;
 
     const page = await browser.newPage();
-    await registerUser(page, clientUser);
-    await loginUser(page, clientUser);
-    const result = await setup2FA(page);
-    clientTotpSecret = result.secret;
+    await useSession(page, rootCookies);
+
+    // An org to invite into. Created here rather than assumed, so this spec
+    // does not depend on any other having run.
+    await page.request.post('/orgs', { form: { name: ORG.name } });
+
+    const client = await inviteAndRegisterUser(page, {
+      orgSlug: ORG.slug,
+      email: CLIENT_USER.email,
+      name: CLIENT_USER.name,
+      password: CLIENT_USER.password,
+      role: 'member',
+    });
+    clientCookies = client.cookies;
+
     await page.close();
   });
 
   test('admin page is accessible by superadmin', async ({ page }) => {
-    test.skip(!superAdmin, 'Superadmin state not available');
-
-    await fullLogin(page, {
-      email: superAdmin.email,
-      password: superAdmin.password,
-      totpSecret: superAdmin.totpSecret,
-    });
+    await useSession(page, rootCookies);
     await page.goto('/admin');
     await page.waitForLoadState('networkidle');
 
     await expect(page.locator('body')).toContainText('Admin Panel');
   });
 
-  test('admin page shows users table', async ({ page }) => {
-    test.skip(!superAdmin, 'Superadmin state not available');
-
-    await fullLogin(page, {
-      email: superAdmin.email,
-      password: superAdmin.password,
-      totpSecret: superAdmin.totpSecret,
-    });
+  test('admin page lists the signed-in superadmin', async ({ page }) => {
+    await useSession(page, rootCookies);
     await page.goto('/admin');
     await page.waitForLoadState('networkidle');
 
-    // Should have a users tab/section
-    await expect(page.locator('body')).toContainText('Users');
-
-    // Should list the superadmin user
-    await expect(page.locator('body')).toContainText(superAdmin.email);
+    await expect(page.locator('body')).toContainText(rootSession().user.email);
   });
 
-  test('admin page shows organizations tab', async ({ page }) => {
-    test.skip(!superAdmin, 'Superadmin state not available');
-
-    await fullLogin(page, {
-      email: superAdmin.email,
-      password: superAdmin.password,
-      totpSecret: superAdmin.totpSecret,
-    });
-    await page.goto('/admin');
-
-    // Click Orgs tab
-    const orgsTab = page.locator('button:has-text("Organizations")');
-    if (await orgsTab.isVisible()) {
-      await orgsTab.click();
-      await page.waitForTimeout(500);
-      await expect(page.locator('body')).toContainText('Organizations');
-    }
-  });
-
-  test('admin page is forbidden for non-superadmin', async ({ page }) => {
-    await fullLogin(page, { ...clientUser, totpSecret: clientTotpSecret });
+  test('admin page is forbidden for a non-superadmin', async ({ page }) => {
+    // The whole point of this test is that the caller is NOT a superadmin.
+    // An invited user gets RoleClient (internal/handlers/invitations.go), so
+    // this must be the client session and never the root one.
+    await useSession(page, clientCookies);
     const response = await page.request.get('/admin');
     expect(response.status()).toBe(403);
   });

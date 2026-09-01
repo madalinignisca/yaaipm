@@ -13,9 +13,9 @@ import (
 // Manifest maps logical asset paths (e.g. "css/app.css") to content-hashed
 // filenames (e.g. "css/app.a1b2c3d4e5f6.css") for cache busting.
 type Manifest struct {
+	hashes  map[string]string
+	reverse map[string]string
 	dir     string
-	hashes  map[string]string // logical → hashed ("css/app.css" → "css/app.a1b2c3d4e5f6.css")
-	reverse map[string]string // hashed → logical (for serving)
 }
 
 // NewManifest walks dir, computes SHA-256 content hashes, and builds the mapping.
@@ -82,10 +82,10 @@ func (m *Manifest) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		urlPath := r.URL.Path
 
-		if real, ok := m.reverse[urlPath]; ok {
+		if realPath, ok := m.reverse[urlPath]; ok {
 			// Hashed URL → serve real file with immutable cache.
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			http.ServeFile(w, r, filepath.Join(m.dir, filepath.FromSlash(real)))
+			http.ServeFile(w, r, filepath.Join(m.dir, filepath.FromSlash(realPath)))
 			return
 		}
 

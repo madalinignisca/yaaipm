@@ -1,10 +1,10 @@
-<div class="card card-compact card-hover">
-    <a href="/tickets/{{.ID}}">
-        <div class="ticket-row">
-            <span class="ticket-row-title">{{.Title}}</span>
-            <div class="ticket-row-badges">
-                <span class="badge badge-{{statusColor .Status}}">{{.Status}}</span>
-            </div>
+<a href="/tickets/{{.ID}}"
+   class="card bg-base-100 border border-base-300 shadow-sm
+          hover:shadow-md hover:border-primary/40 transition-all">
+    <div class="card-body p-4 flex-row items-center justify-between gap-3">
+        <span class="font-medium text-sm truncate">{{.Title}}</span>
+        <div class="flex items-center gap-1.5 shrink-0">
+            <span class="badge badge-sm {{statusBadgeClass .Status}}">{{.Status}}</span>
         </div>
-    </a>
-</div>
+    </div>
+</a>

@@ -25,10 +25,10 @@ type ToolExecutor interface {
 
 // UsageData holds token usage information from a chat response.
 type UsageData struct {
+	Model          string
 	InputTokens    int32
 	OutputTokens   int32
-	Model          string
-	HasImageOutput bool // true when response contains generated images
+	HasImageOutput bool
 }
 
 // Thinking level constants for callers that don't import genai directly.
@@ -39,10 +39,10 @@ const (
 
 // ChatOpts configures a streaming chat request.
 type ChatOpts struct {
-	SystemPrompt  string
-	History       []*genai.Content
 	Executor      ToolExecutor
-	ThinkingLevel genai.ThinkingLevel // defaults to LOW if empty
+	SystemPrompt  string
+	ThinkingLevel genai.ThinkingLevel
+	History       []*genai.Content
 }
 
 // GeminiClient wraps the Gemini API client.
@@ -65,6 +65,16 @@ func NewGeminiClient(ctx context.Context, apiKey string, models GeminiModels) (*
 	}, nil
 }
 
+// ticketStatusEnum lists the status values declared in the DB CHECK
+// constraint on tickets.status (migrations/000006_create_tickets.up.sql).
+// Centralized here so drift between the three tool declarations
+// below cannot reintroduce the cancelled/canceled bug (#35). The
+// British "cancelled" spelling is intentional — see .golangci.yml.
+var ticketStatusEnum = []string{
+	"backlog", "ready", "planning", "plan_review",
+	"implementing", "testing", "review", "done", "cancelled",
+}
+
 // toolDeclarations returns the function declarations available to the assistant.
 func toolDeclarations() []*genai.FunctionDeclaration {
 	return []*genai.FunctionDeclaration{
@@ -76,7 +86,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 				Properties: map[string]*genai.Schema{
 					"query":  {Type: genai.TypeString, Description: "Search query to match against ticket titles and descriptions"},
 					"type":   {Type: genai.TypeString, Description: "Filter by ticket type", Enum: []string{"feature", "task", "subtask", "bug"}},
-					"status": {Type: genai.TypeString, Description: "Filter by ticket status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
+					"status": {Type: genai.TypeString, Description: "Filter by ticket status", Enum: ticketStatusEnum},
 				},
 				Required: []string{"query"},
 			},
@@ -107,7 +117,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 					"date_start":  {Type: genai.TypeString, Description: "Start date in YYYY-MM-DD format (e.g. 2026-03-15). Used for timeline/Gantt view."},
 					"date_end":    {Type: genai.TypeString, Description: "End date in YYYY-MM-DD format (e.g. 2026-03-20). Used for timeline/Gantt view."},
 				},
-				Required: []string{"project_id", "type", "priority"},
+				Required: []string{"project_id", "title", "type", "priority"},
 			},
 		},
 		{
@@ -117,7 +127,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"ticket_id":  {Type: genai.TypeString, Description: "UUID of the ticket"},
-					"new_status": {Type: genai.TypeString, Description: "New status", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
+					"new_status": {Type: genai.TypeString, Description: "New status", Enum: ticketStatusEnum},
 				},
 				Required: []string{"ticket_id", "new_status"},
 			},
@@ -136,7 +146,7 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 		},
 		{
 			Name:        "update_ticket",
-			Description: "Update fields on an existing ticket (title, description, priority, dates, status). Use when the user asks to edit or modify a ticket's details. Only provided fields will be updated.",
+			Description: "Update fields on an existing ticket (title, description, priority, dates). Use when the user asks to edit or modify a ticket's details. Only provided fields will be updated. To change a ticket's status, use update_ticket_status instead.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
@@ -144,7 +154,6 @@ func toolDeclarations() []*genai.FunctionDeclaration {
 					"title":       {Type: genai.TypeString, Description: "New title (optional)"},
 					"description": {Type: genai.TypeString, Description: "New description in markdown (optional)"},
 					"priority":    {Type: genai.TypeString, Description: "New priority (optional)", Enum: []string{"low", "medium", "high", "critical"}},
-					"status":      {Type: genai.TypeString, Description: "New status (optional)", Enum: []string{"backlog", "ready", "planning", "plan_review", "implementing", "testing", "review", "done", "cancelled"}},
 					"date_start":  {Type: genai.TypeString, Description: "Start date in YYYY-MM-DD format (optional)"},
 					"date_end":    {Type: genai.TypeString, Description: "End date in YYYY-MM-DD format (optional)"},
 				},
@@ -286,8 +295,8 @@ func (g *GeminiClient) StreamChat(ctx context.Context, opts ChatOpts, onChunk fu
 
 	// We manage the content array ourselves so that function call/response
 	// turns are always preserved, regardless of how the SDK validates chunks.
-	contents := make([]*genai.Content, len(opts.History))
-	copy(contents, opts.History)
+	contents := make([]*genai.Content, 0, len(opts.History)+1)
+	contents = append(contents, opts.History...)
 
 	var lastUsage *UsageData
 	for {
@@ -367,7 +376,7 @@ func (g *GeminiClient) StreamChat(ctx context.Context, opts ChatOpts, onChunk fu
 
 // GenerateImage generates an image from a text prompt using the image model.
 // Returns the image bytes, MIME type, and usage data.
-func (g *GeminiClient) GenerateImage(ctx context.Context, prompt string) ([]byte, string, *UsageData, error) {
+func (g *GeminiClient) GenerateImage(ctx context.Context, prompt string) (imgBytes []byte, mimeType string, usage *UsageData, err error) {
 	config := &genai.GenerateContentConfig{
 		ResponseModalities: []string{"TEXT", "IMAGE"},
 	}
@@ -378,7 +387,6 @@ func (g *GeminiClient) GenerateImage(ctx context.Context, prompt string) ([]byte
 		return nil, "", nil, fmt.Errorf("generating image: %w", err)
 	}
 
-	var usage *UsageData
 	if result != nil && result.UsageMetadata != nil {
 		usage = &UsageData{
 			InputTokens:    result.UsageMetadata.PromptTokenCount,

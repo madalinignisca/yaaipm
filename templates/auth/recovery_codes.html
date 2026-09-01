@@ -1,15 +1,19 @@
 {{define "content"}}
-<div class="container-narrow">
-    <h1 class="mb-sm">Save Your Recovery Codes</h1>
-    <div class="flash flash-warning mb-lg">
-        These codes are shown only once. Save them somewhere safe. Each code can only be used once.
+<div class="flex flex-col gap-4">
+    <h1 class="text-2xl font-semibold tracking-tight">Save Your Recovery Codes</h1>
+    <div class="alert alert-warning">
+        <span class="text-sm">
+            These codes are shown only once. Save them somewhere safe. Each code can only be used once.
+        </span>
     </div>
 
-    <div class="card mb-lg">
-        <div class="recovery-grid">
-            {{range .Data}}
-            <code class="recovery-code">{{.}}</code>
-            {{end}}
+    <div class="card bg-base-200 border border-base-300">
+        <div class="card-body p-4">
+            <div class="grid grid-cols-2 gap-2">
+                {{range .Data}}
+                <code class="recovery-code font-mono text-xs px-3 py-2 bg-base-100 border border-base-300 rounded text-center select-all">{{.}}</code>
+                {{end}}
+            </div>
         </div>
     </div>
 

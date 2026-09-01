@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -95,6 +96,11 @@ func (h *AssistantHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 
 	// Verify user has access to the project
 	if err := h.checkProjectAccess(r.Context(), user, projectID); err != nil {
+		if !errors.Is(err, errCrossTenant) {
+			log.Printf("assistant project authz for user %s project %s: %v", user.ID, projectID, err)
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -105,14 +111,14 @@ func (h *AssistantHandler) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	client := ws.NewClient(h.hub, conn, projectID, user.ID, user.Name, user, func(c *ws.Client, data []byte) {
+	client := ws.NewClient(h.hub, conn, projectID, user.ID, user.Name, user, func(c *ws.Client, data []byte) { //nolint:contextcheck // websocket callback
 		h.handleClientMessage(c, data)
 	})
 
 	h.hub.Register(client)
 
 	// Send conversation info and history
-	h.sendInitialState(client, projectID)
+	h.sendInitialState(client, projectID) //nolint:contextcheck // websocket goroutine
 
 	go client.WritePump()
 	go client.ReadPump()
@@ -131,7 +137,7 @@ func (h *AssistantHandler) sendInitialState(client *ws.Client, projectID string)
 	}
 
 	// Send conversation ID
-	convInfo, _ := json.Marshal(wsMessage{
+	convInfo, _ := json.Marshal(wsMessage{ //nolint:errchkjson // marshal cannot fail
 		Type: "conv_info",
 		Data: mustJSON(map[string]string{"conversation_id": conv.ID}),
 	})
@@ -160,7 +166,7 @@ func (h *AssistantHandler) sendInitialState(client *ws.Client, projectID string)
 		history = []historyMessage{}
 	}
 
-	historyMsg, _ := json.Marshal(wsMessage{
+	historyMsg, _ := json.Marshal(wsMessage{ //nolint:errchkjson // marshal cannot fail
 		Type: "history",
 		Data: mustJSON(history),
 	})
@@ -175,8 +181,7 @@ func (h *AssistantHandler) handleClientMessage(client *ws.Client, data []byte) {
 		return
 	}
 
-	switch msg.Type {
-	case "send_message":
+	if msg.Type == "send_message" {
 		var payload sendMessageData
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
 			return
@@ -203,7 +208,7 @@ func (h *AssistantHandler) handleSendMessage(client *ws.Client, content string) 
 	}
 
 	// Save user message with attribution
-	msg, err := h.db.CreateAIMessageWithUser(ctx, conv.ID, "user", content, &client.UserID, client.UserName)
+	msg, err := h.db.CreateAIMessageWithUser(ctx, conv.ID, roleUser, content, &client.UserID, client.UserName)
 	if err != nil {
 		log.Printf("ws: save message error: %v", err)
 		h.sendError(client, "Failed to save message")
@@ -211,10 +216,10 @@ func (h *AssistantHandler) handleSendMessage(client *ws.Client, content string) 
 	}
 
 	// Touch conversation
-	h.db.TouchAIConversation(ctx, conv.ID)
+	_ = h.db.TouchAIConversation(ctx, conv.ID)
 
 	// Broadcast user message to all clients in the room
-	userMsg, _ := json.Marshal(wsMessage{
+	userMsg, _ := json.Marshal(wsMessage{ //nolint:errchkjson // marshal cannot fail
 		Type: "user_message",
 		Data: mustJSON(userMessageData{
 			ID:        msg.ID,
@@ -241,7 +246,7 @@ func (h *AssistantHandler) streamAIResponse(client *ws.Client, conv *models.AICo
 	ctx := context.Background()
 
 	// Broadcast typing indicator
-	typing, _ := json.Marshal(wsMessage{Type: "ai_typing"})
+	typing, _ := json.Marshal(wsMessage{Type: "ai_typing"}) //nolint:errchkjson // marshal cannot fail
 	h.hub.BroadcastAll(client.ProjectID, typing)
 
 	// Build system prompt with multi-user context
@@ -258,12 +263,12 @@ func (h *AssistantHandler) streamAIResponse(client *ws.Client, conv *models.AICo
 	// Convert to genai content, prefixing user messages with sender name
 	var history []*genai.Content
 	for _, m := range msgs {
-		role := "user"
+		role := roleUser
 		if m.Role == "assistant" {
 			role = "model"
 		}
 		messageContent := m.Content
-		if m.Role == "user" && m.UserName != "" {
+		if m.Role == roleUser && m.UserName != "" {
 			messageContent = fmt.Sprintf("[%s]: %s", m.UserName, m.Content)
 		}
 		history = append(history, &genai.Content{
@@ -303,7 +308,7 @@ func (h *AssistantHandler) streamAIResponse(client *ws.Client, conv *models.AICo
 
 	// Save assistant response
 	if fullResponse.Len() > 0 {
-		h.db.CreateAIMessage(ctx, conv.ID, "assistant", fullResponse.String())
+		_, _ = h.db.CreateAIMessage(ctx, conv.ID, "assistant", fullResponse.String())
 	}
 
 	// Record AI usage
@@ -316,9 +321,9 @@ func (h *AssistantHandler) streamAIResponse(client *ws.Client, conv *models.AICo
 		// Get the first user message for title generation
 		if len(msgs) > 0 {
 			for _, m := range msgs {
-				if m.Role == "user" {
+				if m.Role == roleUser {
 					title := generateTitle(m.Content)
-					h.db.UpdateAIConversationTitle(ctx, conv.ID, title)
+					_ = h.db.UpdateAIConversationTitle(ctx, conv.ID, title)
 					break
 				}
 			}
@@ -326,7 +331,7 @@ func (h *AssistantHandler) streamAIResponse(client *ws.Client, conv *models.AICo
 	}
 
 	// Broadcast done
-	done, _ := json.Marshal(wsMessage{
+	done, _ := json.Marshal(wsMessage{ //nolint:errchkjson // marshal cannot fail
 		Type: "ai_done",
 		Data: mustJSON(map[string]bool{"reload": executor.briefUpdated}),
 	})
@@ -336,7 +341,7 @@ func (h *AssistantHandler) streamAIResponse(client *ws.Client, conv *models.AICo
 // ── Helper Methods ───────────────────────────────────────────
 
 func (h *AssistantHandler) sendError(client *ws.Client, msg string) {
-	data, _ := json.Marshal(wsMessage{
+	data, _ := json.Marshal(wsMessage{ //nolint:errchkjson // marshal cannot fail
 		Type: "ai_error",
 		Data: mustJSON(map[string]string{"error": msg}),
 	})
@@ -344,7 +349,7 @@ func (h *AssistantHandler) sendError(client *ws.Client, msg string) {
 }
 
 func (h *AssistantHandler) broadcastAIError(projectID, msg string) {
-	data, _ := json.Marshal(wsMessage{
+	data, _ := json.Marshal(wsMessage{ //nolint:errchkjson // marshal cannot fail
 		Type: "ai_error",
 		Data: mustJSON(map[string]string{"error": msg}),
 	})
@@ -352,24 +357,19 @@ func (h *AssistantHandler) broadcastAIError(projectID, msg string) {
 }
 
 func mustJSON(v any) json.RawMessage {
-	data, _ := json.Marshal(v)
+	data, _ := json.Marshal(v) //nolint:errchkjson // marshal cannot fail
 	return data
 }
 
 // checkProjectAccess verifies the user has access to a project.
 func (h *AssistantHandler) checkProjectAccess(ctx context.Context, user *models.User, projectID string) error {
-	if user.Role == "superadmin" || user.Role == "staff" {
+	if user.Role == roleSuperadmin || user.Role == roleStaff {
 		return nil
 	}
-	proj, err := h.db.GetProjectByID(ctx, projectID)
-	if err != nil {
-		return fmt.Errorf("project not found")
-	}
-	_, err = h.db.GetOrgMembership(ctx, user.ID, proj.OrgID)
-	if err != nil {
-		return fmt.Errorf("no access to project")
-	}
-	return nil
+	// Delegates to the shared gate so a database fault propagates as
+	// itself instead of being flattened into "no access" and rendered as
+	// 403 Forbidden (#128). errCrossTenant still means a genuine denial.
+	return authorizeProjectAccess(ctx, h.db, user, projectID)
 }
 
 // DeleteConversation deletes a conversation (staff/superadmin only).
@@ -395,6 +395,8 @@ func (h *AssistantHandler) DeleteConversation(w http.ResponseWriter, r *http.Req
 }
 
 // buildSystemPrompt creates a context-aware system prompt.
+//
+//nolint:nestif // system prompt builder requires sequential checks
 func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.User, conv *models.AIConversation) string {
 	var sb strings.Builder
 	sb.WriteString("You are Simona, the ForgeDesk AI assistant for project management. ")
@@ -405,23 +407,23 @@ func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.U
 	sb.WriteString("User messages are prefixed with [Name] to identify who is speaking. ")
 	sb.WriteString("Address users by name when appropriate.\n\n")
 
-	sb.WriteString(fmt.Sprintf("Current user: %s (role: %s)\n", sanitizeForPrompt(user.Name, 100), user.Role))
+	fmt.Fprintf(&sb, "Current user: %s (role: %s)\n", sanitizeForPrompt(user.Name, 100), user.Role)
 
 	if conv.ProjectID != nil {
 		proj, err := h.db.GetProjectByID(ctx, *conv.ProjectID)
 		if err == nil {
 			org, orgErr := h.db.GetOrgByID(ctx, proj.OrgID)
 			if orgErr == nil {
-				sb.WriteString(fmt.Sprintf("\nCurrent organization: %s\n", org.Name))
+				fmt.Fprintf(&sb, "\nCurrent organization: %s\n", org.Name)
 			}
-			sb.WriteString(fmt.Sprintf("Current project: %s (ID: %s)\n", sanitizeForPrompt(proj.Name, 200), proj.ID))
+			fmt.Fprintf(&sb, "Current project: %s (ID: %s)\n", sanitizeForPrompt(proj.Name, 200), proj.ID)
 			sb.WriteString("You are scoped to this project. Use this project's ID for all tool calls.\n")
 			if proj.BriefMarkdown != "" {
 				brief := proj.BriefMarkdown
 				if len(brief) > 2000 {
 					brief = brief[:2000] + "...(truncated)"
 				}
-				sb.WriteString(fmt.Sprintf("\nCurrent project brief:\n%s\n", brief))
+				fmt.Fprintf(&sb, "\nCurrent project brief:\n%s\n", brief)
 			} else {
 				sb.WriteString("\nThis project has no brief yet. You can create one with update_project_brief.\n")
 			}
@@ -445,7 +447,7 @@ func (h *AssistantHandler) buildSystemPrompt(ctx context.Context, user *models.U
 	sb.WriteString("- Title is optional when creating tickets — if omitted, it's auto-generated from the description\n")
 	sb.WriteString("- Use the current project ID when creating tickets or searching\n")
 	sb.WriteString("- Use update_project_brief to write or update the project brief. Write well-structured markdown with headings, lists, and sections\n")
-	sb.WriteString("- Use update_ticket to modify any ticket field: title, description, priority, status, dates\n")
+	sb.WriteString("- Use update_ticket to modify a ticket's title, description, priority, or dates. For status changes, use update_ticket_status (which also records activity).\n")
 	sb.WriteString("- Set date_start and date_end (YYYY-MM-DD) on tickets for timeline/Gantt planning\n")
 	sb.WriteString("- Child ticket dates auto-expand the parent's date range, so set dates on children and parents will adjust automatically\n")
 	sb.WriteString("- Confirm destructive actions (archive, delete) with the user before executing\n")
@@ -505,6 +507,11 @@ func generateTitle(firstMessage string) string {
 }
 
 // ── Tool Executor ────────────────────────────────────────────
+
+const (
+	roleUser       = "user"
+	roleSuperadmin = "superadmin"
+)
 
 type toolExecutor struct {
 	db           *models.DB
@@ -569,7 +576,7 @@ func (e *toolExecutor) searchTickets(ctx context.Context, args map[string]any) (
 	}
 
 	if err := e.checkProjectAccess(ctx, projectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	var ticketType, status *string
@@ -635,12 +642,12 @@ func (e *toolExecutor) getProjectBrief(ctx context.Context, args map[string]any)
 	}
 
 	if err := e.checkProjectAccess(ctx, projectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	proj, err := e.db.GetProjectByID(ctx, projectID)
 	if err != nil {
-		return map[string]any{"error": "project not found"}, nil
+		return map[string]any{"error": "project not found"}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	return map[string]any{
@@ -662,7 +669,7 @@ func (e *toolExecutor) createTicket(ctx context.Context, args map[string]any) (m
 	}
 
 	if err := e.checkProjectAccess(ctx, projectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	title, _ := args["title"].(string)
@@ -685,6 +692,19 @@ func (e *toolExecutor) createTicket(ctx context.Context, args map[string]any) (m
 
 	if (ticketType == "task" || ticketType == "subtask") && parentID == "" {
 		return map[string]any{"error": ticketType + "s require a parent_id (use search_tickets to find the parent epic/task first)"}, nil
+	}
+
+	if parentID != "" {
+		parent, parentErr := e.db.GetTicket(ctx, parentID)
+		switch {
+		case isRowMiss(parentErr):
+			return map[string]any{"error": "parent ticket not found"}, nil
+		case parentErr != nil:
+			return nil, fmt.Errorf("looking up parent ticket: %w", parentErr)
+		case parent.ProjectID != projectID:
+			// Same opaque message as not-found to avoid cross-tenant existence leaks.
+			return map[string]any{"error": "parent ticket not found"}, nil
+		}
 	}
 
 	ticket := &models.Ticket{
@@ -748,11 +768,11 @@ func (e *toolExecutor) updateTicketStatus(ctx context.Context, args map[string]a
 
 	ticket, err := e.db.GetTicket(ctx, ticketID)
 	if err != nil {
-		return map[string]any{"error": "ticket not found"}, nil
+		return map[string]any{"error": "ticket not found"}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	if err := e.checkProjectAccess(ctx, ticket.ProjectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	oldStatus := ticket.Status
@@ -760,8 +780,8 @@ func (e *toolExecutor) updateTicketStatus(ctx context.Context, args map[string]a
 		return nil, fmt.Errorf("updating status: %w", err)
 	}
 
-	details, _ := json.Marshal(map[string]string{"new_status": newStatus})
-	e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "status_change", string(details))
+	details, _ := json.Marshal(map[string]string{"new_status": newStatus}) //nolint:errchkjson // simple map marshal cannot fail
+	_ = e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "status_change", string(details))
 
 	return map[string]any{
 		"ticket_id":  ticketID,
@@ -779,11 +799,11 @@ func (e *toolExecutor) updateTicket(ctx context.Context, args map[string]any) (m
 
 	ticket, err := e.db.GetTicket(ctx, ticketID)
 	if err != nil {
-		return map[string]any{"error": "ticket not found"}, nil
+		return map[string]any{"error": "ticket not found"}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	if err := e.checkProjectAccess(ctx, ticket.ProjectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	var changes []string
@@ -799,10 +819,10 @@ func (e *toolExecutor) updateTicket(ctx context.Context, args map[string]any) (m
 		ticket.Priority = pri
 		changes = append(changes, "priority")
 	}
-	if status, ok := args["status"].(string); ok && status != "" {
-		ticket.Status = status
-		changes = append(changes, "status")
-	}
+	// Status is intentionally not handled here: the corresponding
+	// "status" field was removed from the update_ticket tool schema
+	// because db.UpdateTicket never writes the status column.
+	// Callers should use the update_ticket_status tool. (#35 review)
 	if ds, ok := args["date_start"].(string); ok && ds != "" {
 		if t, err := time.Parse("2006-01-02", ds); err == nil {
 			ticket.DateStart = &t
@@ -821,16 +841,18 @@ func (e *toolExecutor) updateTicket(ctx context.Context, args map[string]any) (m
 	}
 
 	if err := e.db.UpdateTicket(ctx, ticket); err != nil {
-		return nil, fmt.Errorf("updating ticket: %w", err)
-	}
-
-	// Log activity for status changes
-	for _, c := range changes {
-		if c == "status" {
-			details, _ := json.Marshal(map[string]string{"new_status": ticket.Status})
-			e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "status_change", string(details))
-			break
+		// Surface the debate-mode lockout back to the LLM as a tool
+		// error rather than an infra failure. The chat assistant's
+		// tool-execution path will include this in the model's next
+		// turn context so it can explain the refusal to the user
+		// rather than retrying blindly.
+		if errors.Is(err, models.ErrDescriptionLocked) {
+			return map[string]any{
+				"error":   "description_locked",
+				"message": "The ticket description is locked because a debate is currently active on this feature. Ask the user to finish or abandon the debate, then retry.",
+			}, nil
 		}
+		return nil, fmt.Errorf("updating ticket: %w", err)
 	}
 
 	// Auto-expand parent dates if dates changed
@@ -857,11 +879,11 @@ func (e *toolExecutor) postComment(ctx context.Context, args map[string]any) (ma
 
 	ticket, err := e.db.GetTicket(ctx, ticketID)
 	if err != nil {
-		return map[string]any{"error": "ticket not found"}, nil
+		return map[string]any{"error": "ticket not found"}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
-	if err := e.checkProjectAccess(ctx, ticket.ProjectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+	if errAccess := e.checkProjectAccess(ctx, ticket.ProjectID); errAccess != nil {
+		return map[string]any{"error": errAccess.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	comment, err := e.db.CreateComment(ctx, ticketID, &e.userID, nil, body)
@@ -869,7 +891,7 @@ func (e *toolExecutor) postComment(ctx context.Context, args map[string]any) (ma
 		return nil, fmt.Errorf("creating comment: %w", err)
 	}
 
-	e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "comment", "{}")
+	_ = e.db.CreateActivity(ctx, ticketID, &e.userID, nil, "comment", "{}")
 
 	return map[string]any{
 		"comment_id": comment.ID,
@@ -891,7 +913,7 @@ func (e *toolExecutor) updateProjectBrief(ctx context.Context, args map[string]a
 	}
 
 	if err := e.checkProjectAccess(ctx, projectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	briefMarkdown, _ := args["brief_markdown"].(string)
@@ -920,16 +942,24 @@ func (e *toolExecutor) updateProjectBrief(ctx context.Context, args map[string]a
 }
 
 func (e *toolExecutor) checkProjectAccess(ctx context.Context, projectID string) error {
-	if e.user.Role == "superadmin" || e.user.Role == "staff" {
+	if e.user.Role == roleSuperadmin || e.user.Role == roleStaff {
 		return nil
 	}
+	// Same gate as the handler path (#128): an infrastructure failure must
+	// not reach the model as "you don't have access", which would make the
+	// assistant confidently tell a user they lack permissions they have.
 	proj, err := e.db.GetProjectByID(ctx, projectID)
 	if err != nil {
-		return fmt.Errorf("project not found")
+		if isRowMiss(err) {
+			return errCrossTenant
+		}
+		return err
 	}
-	_, err = e.db.GetOrgMembership(ctx, e.userID, proj.OrgID)
-	if err != nil {
-		return fmt.Errorf("you don't have access to this project")
+	if _, memErr := e.db.GetOrgMembership(ctx, e.userID, proj.OrgID); memErr != nil {
+		if isRowMiss(memErr) {
+			return errCrossTenant
+		}
+		return memErr
 	}
 	return nil
 }
@@ -988,11 +1018,11 @@ func (e *toolExecutor) getTicket(ctx context.Context, args map[string]any) (map[
 
 	ticket, err := e.db.GetTicket(ctx, ticketID)
 	if err != nil {
-		return map[string]any{"error": "ticket not found"}, nil
+		return map[string]any{"error": "ticket not found"}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	if err := e.checkProjectAccess(ctx, ticket.ProjectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	result := map[string]any{
@@ -1062,10 +1092,10 @@ func (e *toolExecutor) listTickets(ctx context.Context, args map[string]any) (ma
 	if parentID != "" {
 		parent, err := e.db.GetTicket(ctx, parentID)
 		if err != nil {
-			return map[string]any{"error": "parent ticket not found"}, nil
+			return map[string]any{"error": "parent ticket not found"}, nil //nolint:nilerr // tool result returns error in response map
 		}
-		if err := e.checkProjectAccess(ctx, parent.ProjectID); err != nil {
-			return map[string]any{"error": err.Error()}, nil
+		if errAccess := e.checkProjectAccess(ctx, parent.ProjectID); errAccess != nil {
+			return map[string]any{"error": errAccess.Error()}, nil //nolint:nilerr // tool result returns error in response map
 		}
 		children, err := e.db.ListTicketsByParent(ctx, parentID)
 		if err != nil {
@@ -1088,7 +1118,7 @@ func (e *toolExecutor) listTickets(ctx context.Context, args map[string]any) (ma
 		return map[string]any{"error": "project_id or parent_id is required"}, nil
 	}
 	if err := e.checkProjectAccess(ctx, projectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	ticketType, _ := args["type"].(string)
@@ -1133,7 +1163,7 @@ func (e *toolExecutor) archiveTicket(ctx context.Context, args map[string]any) (
 
 	ticket, err := e.db.GetTicket(ctx, ticketID)
 	if err != nil {
-		return map[string]any{"error": "ticket not found"}, nil
+		return map[string]any{"error": "ticket not found"}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	if err := e.db.ArchiveTicket(ctx, ticketID); err != nil {
@@ -1183,7 +1213,7 @@ func (e *toolExecutor) deleteTicket(ctx context.Context, args map[string]any) (m
 
 	ticket, err := e.db.GetTicket(ctx, ticketID)
 	if err != nil {
-		return map[string]any{"error": "ticket not found"}, nil
+		return map[string]any{"error": "ticket not found"}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	log.Printf("Ticket %s (%s) permanently deleted by user %s (%s) via AI assistant", ticketID, ticket.Title, e.userID, e.user.Email)
@@ -1271,7 +1301,7 @@ func (e *toolExecutor) markBriefReviewed(ctx context.Context, args map[string]an
 	}
 
 	if err := e.checkProjectAccess(ctx, projectID); err != nil {
-		return map[string]any{"error": err.Error()}, nil
+		return map[string]any{"error": err.Error()}, nil //nolint:nilerr // tool result returns error in response map
 	}
 
 	if err := e.db.CreateBriefRevision(ctx, projectID, e.userID, "reviewed", ""); err != nil {

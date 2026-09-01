@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"math"
 	"net/http"
@@ -44,13 +45,13 @@ func parseMonth(r *http.Request) string {
 }
 
 // adjacentMonths returns prev and next YYYY-MM strings.
-func adjacentMonths(month string) (string, string) {
+func adjacentMonths(month string) (prev, next string) {
 	t, err := time.Parse("2006-01", month)
 	if err != nil {
 		t = time.Now()
 	}
-	prev := t.AddDate(0, -1, 0).Format("2006-01")
-	next := t.AddDate(0, 1, 0).Format("2006-01")
+	prev = t.AddDate(0, -1, 0).Format("2006-01")
+	next = t.AddDate(0, 1, 0).Format("2006-01")
 	return prev, next
 }
 
@@ -66,11 +67,15 @@ func (h *CostHandler) ProjectCosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		if _, err := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); err != nil {
-			h.engine.RenderError(w, http.StatusForbidden, "Access denied")
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, org.ID); authErr != nil {
+		if errors.Is(authErr, errCrossTenant) {
+			h.engine.RenderError(w, http.StatusNotFound, "Organization not found")
 			return
 		}
+		// A lookup failure is infrastructure, never an access decision (#128).
+		log.Printf("costs authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organization")
+		return
 	}
 
 	proj, err := h.db.GetProject(r.Context(), org.ID, projSlug)
@@ -101,7 +106,7 @@ func (h *CostHandler) ProjectCosts(w http.ResponseWriter, r *http.Request) {
 
 	canEdit := auth.IsStaffOrAbove(user.Role)
 
-	h.engine.Render(w, r, "project_costs.html", render.PageData{
+	_ = h.engine.Render(w, r, "project_costs.html", render.PageData{
 		Title: proj.Name + " — Costs", User: user, Org: org, Orgs: middleware.GetOrgs(r), CurrentPath: r.URL.Path,
 		Projects: projects, ActiveProject: proj, ActiveTab: "costs",
 		ProjectID: proj.ID,
@@ -136,11 +141,15 @@ func (h *CostHandler) OrgCosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsStaffOrAbove(user.Role) {
-		if _, err := h.db.GetOrgMembership(r.Context(), user.ID, org.ID); err != nil {
-			h.engine.RenderError(w, http.StatusForbidden, "Access denied")
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, org.ID); authErr != nil {
+		if errors.Is(authErr, errCrossTenant) {
+			h.engine.RenderError(w, http.StatusNotFound, "Organization not found")
 			return
 		}
+		// A lookup failure is infrastructure, never an access decision (#128).
+		log.Printf("costs authz for user %s org %s: %v", user.ID, org.ID, authErr)
+		h.engine.RenderError(w, http.StatusInternalServerError, "Failed to load organization")
+		return
 	}
 
 	month := parseMonth(r)
@@ -180,20 +189,20 @@ func (h *CostHandler) OrgCosts(w http.ResponseWriter, r *http.Request) {
 
 	canEdit := auth.IsStaffOrAbove(user.Role)
 
-	h.engine.Render(w, r, "org_costs.html", render.PageData{
+	_ = h.engine.Render(w, r, "org_costs.html", render.PageData{
 		Title: org.Name + " — Costs", User: user, Org: org, Orgs: middleware.GetOrgs(r), Projects: middleware.GetProjects(r), CurrentPath: r.URL.Path,
 		Data: map[string]any{
-			"Month":              month,
-			"PrevMonth":          prevMonth,
-			"NextMonth":          nextMonth,
-			"ProjectCosts":       projectCosts,
-			"AIUsage":            aiUsage,
-			"OrgInfraTotal":      orgInfraTotal,
-			"AITotal":            aiTotal,
-			"AITotalWithMargin":  aiTotalWithMargin,
-			"GrandTotal":         orgInfraTotal + aiTotalWithMargin,
-			"AIMargin":           margin,
-			"CanEdit":            canEdit,
+			"Month":             month,
+			"PrevMonth":         prevMonth,
+			"NextMonth":         nextMonth,
+			"ProjectCosts":      projectCosts,
+			"AIUsage":           aiUsage,
+			"OrgInfraTotal":     orgInfraTotal,
+			"AITotal":           aiTotal,
+			"AITotalWithMargin": aiTotalWithMargin,
+			"GrandTotal":        orgInfraTotal + aiTotalWithMargin,
+			"AIMargin":          margin,
+			"CanEdit":           canEdit,
 		},
 	})
 }
@@ -312,7 +321,7 @@ func (h *CostHandler) DeleteCostItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	redirect := "/orgs/" + org.Slug + "/projects/" + proj.Slug + "/costs?month=" + cost.Month
-	w.Header().Set("HX-Redirect", redirect)
+	w.Header().Set("Hx-Redirect", redirect)
 	w.WriteHeader(http.StatusOK)
 }
 
