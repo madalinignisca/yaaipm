@@ -17,9 +17,9 @@ jobs:
     # it is not fast. Cap the job so a hung container cannot hold the runner.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
