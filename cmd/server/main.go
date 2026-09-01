@@ -109,7 +109,11 @@ func main() {
 	// (#153).
 	engine.StorageEnabled = s3Client != nil
 	if s3Client == nil {
-		log.Printf("S3 storage DISABLED (no S3_ENDPOINT/S3_BUCKET) — " +
+		// Name the ACTUAL env vars. The bucket is read from S3_PUBLIC_BUCKET,
+		// not S3_BUCKET — an earlier version of this line said the latter, and
+		// it would send whoever is configuring storage looking for a variable
+		// that does not exist.
+		log.Printf("S3 storage DISABLED (set S3_ENDPOINT and S3_PUBLIC_BUCKET to enable) — " +
 			"file upload and attachment routes are not registered, and the UI hides them")
 	}
 
