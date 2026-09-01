@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -46,8 +47,8 @@ func main() {
 	}
 	defer pool.Close()
 
-	if err := pool.Ping(context.Background()); err != nil {
-		log.Fatalf("pinging database: %v", err)
+	if pingErr := pool.Ping(context.Background()); pingErr != nil {
+		log.Fatalf("pinging database: %v", pingErr) //nolint:gocritic // exitAfterDefer - acceptable at startup
 	}
 	log.Printf("Database connected (max_conns=%d, min_conns=%d)", poolCfg.MaxConns, poolCfg.MinConns)
 
@@ -88,18 +89,28 @@ func main() {
 	var s3Client *storage.S3Client
 	if cfg.S3Endpoint != "" && cfg.S3Bucket != "" {
 		s3Client, err = storage.NewS3Client(storage.S3Config{
-			Endpoint:       cfg.S3Endpoint,
-			AccessKeyID:    cfg.S3AccessKeyID,
+			Endpoint:        cfg.S3Endpoint,
+			AccessKeyID:     cfg.S3AccessKeyID,
 			SecretAccessKey: cfg.S3SecretAccessKey,
-			Region:         cfg.S3Region,
-			Bucket:         cfg.S3Bucket,
-			ForcePathStyle: cfg.S3ForcePathStyle,
+			Region:          cfg.S3Region,
+			Bucket:          cfg.S3Bucket,
+			ForcePathStyle:  cfg.S3ForcePathStyle,
 		})
 		if err != nil {
 			log.Printf("WARNING: Failed to create S3 client: %v", err)
 		} else {
 			log.Printf("S3 storage enabled (bucket: %s)", cfg.S3Bucket)
 		}
+	}
+
+	// Say so when storage is OFF, not only when it is on. The absence of a
+	// startup line is not something anyone reads, which is how a deployment ran
+	// for months offering upload controls whose routes were never registered
+	// (#153).
+	engine.StorageEnabled = s3Client != nil
+	if s3Client == nil {
+		log.Printf("S3 storage DISABLED (no S3_ENDPOINT/S3_BUCKET) — " +
+			"file upload and attachment routes are not registered, and the UI hides them")
 	}
 
 	// Handlers
@@ -109,7 +120,6 @@ func main() {
 	authH := handlers.NewAuthHandler(db, sessions, engine, cfg.AESKey, secureCookie)
 	dashH := handlers.NewDashboardHandler(db, engine)
 	orgH := handlers.NewOrgHandler(db, engine, sessions, mailer, cfg.BaseURL, cfg.ProtectedSuperadmins)
-	projH := handlers.NewProjectHandler(db, engine)
 	ticketH := handlers.NewTicketHandler(db, engine, geminiClient, cfg)
 	commentH := handlers.NewCommentHandler(db, engine)
 	adminH := handlers.NewAdminHandler(db, engine)
@@ -125,8 +135,132 @@ func main() {
 	}
 	assistantH := handlers.NewAssistantHandler(db, engine, geminiClient, chatHub, cfg)
 
-	// Rate limiter for auth endpoints (0.5 req/s, burst 5)
-	authLimiter := middleware.NewRateLimiter(0.5, 5)
+	// Feature Debate Mode (v0.2.0). Construct the refiner registry
+	// lazily from whichever provider keys are configured — missing
+	// keys mean the corresponding AI-picker button will return 400
+	// ("unknown provider") on click rather than silently falling back
+	// to another vendor (spec §3.2).
+	//
+	// DEBATE_REFINER_MODE=fake replaces every configured refiner with
+	// an ai.FakeRefiner that returns a canned string. Only for E2E
+	// tests (Playwright golden-path spec in e2e/tests/06-debate/)
+	// that otherwise would need a real API key per run. Guarded
+	// against production misconfiguration: panics at startup if the
+	// env is set AND the configured BaseURL looks production-shaped
+	// (anything that isn't localhost/127.0.0.1 or explicitly marked
+	// as an http test origin). Fakes in production are how you ship
+	// a feature that "works" but talks to no real AI.
+	const debateRefinerModeFake = "fake"
+	debateRefinerMode := os.Getenv("DEBATE_REFINER_MODE")
+	if debateRefinerMode == debateRefinerModeFake {
+		if !isLocalDebateEnv(cfg.BaseURL) {
+			log.Fatalf("DEBATE_REFINER_MODE=fake set against non-local BaseURL %q — refusing to start (see cmd/server/main.go)", cfg.BaseURL)
+		}
+		log.Printf("WARNING: DEBATE_REFINER_MODE=fake — all debate refiners return canned output")
+	}
+
+	// DEBATE_REAL_AI=1 marks the opt-in real-AI smoke mode (e2e/tests/
+	// 13-debate-real-ai.spec.js). It drives the debate UI against live
+	// provider APIs, so it is mutually exclusive with the fake refiners.
+	debateRealAI := os.Getenv("DEBATE_REAL_AI") == "1"
+	if debateRealAI && debateRefinerMode == debateRefinerModeFake {
+		log.Fatal("DEBATE_REAL_AI=1 and DEBATE_REFINER_MODE=fake are mutually exclusive — choose real providers or fakes, not both")
+	}
+
+	debateRefiners := map[string]ai.Refiner{}
+	if cfg.AnthropicAPIKey != "" {
+		anthropicClient := ai.NewAnthropicClient(cfg.AnthropicAPIKey, ai.AnthropicModels{
+			Default: cfg.AnthropicModel,
+			Content: cfg.AnthropicModelContent,
+		})
+		debateRefiners["claude"] = ai.NewAnthropicRefiner(anthropicClient, cfg.AnthropicModel)
+	}
+	if geminiClient != nil {
+		debateRefiners["gemini"] = ai.NewGeminiRefiner(geminiClient, cfg.GeminiModel)
+	}
+	if cfg.OpenAIAPIKey != "" {
+		debateRefiners["openai"] = ai.NewOpenAIRefiner(ai.NewOpenAIClient(cfg.OpenAIAPIKey, cfg.OpenAIModel))
+	}
+	// Swap in fakes for E2E tests when explicitly opted in (guarded
+	// against production above).
+	if debateRefinerMode == debateRefinerModeFake {
+		debateRefiners = buildFakeDebateRefiners()
+	}
+	// Scorer registry, keyed like the refiners above. Which one runs is a
+	// per-project setting (issue #63); projects default to gemini, which
+	// is what v1 hardcoded. Each provider uses its own SCORER_MODEL_*
+	// (defaulting to that vendor's cheapest priced model) because scoring
+	// fires on every accepted round plus the background retry sweep.
+	debateScorers := map[string]ai.Scorer{}
+	if cfg.AnthropicAPIKey != "" {
+		// A second client bound to the scorer model: AnthropicClient is
+		// model-bound at construction and the scorer model may differ
+		// from the refiner's.
+		debateScorers[ai.ProviderClaude] = ai.NewAnthropicScorer(
+			ai.NewAnthropicClient(cfg.AnthropicAPIKey, ai.AnthropicModels{
+				Default: cfg.ScorerModelClaude,
+				Content: cfg.AnthropicModelContent,
+			}), cfg.ScorerModelClaude)
+	}
+	if geminiClient != nil {
+		debateScorers[ai.ProviderGemini] = ai.NewGeminiScorer(geminiClient, cfg.ScorerModelGemini)
+	}
+	if cfg.OpenAIAPIKey != "" {
+		debateScorers[ai.ProviderOpenAI] = ai.NewOpenAIScorer(
+			ai.NewOpenAIClient(cfg.OpenAIAPIKey, cfg.ScorerModelOpenAI))
+	}
+	if debateRefinerMode == debateRefinerModeFake {
+		debateScorers = buildFakeDebateScorers()
+	}
+	debateCfg := handlers.DefaultDebateConfig()
+	debateH := handlers.NewDebateHandler(db, engine, debateRefiners, debateScorers, debateCfg)
+	// Constructed here rather than with the other handlers above because
+	// the project settings dropdown offers exactly the scorer providers
+	// that are actually configured (issue #63), so it needs the registry.
+	projH := handlers.NewProjectHandler(db, engine, ai.SortedProviderKeys(debateScorers))
+	log.Printf("Feature Debate Mode wired (%d refiners, %d scorers)", len(debateRefiners), len(debateScorers))
+
+	// Cost-tracking guard (issue #108). A model absent from the pricing
+	// table prices every call at $0 silently; warn loudly at startup so a
+	// future GEMINI_MODEL/OPENAI_MODEL/ANTHROPIC_MODEL bump can't quietly
+	// under-bill clients. Fake mode is skipped — its refiners report
+	// placeholder model names and never make billable calls.
+	if debateRefinerMode != debateRefinerModeFake {
+		unpriced := map[string]struct{}{}
+		for _, r := range debateRefiners {
+			if m := r.Model(); m != "" && !ai.HasPricing(m) {
+				unpriced[m] = struct{}{}
+			}
+		}
+		// Every configured scorer, not just Gemini: with per-project
+		// selection (#63) any of the three can bill, and each uses its
+		// own SCORER_MODEL_*. This iteration is why Scorer carries
+		// Model() at all.
+		for _, s := range debateScorers {
+			if m := s.Model(); m != "" && !ai.HasPricing(m) {
+				unpriced[m] = struct{}{}
+			}
+		}
+		for m := range unpriced {
+			log.Printf("WARNING: debate model %q has no pricing-table entry — its AI calls record $0 cost (issue #108, internal/ai/pricing.go)", m)
+		}
+	}
+
+	if debateRealAI {
+		if len(debateRefiners) == 0 {
+			log.Fatal("DEBATE_REAL_AI=1 but no provider API keys configured — set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")
+		}
+		log.Printf("WARNING: DEBATE_REAL_AI=1 — debate refiners and scorers make REAL, billable provider calls (%d providers, %d scorers)", len(debateRefiners), len(debateScorers))
+	}
+
+	// Bound concurrent Argon2id work so memory cannot scale with request
+	// concurrency. The rate limiter is per-IP, so it alone cannot cap this
+	// (#142).
+	auth.SetHashConcurrency(cfg.AuthHashConcurrency)
+
+	// Rate limiter for auth endpoints. Defaults to 0.5 req/s burst 5; see
+	// config.AuthRateLimitRPS for why it is tunable at all.
+	authLimiter := middleware.NewRateLimiter(cfg.AuthRateLimitRPS, cfg.AuthRateLimitBurst)
 
 	r := chi.NewRouter()
 
@@ -146,7 +280,7 @@ func main() {
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	// CSRF protection for all HTML routes (auth, invitations, and protected)
@@ -198,6 +332,7 @@ func main() {
 		r.Post("/orgs", orgH.CreateOrg)
 		r.Get("/orgs/{orgSlug}", orgH.OrgPage)
 		r.Get("/orgs/{orgSlug}/settings", orgH.OrgSettings)
+		r.Get("/orgs/{orgSlug}/invitations/list", inviteH.InvitationList)
 		r.Post("/orgs/{orgSlug}/invitations", orgH.InviteMember)
 		r.Delete("/orgs/{orgSlug}/invitations/{invitationID}", inviteH.RevokeInvitation)
 		r.Post("/orgs/{orgSlug}/invitations/{invitationID}/resend", inviteH.ResendInvitation)
@@ -205,6 +340,7 @@ func main() {
 		r.Patch("/orgs/{orgSlug}/members/{userID}/role", orgH.UpdateMemberRole)
 		r.Post("/orgs/{orgSlug}/settings/business", orgH.UpdateBusinessDetails)
 		r.Post("/orgs/{orgSlug}/settings/margin", orgH.UpdateAIMargin)
+		r.Post("/orgs/{orgSlug}/settings/budget", orgH.UpdateMonthlyBudget)
 		r.Post("/orgs/{orgSlug}/settings/currency", orgH.UpdateCurrency)
 
 		// Projects
@@ -218,6 +354,7 @@ func main() {
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/archived", projH.ProjectArchived)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/settings", projH.ProjectSettings)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/settings/repo", projH.UpdateRepoURL)
+		r.Post("/orgs/{orgSlug}/projects/{projSlug}/settings/scorer", projH.UpdateScorerProvider)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/transfer", projH.TransferProject)
 		r.Get("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.ProjectCosts)
 		r.Post("/orgs/{orgSlug}/projects/{projSlug}/costs", costH.AddCostItem)
@@ -234,6 +371,21 @@ func main() {
 		r.Post("/tickets/{ticketID}/restore", ticketH.RestoreTicket)
 		r.Put("/tickets/{ticketID}", ticketH.UpdateTicket)
 		r.Delete("/tickets/{ticketID}", ticketH.DeleteTicket)
+
+		// Feature Debate Mode (spec §4). Task 9 extends this block
+		// with approve/abandon.
+		r.Get("/tickets/{ticketID}/debate", debateH.ShowDebate)
+		r.Get("/tickets/{ticketID}/debate/effort", debateH.EffortChip)
+		r.Post("/tickets/{ticketID}/debate/start", debateH.StartDebate)
+		r.Post("/tickets/{ticketID}/debate/rounds", debateH.CreateRound)
+		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/accept", debateH.AcceptRound)
+		r.Post("/tickets/{ticketID}/debate/rounds/{roundID}/reject", debateH.RejectRound)
+		r.Post("/tickets/{ticketID}/debate/undo", debateH.UndoRound)
+		r.Post("/tickets/{ticketID}/debate/approve", debateH.ApproveDebate)
+		r.Post("/tickets/{ticketID}/debate/abandon", debateH.AbandonDebate)
+		r.Post("/tickets/{ticketID}/debate/seed", debateH.EditSeed)
+		r.Get("/tickets/{ticketID}/debate/document", debateH.ShowDocument)
+		r.Get("/tickets/{ticketID}/debate/versions/{roundID}", debateH.ShowVersion)
 
 		// Comments
 		r.Post("/tickets/{ticketID}/comments", commentH.CreateComment)
@@ -275,10 +427,27 @@ func main() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			sessions.CleanExpired(context.Background())
-			db.ExpireOldInvitations(context.Background())
+			_ = sessions.CleanExpired(context.Background())
+			_ = db.ExpireOldInvitations(context.Background())
 		}
 	}()
+
+	// Effort-score retry sweep (phase-2 #68). Self-heals debates whose
+	// accept-path scorer call failed, leaving effort_* NULL and the sidebar
+	// stuck on its empty state. Runs in-process on each replica;
+	// ClaimStaleEffortScores uses FOR UPDATE SKIP LOCKED + a backoff lease
+	// so the two forgedesk-server replicas never double-score (double-bill)
+	// the same debate. Guarded on at least one scorer being configured —
+	// with no provider API keys there is nothing to call.
+	if len(debateScorers) > 0 {
+		go func() {
+			ticker := time.NewTicker(debateCfg.EffortRetrySweepInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				debateH.RetryStaleEffortScores(context.Background())
+			}
+		}()
+	}
 
 	// Graceful shutdown
 	go func() {
@@ -288,12 +457,100 @@ func main() {
 		log.Println("Shutting down...")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		srv.Shutdown(ctx)
+		_ = srv.Shutdown(ctx)
 	}()
 
 	log.Printf("ForgeDesk server starting on %s", cfg.ListenAddr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
+	if listenErr := srv.ListenAndServe(); listenErr != nil && listenErr != http.ErrServerClosed {
+		log.Fatalf("server error: %v", listenErr)
 	}
 	log.Println("Server stopped")
+}
+
+// isLocalDebateEnv returns true iff the BaseURL parses to a hostname
+// that's either an IPv4/IPv6 loopback address OR ends with one of the
+// reserved local TLDs (.local, .test). Uses url.Parse + strings.HasSuffix
+// rather than substring matching so a URL like
+// https://localhost.example.com or https://speed-test.net doesn't
+// accidentally bypass the production safety guard.
+//
+// Anything else — including plain hostnames, LAN IPs, public domains,
+// and unparseable URLs — is rejected so a misconfigured prod env can't
+// silently serve fake AI output to real users.
+func isLocalDebateEnv(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	// Loopback exact matches.
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	// Reserved local TLDs (RFC 6761 / mDNS) — must be a SUFFIX
+	// preceded by a dot, not a substring. Prevents
+	// "localhost.example.com" or "speed-test.net" from matching.
+	if strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".test") {
+		return true
+	}
+	return false
+}
+
+// buildFakeDebateRefiners returns a refiner registry backed entirely
+// by ai.FakeRefiner so E2E tests exercise the handler flow without
+// hitting a real AI provider. Each fake returns a provider-tagged
+// canned string — varied enough that golden-path tests can assert
+// which provider's button was clicked.
+func buildFakeDebateRefiners() map[string]ai.Refiner {
+	mk := func(name, model string) ai.Refiner {
+		return &ai.FakeRefiner{
+			NameVal: name, ModelVal: model,
+			OutputFunc: func(in ai.RefineInput) (string, string, error) {
+				// Always return a non-trivial string so the handler's
+				// MinOutputLen check passes. Include the original
+				// text to keep the diff renderer's output interesting.
+				return "Refactored by " + name + ":\n\n" + in.CurrentText + "\n\n- added by fake refiner", ai.FinishReasonStop, nil
+			},
+		}
+	}
+	return map[string]ai.Refiner{
+		ai.ProviderClaude: mk(ai.ProviderClaude, ai.ModelClaudeSonnet46),
+		ai.ProviderGemini: mk(ai.ProviderGemini, ai.ModelGeminiFlash),
+		ai.ProviderOpenAI: mk(ai.ProviderOpenAI, ai.ModelGPT5Mini),
+	}
+}
+
+// buildFakeDebateScorers mirrors buildFakeDebateRefiners for the scorer
+// registry. Without fake scorers the E2E stack could not exercise
+// per-project provider selection at all (issue #63) — which is the whole
+// feature — since every real scorer needs a billable API key.
+//
+// Each fake names its provider in Reasoning so a test can assert which
+// one actually ran, and reports the matching real model so the cost
+// accounting path behaves as it does in production.
+func buildFakeDebateScorers() map[string]ai.Scorer {
+	mk := func(name, model string) ai.Scorer {
+		return &ai.FakeScorer{
+			NameVal: name, ModelVal: model,
+			Result: ai.ScoreResult{
+				Score:     5,
+				Hours:     8,
+				Reasoning: "Scored by fake " + name + " scorer.",
+				Usage: ai.RefineUsage{
+					InputTokens: 100, OutputTokens: 20,
+					CostMicros: ai.ComputeCostMicros(model, 100, 20),
+					Model:      model,
+				},
+			},
+		}
+	}
+	return map[string]ai.Scorer{
+		ai.ProviderClaude: mk(ai.ProviderClaude, ai.ModelClaudeSonnet46),
+		ai.ProviderGemini: mk(ai.ProviderGemini, ai.ModelGeminiFlash),
+		ai.ProviderOpenAI: mk(ai.ProviderOpenAI, ai.ModelGPT5Mini),
+	}
 }

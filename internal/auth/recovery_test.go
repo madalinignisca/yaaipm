@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"testing"
 )
 
@@ -20,7 +21,7 @@ func TestGenerateRecoveryCodes(t *testing.T) {
 			t.Errorf("code[%d] length = %d, want 8", i, len(code))
 		}
 		for _, c := range code {
-			if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			if (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 				t.Errorf("code[%d] contains invalid char %c", i, c)
 			}
 		}
@@ -55,7 +56,7 @@ func TestGenerateRecoveryCodesRandomness(t *testing.T) {
 func TestHashAndVerifyRecoveryCodes(t *testing.T) {
 	codes, _ := GenerateRecoveryCodes()
 
-	hashed, err := HashRecoveryCodes(codes)
+	hashed, err := HashRecoveryCodes(context.Background(), codes)
 	if err != nil {
 		t.Fatalf("HashRecoveryCodes: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestHashAndVerifyRecoveryCodes(t *testing.T) {
 
 	// Verify each code against its hash
 	for i, code := range codes {
-		ok, err := VerifyPassword(code, hashed[i])
+		ok, err := VerifyPassword(context.Background(), code, hashed[i])
 		if err != nil {
 			t.Fatalf("VerifyPassword code[%d]: %v", i, err)
 		}
@@ -78,10 +79,10 @@ func TestHashAndVerifyRecoveryCodes(t *testing.T) {
 
 func TestVerifyRecoveryCodeFound(t *testing.T) {
 	codes, _ := GenerateRecoveryCodes()
-	hashed, _ := HashRecoveryCodes(codes)
+	hashed, _ := HashRecoveryCodes(context.Background(), codes)
 
 	// Verify the 5th code
-	idx := VerifyRecoveryCode(codes[4], hashed)
+	idx, _ := VerifyRecoveryCode(context.Background(), codes[4], hashed)
 	if idx != 4 {
 		t.Fatalf("expected index 4, got %d", idx)
 	}
@@ -89,9 +90,9 @@ func TestVerifyRecoveryCodeFound(t *testing.T) {
 
 func TestVerifyRecoveryCodeNotFound(t *testing.T) {
 	codes, _ := GenerateRecoveryCodes()
-	hashed, _ := HashRecoveryCodes(codes)
+	hashed, _ := HashRecoveryCodes(context.Background(), codes)
 
-	idx := VerifyRecoveryCode("INVALIDX", hashed)
+	idx, _ := VerifyRecoveryCode(context.Background(), "INVALIDX", hashed)
 	if idx != -1 {
 		t.Fatalf("expected -1 for invalid code, got %d", idx)
 	}
@@ -99,12 +100,12 @@ func TestVerifyRecoveryCodeNotFound(t *testing.T) {
 
 func TestVerifyRecoveryCodeConsumed(t *testing.T) {
 	codes, _ := GenerateRecoveryCodes()
-	hashed, _ := HashRecoveryCodes(codes)
+	hashed, _ := HashRecoveryCodes(context.Background(), codes)
 
 	// "Consume" a code by clearing its hash
 	hashed[3] = ""
 
-	idx := VerifyRecoveryCode(codes[3], hashed)
+	idx, _ := VerifyRecoveryCode(context.Background(), codes[3], hashed)
 	if idx != -1 {
 		t.Fatalf("consumed code should return -1, got %d", idx)
 	}
@@ -112,7 +113,7 @@ func TestVerifyRecoveryCodeConsumed(t *testing.T) {
 
 func TestEncryptDecryptRecoveryCodes(t *testing.T) {
 	codes, _ := GenerateRecoveryCodes()
-	hashed, _ := HashRecoveryCodes(codes)
+	hashed, _ := HashRecoveryCodes(context.Background(), codes)
 
 	encrypted, err := EncryptRecoveryCodes(hashed, testAESKey)
 	if err != nil {

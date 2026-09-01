@@ -9,6 +9,8 @@ import (
 func TestToolDeclarations_ReturnsExpectedTools(t *testing.T) {
 	decls := toolDeclarations()
 
+	// Stable core tools that must always be advertised. The full set grows
+	// over time, so assert these are a subset rather than an exact count.
 	expected := []string{
 		"search_tickets",
 		"get_project_brief",
@@ -16,10 +18,6 @@ func TestToolDeclarations_ReturnsExpectedTools(t *testing.T) {
 		"update_ticket_status",
 		"post_comment",
 		"update_project_brief",
-	}
-
-	if len(decls) != len(expected) {
-		t.Fatalf("expected %d tool declarations, got %d", len(expected), len(decls))
 	}
 
 	names := make(map[string]bool, len(decls))

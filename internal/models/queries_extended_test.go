@@ -2,6 +2,8 @@ package models
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -239,7 +241,8 @@ func TestDeleteTicket(t *testing.T) {
 	}
 
 	// Delete the parent (should cascade children + comments)
-	if err := db.DeleteTicket(ctx, parent.ID); err != nil {
+	err = db.DeleteTicket(ctx, parent.ID)
+	if err != nil {
 		t.Fatalf("DeleteTicket: %v", err)
 	}
 
@@ -454,7 +457,8 @@ func TestAIConversationLifecycle(t *testing.T) {
 	}
 
 	// Update title
-	if err := db.UpdateAIConversationTitle(ctx, conv1.ID, "My Chat"); err != nil {
+	err = db.UpdateAIConversationTitle(ctx, conv1.ID, "My Chat")
+	if err != nil {
 		t.Fatalf("UpdateAIConversationTitle: %v", err)
 	}
 	updated, _ := db.GetAIConversation(ctx, conv1.ID)
@@ -466,7 +470,8 @@ func TestAIConversationLifecycle(t *testing.T) {
 	beforeTouch := updated.UpdatedAt
 	// Small delay to ensure different timestamp
 	time.Sleep(10 * time.Millisecond)
-	if err := db.TouchAIConversation(ctx, conv1.ID); err != nil {
+	err = db.TouchAIConversation(ctx, conv1.ID)
+	if err != nil {
 		t.Fatalf("TouchAIConversation: %v", err)
 	}
 	touched, _ := db.GetAIConversation(ctx, conv1.ID)
@@ -494,7 +499,8 @@ func TestAIConversationLifecycle(t *testing.T) {
 	}
 
 	// Delete conversation
-	if err := db.DeleteAIConversation(ctx, conv1.ID); err != nil {
+	err = db.DeleteAIConversation(ctx, conv1.ID)
+	if err != nil {
 		t.Fatalf("DeleteAIConversation: %v", err)
 	}
 	_, err = db.GetAIConversation(ctx, conv1.ID)
@@ -851,7 +857,8 @@ func TestProjectCosts(t *testing.T) {
 	}
 
 	// Update amount
-	if err := db.UpdateProjectCost(ctx, cost.ID, 7500); err != nil {
+	err = db.UpdateProjectCost(ctx, cost.ID, 7500)
+	if err != nil {
 		t.Fatalf("UpdateProjectCost: %v", err)
 	}
 	updated, _ := db.GetProjectCost(ctx, cost.ID)
@@ -860,7 +867,8 @@ func TestProjectCosts(t *testing.T) {
 	}
 
 	// Delete
-	if err := db.DeleteProjectCost(ctx, cost.ID); err != nil {
+	err = db.DeleteProjectCost(ctx, cost.ID)
+	if err != nil {
 		t.Fatalf("DeleteProjectCost: %v", err)
 	}
 	_, err = db.GetProjectCost(ctx, cost.ID)
@@ -1058,5 +1066,592 @@ func TestReactionGroupsBatchEmpty(t *testing.T) {
 	}
 	if len(result) != 0 {
 		t.Errorf("expected empty result map, got %d entries", len(result))
+	}
+}
+
+// ── Ticket Hierarchy (Issue #26) ────────────────────────────────
+
+// TestCrossProjectParentRejected verifies the composite FK added in
+// migration 000031 prevents a ticket in project B from pointing its
+// parent_id at a ticket in project A.
+func TestCrossProjectParentRejected(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	user := createTestUser(t, db, "crossproj")
+	org := createTestOrg(t, db, "crossproj")
+	projA := createTestProject(t, db, org.ID, "crossproj-a")
+	projB := createTestProject(t, db, org.ID, "crossproj-b")
+
+	parentInA := createTestTicket(t, db, projA.ID, user.ID, "feature", "Parent in A")
+
+	// Attempt to create a child in project B with parent in project A.
+	child := &Ticket{
+		ProjectID: projB.ID,
+		ParentID:  &parentInA.ID,
+		Type:      "task",
+		Title:     "Should fail",
+		Status:    "backlog",
+		Priority:  "medium",
+		CreatedBy: user.ID,
+	}
+	err := db.CreateTicket(ctx, child)
+	if err == nil {
+		t.Fatal("expected FK violation for cross-project parent, got nil")
+	}
+}
+
+// TestArchiveTicketRecursesToGrandchildren verifies the recursive CTE
+// walks the whole subtree, not just one level.
+func TestArchiveTicketRecursesToGrandchildren(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	user := createTestUser(t, db, "archrec")
+	org := createTestOrg(t, db, "archrec")
+	proj := createTestProject(t, db, org.ID, "archrec")
+
+	// Build feature → task → subtask chain (3 levels deep).
+	feature := createTestTicket(t, db, proj.ID, user.ID, "feature", "Feature")
+	task := &Ticket{ProjectID: proj.ID, ParentID: &feature.ID, Type: "task", Title: "Task", Status: "backlog", Priority: "medium", CreatedBy: user.ID}
+	if err := db.CreateTicket(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	subtask := &Ticket{ProjectID: proj.ID, ParentID: &task.ID, Type: "subtask", Title: "Subtask", Status: "backlog", Priority: "medium", CreatedBy: user.ID}
+	if err := db.CreateTicket(ctx, subtask); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.ArchiveTicket(ctx, feature.ID); err != nil {
+		t.Fatalf("ArchiveTicket: %v", err)
+	}
+
+	// All three levels must now be archived.
+	for _, id := range []string{feature.ID, task.ID, subtask.ID} {
+		tt, err := db.GetTicket(ctx, id)
+		if err != nil {
+			t.Fatalf("GetTicket(%s): %v", id, err)
+		}
+		if tt.ArchivedAt == nil {
+			t.Errorf("ticket %q should be archived but ArchivedAt is nil", tt.Title)
+		}
+	}
+}
+
+// TestRestoreTicketRecursesToGrandchildren mirrors the archive test
+// to ensure restore also walks the whole subtree.
+func TestRestoreTicketRecursesToGrandchildren(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	user := createTestUser(t, db, "restorerec")
+	org := createTestOrg(t, db, "restorerec")
+	proj := createTestProject(t, db, org.ID, "restorerec")
+
+	feature := createTestTicket(t, db, proj.ID, user.ID, "feature", "Feature")
+	task := &Ticket{ProjectID: proj.ID, ParentID: &feature.ID, Type: "task", Title: "Task", Status: "backlog", Priority: "medium", CreatedBy: user.ID}
+	if err := db.CreateTicket(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	subtask := &Ticket{ProjectID: proj.ID, ParentID: &task.ID, Type: "subtask", Title: "Subtask", Status: "backlog", Priority: "medium", CreatedBy: user.ID}
+	if err := db.CreateTicket(ctx, subtask); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.ArchiveTicket(ctx, feature.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RestoreTicket(ctx, feature.ID); err != nil {
+		t.Fatalf("RestoreTicket: %v", err)
+	}
+
+	for _, id := range []string{feature.ID, task.ID, subtask.ID} {
+		tt, err := db.GetTicket(ctx, id)
+		if err != nil {
+			t.Fatalf("GetTicket(%s): %v", id, err)
+		}
+		if tt.ArchivedAt != nil {
+			t.Errorf("ticket %q should be restored but ArchivedAt = %v", tt.Title, tt.ArchivedAt)
+		}
+	}
+}
+
+// TestDeleteTicketCascadesToGrandchildren verifies the new ON DELETE
+// CASCADE composite FK walks the whole subtree instead of leaving
+// grandchildren orphaned.
+func TestDeleteTicketCascadesToGrandchildren(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	user := createTestUser(t, db, "delrec")
+	org := createTestOrg(t, db, "delrec")
+	proj := createTestProject(t, db, org.ID, "delrec")
+
+	feature := createTestTicket(t, db, proj.ID, user.ID, "feature", "Feature")
+	task := &Ticket{ProjectID: proj.ID, ParentID: &feature.ID, Type: "task", Title: "Task", Status: "backlog", Priority: "medium", CreatedBy: user.ID}
+	if err := db.CreateTicket(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	subtask := &Ticket{ProjectID: proj.ID, ParentID: &task.ID, Type: "subtask", Title: "Subtask", Status: "backlog", Priority: "medium", CreatedBy: user.ID}
+	if err := db.CreateTicket(ctx, subtask); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.DeleteTicket(ctx, feature.ID); err != nil {
+		t.Fatalf("DeleteTicket: %v", err)
+	}
+
+	// All three should be gone.
+	for _, id := range []string{feature.ID, task.ID, subtask.ID} {
+		if _, err := db.GetTicket(ctx, id); err == nil {
+			t.Errorf("ticket %s should be deleted but was still found", id)
+		}
+	}
+}
+
+// ── CreateOrgWithOwnerTx (Issue #29) ────────────────────────────
+
+// TestCreateOrgWithOwnerTxHappyPath verifies the atomic variant
+// creates both the org and the owner membership on success.
+func TestCreateOrgWithOwnerTxHappyPath(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	user := createTestUser(t, db, "atomic-happy")
+
+	org, err := db.CreateOrgWithOwnerTx(ctx, user.ID, "Atomic Org", "atomic-org", "owner")
+	if err != nil {
+		t.Fatalf("CreateOrgWithOwnerTx: %v", err)
+	}
+	if org.ID == "" {
+		t.Fatal("expected non-empty org ID")
+	}
+
+	// Owner membership must exist with role "owner".
+	m, err := db.GetOrgMembership(ctx, user.ID, org.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMembership: %v", err)
+	}
+	if m.Role != "owner" {
+		t.Errorf("membership role = %q, want owner", m.Role)
+	}
+}
+
+// TestCreateOrgWithOwnerTxRollsBackOnMembershipFailure verifies that
+// if the membership INSERT fails (here: via an invalid role that
+// violates the CHECK constraint), the org row is also rolled back.
+// This prevents orphan orgs from being created when downstream
+// writes fail transiently.
+func TestCreateOrgWithOwnerTxRollsBackOnMembershipFailure(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	user := createTestUser(t, db, "atomic-rollback")
+
+	// "not-a-real-role" violates the org_memberships.role CHECK constraint.
+	// The membership INSERT fails, which must roll back the org INSERT too.
+	_, err := db.CreateOrgWithOwnerTx(ctx, user.ID, "Rollback Org", "rollback-org", "not-a-real-role")
+	if err == nil {
+		t.Fatal("expected error from invalid role, got nil")
+	}
+
+	// The org row must NOT exist — the whole transaction should have rolled back.
+	if _, err := db.GetOrgBySlug(ctx, "rollback-org"); err == nil {
+		t.Fatal("org row was persisted despite membership failure (rollback broken)")
+	}
+}
+
+// ── Last-Owner Guards (Issue #30) ───────────────────────────────
+
+// TestRemoveOrgMemberGuardedBlocksLastOwner verifies the guarded
+// delete refuses to remove the sole owner of an organization.
+func TestRemoveOrgMemberGuardedBlocksLastOwner(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "sole-owner")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "Sole Org", "sole-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	err = db.RemoveOrgMemberGuarded(ctx, owner.ID, org.ID)
+	if !errors.Is(err, ErrLastOwner) {
+		t.Fatalf("expected ErrLastOwner, got %v", err)
+	}
+
+	// Owner must still exist — transaction should have rolled back.
+	if _, err := db.GetOrgMembership(ctx, owner.ID, org.ID); err != nil {
+		t.Fatalf("owner membership was removed despite guard: %v", err)
+	}
+}
+
+// TestRemoveOrgMemberGuardedAllowsWhenAnotherOwnerExists confirms
+// the happy path still works with two owners.
+func TestRemoveOrgMemberGuardedAllowsWhenAnotherOwnerExists(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	alice := createTestUser(t, db, "alice-rem")
+	bob := createTestUser(t, db, "bob-rem")
+	org, err := db.CreateOrgWithOwnerTx(ctx, alice.ID, "Two Org", "two-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err = db.AddOrgMember(ctx, bob.ID, org.ID, "owner"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	if err = db.RemoveOrgMemberGuarded(ctx, alice.ID, org.ID); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	// Bob must still be an owner.
+	m, err := db.GetOrgMembership(ctx, bob.ID, org.ID)
+	if err != nil || m.Role != "owner" {
+		t.Fatalf("expected bob to remain owner, got m=%v err=%v", m, err)
+	}
+}
+
+// TestConcurrentRemoveOwnersPreservesInvariant is the regression
+// test for #30: two goroutines concurrently removing each of the
+// two owners of the same org. The SELECT FOR UPDATE serialization
+// in RemoveOrgMemberGuarded must ensure exactly one of the two
+// removals succeeds.
+func TestConcurrentRemoveOwnersPreservesInvariant(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	alice := createTestUser(t, db, "alice-conc")
+	bob := createTestUser(t, db, "bob-conc")
+	org, err := db.CreateOrgWithOwnerTx(ctx, alice.ID, "Race Org", "race-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err = db.AddOrgMember(ctx, bob.ID, org.ID, "owner"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs[0] = db.RemoveOrgMemberGuarded(ctx, alice.ID, org.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = db.RemoveOrgMemberGuarded(ctx, bob.ID, org.ID)
+	}()
+	wg.Wait()
+
+	// Exactly one request should succeed, the other should get ErrLastOwner.
+	successes := 0
+	lastOwnerErrs := 0
+	for _, e := range errs {
+		switch {
+		case e == nil:
+			successes++
+		case errors.Is(e, ErrLastOwner):
+			lastOwnerErrs++
+		default:
+			t.Fatalf("unexpected error: %v", e)
+		}
+	}
+	if successes != 1 || lastOwnerErrs != 1 {
+		t.Fatalf("expected 1 success + 1 ErrLastOwner, got %d + %d (%v)", successes, lastOwnerErrs, errs)
+	}
+
+	// Exactly one owner must remain.
+	count, err := db.CountOrgOwners(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("CountOrgOwners: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 owner remaining, got %d", count)
+	}
+}
+
+// TestUpdateOrgMemberRoleGuardedBlocksLastOwnerDemotion verifies
+// the guarded update refuses to demote the sole owner.
+func TestUpdateOrgMemberRoleGuardedBlocksLastOwnerDemotion(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "demote-last")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "Demote Org", "demote-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	err = db.UpdateOrgMemberRoleGuarded(ctx, owner.ID, org.ID, "admin")
+	if !errors.Is(err, ErrLastOwner) {
+		t.Fatalf("expected ErrLastOwner, got %v", err)
+	}
+
+	// Role must still be owner.
+	m, err := db.GetOrgMembership(ctx, owner.ID, org.ID)
+	if err != nil || m.Role != "owner" {
+		t.Fatalf("expected role='owner' (rollback), got m=%v err=%v", m, err)
+	}
+}
+
+// TestRemoveOrgMemberGuardedReturnsNotFoundForNonMember locks in
+// the Codex P1 fix: removing a user who is not a member of the org
+// must return ErrMemberNotFound, not silently succeed.
+func TestRemoveOrgMemberGuardedReturnsNotFoundForNonMember(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "nf-owner")
+	stranger := createTestUser(t, db, "nf-stranger")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "NF Org", "nf-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// Stranger is a real user but never joined the org.
+	err = db.RemoveOrgMemberGuarded(ctx, stranger.ID, org.ID)
+	if !errors.Is(err, ErrMemberNotFound) {
+		t.Fatalf("expected ErrMemberNotFound, got %v", err)
+	}
+}
+
+// TestUpdateOrgMemberRoleGuardedReturnsNotFoundForNonMember mirrors
+// the above for the role-update path.
+func TestUpdateOrgMemberRoleGuardedReturnsNotFoundForNonMember(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "nfu-owner")
+	stranger := createTestUser(t, db, "nfu-stranger")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "NFU Org", "nfu-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	err = db.UpdateOrgMemberRoleGuarded(ctx, stranger.ID, org.ID, "admin")
+	if !errors.Is(err, ErrMemberNotFound) {
+		t.Fatalf("expected ErrMemberNotFound, got %v", err)
+	}
+}
+
+// TestUpdateOrgMemberRoleGuardedAllowsPromotion confirms a
+// non-demotion update (role stays owner) is not blocked by the
+// invariant check.
+func TestUpdateOrgMemberRoleGuardedAllowsPromotion(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	owner := createTestUser(t, db, "promote-sole")
+	org, err := db.CreateOrgWithOwnerTx(ctx, owner.ID, "Promote Org", "promote-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// Setting role to the same value "owner" should succeed (no invariant violation).
+	if err := db.UpdateOrgMemberRoleGuarded(ctx, owner.ID, org.ID, "owner"); err != nil {
+		t.Fatalf("expected success for owner→owner no-op, got %v", err)
+	}
+}
+
+// ── AcceptInviteTx (Issue #28) ──────────────────────────────────
+
+// TestAcceptInviteTxHappyPath verifies the atomic variant creates
+// the user, marks the invitation accepted, and adds org membership
+// in one transaction.
+func TestAcceptInviteTxHappyPath(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "accept-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Accept Org", "accept-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	inv, err := db.CreateInvitation(ctx,
+		"invitee@test.com", org.ID, "member", "token-hash-happy", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	user, err := db.AcceptInviteTx(ctx,
+		inv.Email, "hash", "Invitee", "client",
+		inv.ID, org.ID, inv.OrgRole)
+	if err != nil {
+		t.Fatalf("AcceptInviteTx: %v", err)
+	}
+
+	if user.Email != inv.Email {
+		t.Errorf("user email = %q, want %q", user.Email, inv.Email)
+	}
+	if user.Role != "client" {
+		t.Errorf("user role = %q, want client", user.Role)
+	}
+
+	// Invitation must be accepted.
+	got, err := db.GetInvitationByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvitationByID: %v", err)
+	}
+	if got.Status != "accepted" {
+		t.Errorf("invitation status = %q, want accepted", got.Status)
+	}
+
+	// Org membership must exist with the invited role.
+	m, err := db.GetOrgMembership(ctx, user.ID, org.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMembership: %v", err)
+	}
+	if m.Role != "member" {
+		t.Errorf("membership role = %q, want member", m.Role)
+	}
+}
+
+// TestAcceptInviteTxRollsBackOnInvalidOrg verifies that a failure
+// in the membership INSERT (here: FK violation on a non-existent
+// org) rolls back the user INSERT and leaves no orphaned account.
+func TestAcceptInviteTxRollsBackOnInvalidOrg(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "rollback-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Rollback Org", "rb-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	inv, err := db.CreateInvitation(ctx,
+		"rollback-invitee@test.com", org.ID, "member", "token-hash-rb", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	// Pass a bogus org ID (valid UUID format, not a real row) so the
+	// membership INSERT violates the org_id FK.
+	bogusOrgID := "00000000-0000-0000-0000-000000000099"
+	_, err = db.AcceptInviteTx(ctx,
+		inv.Email, "hash", "Invitee", "client",
+		inv.ID, bogusOrgID, inv.OrgRole)
+	if err == nil {
+		t.Fatal("expected error from invalid org FK, got nil")
+	}
+
+	// User row must NOT exist — the whole Tx should have rolled back.
+	if _, gerr := db.GetUserByEmail(ctx, inv.Email); gerr == nil {
+		t.Fatal("user row was persisted despite membership failure (rollback broken)")
+	}
+	// Invitation must remain pending.
+	got, err := db.GetInvitationByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetInvitationByID: %v", err)
+	}
+	if got.Status == "accepted" {
+		t.Error("invitation was marked accepted despite rollback")
+	}
+}
+
+// TestCreateInvitationDuplicatePending locks in #32: the partial
+// unique index on (email, org_id) WHERE status = 'pending' must
+// surface as ErrDuplicatePendingInvitation, not a raw pg error
+// wrapped in fmt.Errorf.
+func TestCreateInvitationDuplicatePending(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "dup-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Dup Org", "dup-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	// First invite succeeds.
+	_, err = db.CreateInvitation(ctx,
+		"dup@test.com", org.ID, "member", "token-hash-dup-1", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("first invite: %v", err)
+	}
+
+	// Second invite for the same (email, org) with another token
+	// must hit the partial unique index and return the typed sentinel.
+	_, err = db.CreateInvitation(ctx,
+		"dup@test.com", org.ID, "member", "token-hash-dup-2", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if !errors.Is(err, ErrDuplicatePendingInvitation) {
+		t.Fatalf("expected ErrDuplicatePendingInvitation, got %v", err)
+	}
+}
+
+// TestCreateInvitationAfterAcceptedAllowsNew confirms the partial
+// index does not block creating a fresh invitation once the prior
+// one has been accepted (partial predicate: status = 'pending').
+func TestCreateInvitationAfterAcceptedAllowsNew(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "aa-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "AA Org", "aa-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	first, err := db.CreateInvitation(ctx,
+		"aa@test.com", org.ID, "member", "token-hash-aa-1", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("first invite: %v", err)
+	}
+	if err = db.UpdateInvitationStatus(ctx, first.ID, "accepted"); err != nil {
+		t.Fatalf("accept first: %v", err)
+	}
+
+	_, err = db.CreateInvitation(ctx,
+		"aa@test.com", org.ID, "member", "token-hash-aa-2", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("second invite after accept should succeed, got %v", err)
+	}
+}
+
+// TestAcceptInviteTxRejectsAlreadyAcceptedInvitation locks in
+// Gemini's review feedback: the UPDATE guard "AND status = 'pending'"
+// plus the RowsAffected check must surface ErrInvitationNotAcceptable
+// when the invitation has already been consumed. Without the guard
+// the second register attempt would silently no-op and create a
+// duplicate user account racing against the unique-email constraint.
+func TestAcceptInviteTxRejectsAlreadyAcceptedInvitation(t *testing.T) {
+	db := setupExtendedTestDB(t)
+	ctx := context.Background()
+
+	inviter := createTestUser(t, db, "already-inviter")
+	org, err := db.CreateOrgWithOwnerTx(ctx, inviter.ID, "Already Org", "already-org", "owner")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	inv, err := db.CreateInvitation(ctx,
+		"already-invitee@test.com", org.ID, "member", "token-hash-already", inviter.ID,
+		time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	// Mark the invitation accepted manually to simulate prior consumption.
+	if err = db.UpdateInvitationStatus(ctx, inv.ID, "accepted"); err != nil {
+		t.Fatalf("pre-accept invitation: %v", err)
+	}
+
+	_, err = db.AcceptInviteTx(ctx,
+		"different@test.com", "hash", "Second", "client",
+		inv.ID, org.ID, inv.OrgRole)
+	if !errors.Is(err, ErrInvitationNotAcceptable) {
+		t.Fatalf("expected ErrInvitationNotAcceptable, got %v", err)
+	}
+
+	// The second user must NOT have been created (Tx rolled back).
+	if _, gerr := db.GetUserByEmail(ctx, "different@test.com"); gerr == nil {
+		t.Fatal("user row was persisted despite invitation not being acceptable")
 	}
 }

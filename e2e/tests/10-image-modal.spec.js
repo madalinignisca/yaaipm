@@ -1,5 +1,10 @@
+// Sessions come from global setup: the app allows exactly one registration
+// ever (first-user-only), and logging in per test would replay a TOTP code
+// inside its 30s step, which ValidateTOTPOnce rejects (#136).
+let rootCookies = [];
+
 const { test, expect } = require('@playwright/test');
-const { registerUser, loginUser, setup2FA, fullLogin } = require('./helpers');
+const { useSession, rootSession } = require('./helpers');
 const path = require('path');
 const fs = require('fs');
 
@@ -30,10 +35,11 @@ function createTestImage() {
 test.describe('Image Insert Modal', () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
-    await registerUser(page, testUser);
-    await loginUser(page, testUser);
-    const result = await setup2FA(page);
-    totpSecret = result.secret;
+    // Shared root session: see the note at the top of this file (#136).
+
+    rootCookies = rootSession().cookies;
+
+    await useSession(page, rootCookies);
 
     // Create org and project
     await page.request.post('/orgs', { form: { name: 'Image Org' } });
@@ -74,8 +80,7 @@ test.describe('Image Insert Modal', () => {
 
   test.describe('Brief editor', () => {
     test('image toolbar button opens modal', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -95,8 +100,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal has Upload and AI Generate tabs', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -116,8 +120,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('tab switching works', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -145,8 +148,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal closes on Cancel button', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -163,8 +165,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal closes on X button', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -181,8 +182,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal closes on backdrop click', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -199,8 +199,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('modal closes on ESC key', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -216,8 +215,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('upload tab shows drop zone', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -232,10 +230,9 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('file upload via picker works and inserts markdown', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
       const testImagePath = createTestImage();
 
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -269,8 +266,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('AI generate tab shows prompt textarea', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -292,8 +288,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('AI generate button enables when prompt is entered', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -310,8 +305,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('AI generate shows error when service unavailable', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -331,8 +325,7 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('old generate-image toolbar button is removed', async ({ page }) => {
-      test.skip(!projectId, 'Project ID not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/brief');
       await page.waitForLoadState('networkidle');
 
@@ -357,19 +350,20 @@ test.describe('Image Insert Modal', () => {
 
     test.beforeAll(async ({ browser }) => {
       const page = await browser.newPage();
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto('/orgs/image-org/projects/image-project/features');
       await page.waitForLoadState('networkidle');
 
       // Find the ticket link href so we can navigate directly
-      const ticketLink = page.locator('a:has-text("Image Test Ticket")');
+      // .first(): the ticket appears as a card link and again in sub-item /
+      // listing markup, so a bare text match resolves to several elements.
+      const ticketLink = page.locator('a:has-text("Image Test Ticket")').first();
       ticketUrl = await ticketLink.getAttribute('href');
       await page.close();
     });
 
     test('image toolbar button opens modal on ticket detail', async ({ page }) => {
-      test.skip(!ticketUrl, 'Ticket URL not found');
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
 
       // Full page load ensures EasyMDE script in page_head is loaded
       await page.goto(ticketUrl);
@@ -393,10 +387,9 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('file upload works on ticket editor', async ({ page }) => {
-      test.skip(!ticketUrl, 'Ticket URL not found');
       const testImagePath = createTestImage();
 
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto(ticketUrl);
       await page.waitForLoadState('networkidle');
 
@@ -427,10 +420,9 @@ test.describe('Image Insert Modal', () => {
     });
 
     test('upload another button resets for new upload', async ({ page }) => {
-      test.skip(!ticketUrl, 'Ticket URL not found');
       const testImagePath = createTestImage();
 
-      await fullLogin(page, { ...testUser, totpSecret });
+      await useSession(page, rootCookies);
       await page.goto(ticketUrl);
       await page.waitForLoadState('networkidle');
 

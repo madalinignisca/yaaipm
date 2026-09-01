@@ -18,12 +18,12 @@ type S3Client struct {
 
 // S3Config holds S3 connection parameters.
 type S3Config struct {
-	Endpoint       string
-	AccessKeyID    string
+	Endpoint        string
+	AccessKeyID     string
 	SecretAccessKey string
-	Region         string
-	Bucket         string
-	ForcePathStyle bool
+	Region          string
+	Bucket          string
+	ForcePathStyle  bool
 }
 
 // NewS3Client creates a new S3-compatible storage client.
@@ -70,4 +70,17 @@ func (s *S3Client) Get(ctx context.Context, key string) (io.ReadCloser, string, 
 		ct = *out.ContentType
 	}
 	return out.Body, ct, nil
+}
+
+// Delete removes the object at the given key. Used when an attachment row
+// is removed so the backing object does not remain reachable by URL.
+func (s *S3Client) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("deleting from S3: %w", err)
+	}
+	return nil
 }
