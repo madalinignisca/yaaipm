@@ -82,3 +82,45 @@ func TestFromHandlesIPv6RemoteAddr(t *testing.T) {
 		t.Errorf("From() = %q, want %q", got, "2001:db8::1")
 	}
 }
+
+// Header.Get returns only the FIRST value. The security premise of this
+// package is that Cloudflare's value cannot be forged — but Cloudflare's
+// public documentation does not actually state whether a client-supplied
+// CF-Connecting-IP is overwritten or appended to. If it were ever appended,
+// the first value would be the caller's and the bypass would be back. Taking
+// the last value is correct under either behavior.
+func TestFromUsesTheLastCloudflareConnectingIP(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/login", http.NoBody)
+	r.RemoteAddr = "10.42.1.5:41234"
+	r.Header.Add("Cf-Connecting-Ip", "203.0.113.9")  // as a caller might forge it
+	r.Header.Add("Cf-Connecting-Ip", "198.51.100.7") // as the edge appends it
+
+	if got := clientip.From(r); got != "198.51.100.7" {
+		t.Errorf("From() = %q, want the last value %q — a forged first value must not win",
+			got, "198.51.100.7")
+	}
+}
+
+// One address must produce one rate-limit bucket however it is spelled.
+// Without the net.IP round-trip, two spellings of the same client become
+// two keys and the limiter is partially bypassable.
+func TestFromCanonicalizesEquivalentSpellings(t *testing.T) {
+	key := func(v string) string {
+		r := httptest.NewRequest(http.MethodPost, "/login", http.NoBody)
+		r.RemoteAddr = "10.42.1.5:41234"
+		r.Header.Set("Cf-Connecting-Ip", v)
+		return clientip.From(r)
+	}
+
+	for _, tc := range []struct{ name, a, b string }{
+		{"ipv4-mapped ipv6", "203.0.113.9", "::ffff:203.0.113.9"},
+		{"ipv4-mapped uppercase", "203.0.113.9", "::FFFF:203.0.113.9"},
+		{"expanded ipv6", "2001:db8::1", "2001:0db8:0000:0000:0000:0000:0000:0001"},
+		{"ipv6 case", "2001:db8::1", "2001:DB8::1"},
+	} {
+		if got, want := key(tc.b), key(tc.a); got != want {
+			t.Errorf("%s: From(%q) = %q, want %q — same client, two buckets",
+				tc.name, tc.b, got, want)
+		}
+	}
+}

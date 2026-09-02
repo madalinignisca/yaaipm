@@ -47,12 +47,23 @@ const cloudflareHeader = "Cf-Connecting-Ip"
 // peer. It never returns a caller-controlled value that has not been
 // parsed as an IP address.
 func From(r *http.Request) string {
-	if v := strings.TrimSpace(r.Header.Get(cloudflareHeader)); v != "" {
-		// Parse rather than pass through: the return value becomes a map
-		// key and a database column, so it must be a real address and not
-		// an arbitrary caller-supplied string of arbitrary length.
-		if ip := net.ParseIP(v); ip != nil {
-			return ip.String()
+	// Values, not Get: Get returns the FIRST value, and Cloudflare's public
+	// documentation does not state whether a client-supplied header is
+	// overwritten or appended to. If it is ever appended, the edge's value
+	// is the last one and a forged first value must not win. Reading the
+	// last element is correct under either behavior and costs nothing.
+	values := r.Header.Values(cloudflareHeader)
+	if len(values) > 0 {
+		if v := strings.TrimSpace(values[len(values)-1]); v != "" {
+			// Parse rather than pass through: the return value becomes a
+			// map key and a database column, so it must be a real address
+			// and not an arbitrary caller-supplied string of arbitrary
+			// length. The net.IP round-trip also canonicalizes, so two
+			// spellings of one address cannot become two rate-limit
+			// buckets — do not "simplify" this by returning v directly.
+			if ip := net.ParseIP(v); ip != nil {
+				return ip.String()
+			}
 		}
 	}
 
