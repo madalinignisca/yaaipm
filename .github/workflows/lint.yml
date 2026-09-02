@@ -38,3 +38,30 @@ jobs:
         with:
           version: ${{ steps.lintver.outputs.version }}
           args: --timeout=5m
+
+  # A Cloudflare Origin CA private key sat in this repo, tracked, for six
+  # months (2026-02-27 to 2026-09-01) while the repo was public. `*.key`
+  # and `*.crt` were in .gitignore the whole time — .gitignore governs
+  # what `git add` picks up for UNTRACKED files and is completely inert
+  # for anything already in the index, so the rule read as satisfied and
+  # enforced nothing. This job asserts the thing .gitignore cannot: that
+  # no key material is actually tracked. Grep the index, not the disk —
+  # the deployment keeps these files locally, they just must never be
+  # committed again.
+  tracked-secrets:
+    name: no key material in the index
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Assert no key material is tracked
+        run: |
+          if tracked=$(git ls-files | grep -E '(^|/)\.secrets$|\.(key|pem)$|\.crt$'); then
+            echo "::error::Key material is tracked in git:"
+            echo "$tracked"
+            echo "Remove it with 'git rm --cached <file>'. If it was ever pushed,"
+            echo "treat the secret as compromised and rotate it — deleting the file"
+            echo "does not un-publish it."
+            exit 1
+          fi
+          echo "No tracked key material."
