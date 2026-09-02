@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/madalin/forgedesk/internal/clientip"
 )
 
 // RateLimiter provides per-IP rate limiting.
@@ -63,11 +65,10 @@ func (rl *RateLimiter) cleanup() {
 // Limit returns middleware that rate-limits requests by IP.
 func (rl *RateLimiter) Limit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		// Use X-Forwarded-For if behind a proxy
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			ip = xff
-		}
+		// Keyed on the derived client address, never on a raw header.
+		// Using X-Forwarded-For verbatim here meant a caller could mint a
+		// fresh limiter per request and never be throttled.
+		ip := clientip.From(r)
 
 		limiter := rl.getVisitor(ip)
 		if !limiter.Allow() {
