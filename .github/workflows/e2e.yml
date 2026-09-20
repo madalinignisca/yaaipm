@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Build + start the full stack (postgres, minio, migrate, app) with
+      # Build + start the full stack (postgres, rustfs, migrate, app) with
       # DEBATE_REFINER_MODE=fake (set in docker-compose.test.yml), so the
       # debate refiners return canned output and no provider API keys are
       # needed. The app is published on :8081.
