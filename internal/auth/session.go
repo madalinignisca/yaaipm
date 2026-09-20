@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/madalin/forgedesk/internal/clientip"
 )
 
 const (
@@ -45,10 +47,9 @@ func (s *SessionStore) CreateSession(ctx context.Context, userID string, mustSet
 	rawToken := hex.EncodeToString(tokenBytes)
 	tokenHash := hashToken(rawToken)
 
-	ip := r.RemoteAddr
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		ip = fwd
-	}
+	// sessions.ip_address is the audit trail. Deriving it from a raw
+	// header let the caller write whatever they liked into that column.
+	ip := clientip.From(r)
 
 	_, err := s.db.Exec(ctx,
 		`INSERT INTO sessions (token_hash, user_id, must_setup_2fa, ip_address, user_agent, expires_at)
