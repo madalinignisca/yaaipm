@@ -203,3 +203,137 @@ func TestServeFileNeverMarksClientFilesPubliclyCacheable(t *testing.T) {
 		}
 	}
 }
+
+// projectIDOf pulls the project segment out of an object key, so tests can
+// act on the project without the seed helper returning four values.
+func projectIDOf(t *testing.T, key string) string {
+	t.Helper()
+	parts := strings.Split(key, "/")
+	if len(parts) < 4 {
+		t.Fatalf("key %q has no project segment", key)
+	}
+	return parts[3]
+}
+
+// Authorization must follow the project's CURRENT owner, not the org that
+// happened to own it when the file was uploaded.
+//
+// S3 keys embed the org ID at upload time and are never rewritten, but
+// TransferProject (internal/models/queries.go, wired to a staff-only route
+// in cmd/server/main.go) moves a project between orgs with a single UPDATE.
+// Anchoring on the key's org segment therefore fails in both directions at
+// once: the org the project was deliberately moved AWAY from keeps reading
+// every file, and the org that now owns it cannot read any of them.
+//
+// Rewriting the keys on transfer is not a fix — it is expensive, not
+// atomic, and URLs already embedded in stored markdown would still point
+// at the old key. The project segment is the stable identifier; the owning
+// org is resolved from the database, where it is actually true.
+func TestServeFileFollowsProjectOwnershipAfterTransfer(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := models.NewDB(pool)
+	fake := newFakeObjectStore()
+	h := &FileHandler{s3: fake, db: db}
+	ctx := context.Background()
+
+	orgA, key := seedOrgFile(t, db, fake, "transfer-from", "attachments", "brief.pdf",
+		"application/octet-stream", "TRANSFERRED-CONTENT")
+	projectID := projectIDOf(t, key)
+
+	orgB, _ := seedOrgFile(t, db, fake, "transfer-to", "attachments", "unrelated.pdf",
+		"application/octet-stream", "other")
+
+	oldOwner := clientUserIn(t, db, "old-owner@test.com", orgA)
+	newOwner := clientUserIn(t, db, "new-owner@test.com", orgB)
+
+	if err := db.TransferProject(ctx, projectID, orgB); err != nil {
+		t.Fatalf("transfer project: %v", err)
+	}
+
+	if rec := serveFileAs(h, newOwner, key); rec.Code != http.StatusOK {
+		t.Errorf("new owner: status = %d, want 200 — the org that owns the project now cannot read its files", rec.Code)
+	}
+
+	rec := serveFileAs(h, oldOwner, key)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("former owner: status = %d, want 404 — the org the project was moved away from can still read its files", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "TRANSFERRED-CONTENT") {
+		t.Error("former owner still received the file body after the project was transferred away")
+	}
+}
+
+// Kills the mutant that survived review: resolving "the first UUID anywhere
+// in the key" rather than requiring the orgs/<id>/projects/<id>/ shape. Not
+// exploitable today — S3 key matching is exact and only correctly shaped
+// keys are ever written — but the shape is what makes that true, so it
+// should be pinned rather than left as an accident.
+func TestServeFileRejectsKeyWithMisplacedProjectSegment(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := models.NewDB(pool)
+	fake := newFakeObjectStore()
+	h := &FileHandler{s3: fake, db: db}
+
+	_, key := seedOrgFile(t, db, fake, "shape", "attachments", "real.pdf",
+		"application/octet-stream", "x")
+	orgID := strings.Split(key, "/")[1]
+	projectID := projectIDOf(t, key)
+	member := clientUserIn(t, db, "shape@test.com", orgID)
+
+	// The UUIDs the member is genuinely entitled to, positioned exactly
+	// where a shape-blind parser would look for them, but under literal
+	// segments the application never writes. Each case kills a different
+	// way of relaxing the shape check.
+	for _, tc := range []struct{ name, key string }{
+		{"wrong root segment", "stray/" + orgID + "/projects/" + projectID + "/attachments/a.pdf"},
+		{"wrong projects segment", "orgs/" + orgID + "/decoys/" + projectID + "/attachments/b.pdf"},
+	} {
+		fake.seedAttachment(t, tc.key, "application/octet-stream", "MISSHAPEN-CONTENT")
+
+		rec := serveFileAs(h, member, tc.key)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404 for a key that is not orgs/<id>/projects/<id>/...", tc.name, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "MISSHAPEN-CONTENT") {
+			t.Errorf("%s: handler served an object whose key shape it cannot authorize", tc.name)
+		}
+	}
+}
+
+// Refusals must not be storable by a shared cache. Cloudflare's documented
+// default for a response with no Cache-Control is to cache a 303 for 20
+// minutes and a 404 for 3, and every attachment URL ends in an extension
+// on its default cacheable list. One anonymous request against a leaked
+// URL would otherwise pin a redirect at the edge and bounce legitimate
+// members to /login for twenty minutes.
+func TestServeFileRefusalsAreNotCacheable(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	db := models.NewDB(pool)
+	fake := newFakeObjectStore()
+	h := &FileHandler{s3: fake, db: db}
+
+	_, key := seedOrgFile(t, db, fake, "refusal", "attachments", "doc.pdf",
+		"application/octet-stream", "body")
+	outsiderOrg, _ := seedOrgFile(t, db, fake, "refusal-other", "attachments", "o.pdf",
+		"application/octet-stream", "y")
+	outsider := clientUserIn(t, db, "refusal@test.com", outsiderOrg)
+
+	for _, tc := range []struct {
+		name string
+		user *models.User
+		key  string
+	}{
+		{"unauthenticated", nil, key},
+		{"cross-tenant", outsider, key},
+		{"malformed key", outsider, "not-a-valid-key.pdf"},
+	} {
+		rec := serveFileAs(h, tc.user, tc.key)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404", tc.name, rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want %q — a cached refusal locks the URL for everyone", tc.name, cc, "no-store")
+		}
+	}
+}

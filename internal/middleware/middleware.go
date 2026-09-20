@@ -63,6 +63,22 @@ func extractOrgSlug(path string) string {
 }
 
 // AuthMiddleware enforces authentication and 2FA on all routes except public ones.
+// redirectNoStore sends an auth redirect that no cache may store.
+//
+// Where the caller goes depends on their session, so the answer is
+// per-user by definition and must never be shared. This matters most for
+// /files/*, which moved behind this middleware in #159: those URLs end in
+// extensions on Cloudflare's default cacheable list, and Cloudflare's
+// documented behavior for a response with no Cache-Control is to cache a
+// 303 for 20 minutes. A single anonymous request against a leaked
+// attachment URL would otherwise pin "go to /login" at the edge and bounce
+// signed-in members for twenty minutes — a confusing failure to debug,
+// since the victim is authenticated and the origin is behaving correctly.
+func redirectNoStore(w http.ResponseWriter, r *http.Request, target string) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
 func AuthMiddleware(sessions *auth.SessionStore, db *models.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -82,25 +98,25 @@ func AuthMiddleware(sessions *auth.SessionStore, db *models.DB) func(http.Handle
 			// Get session cookie
 			cookie, err := r.Cookie(auth.SessionCookieName)
 			if err != nil || cookie.Value == "" {
-				http.Redirect(w, r, "/login", http.StatusSeeOther)
+				redirectNoStore(w, r, "/login")
 				return
 			}
 
 			sess, err := sessions.GetSession(r.Context(), cookie.Value)
 			if err != nil {
-				http.Redirect(w, r, "/login", http.StatusSeeOther)
+				redirectNoStore(w, r, "/login")
 				return
 			}
 
 			// Logged in but must set up 2FA
 			if sess.MustSetup2FA {
-				http.Redirect(w, r, "/setup-2fa", http.StatusSeeOther)
+				redirectNoStore(w, r, "/setup-2fa")
 				return
 			}
 
 			// Logged in but 2FA not verified this session
 			if !sess.TwoFactorVerified {
-				http.Redirect(w, r, "/verify-2fa", http.StatusSeeOther)
+				redirectNoStore(w, r, "/verify-2fa")
 				return
 			}
 
@@ -110,7 +126,7 @@ func AuthMiddleware(sessions *auth.SessionStore, db *models.DB) func(http.Handle
 			// Load user
 			user, err := db.GetUserByID(r.Context(), sess.UserID)
 			if err != nil {
-				http.Redirect(w, r, "/login", http.StatusSeeOther)
+				redirectNoStore(w, r, "/login")
 				return
 			}
 

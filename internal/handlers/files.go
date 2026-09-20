@@ -69,27 +69,42 @@ func NewFileHandler(s3 objectStore, db *models.DB, gemini *ai.GeminiClient, cfg 
 	return &FileHandler{s3: s3, db: db, gemini: gemini, cfg: cfg}
 }
 
-// orgIDFromKey extracts the owning org from an object key of the shape
-// orgs/<orgID>/projects/<projectID>/{images,attachments}/<file>.
+// projectIDFromKey extracts the owning PROJECT from an object key of the
+// shape orgs/<orgID>/projects/<projectID>/{images,attachments}/<file>.
 //
-// The org segment is the authorization anchor, so it is taken from the
-// key rather than from anything the caller states separately, and it is
-// parsed as a UUID before use: Postgres' uuid type accepts uppercase,
-// braces and unhyphenated spellings, so an unvalidated segment could be
-// a different string from the canonical org ID it resolves to. Every key
-// this application writes is built server-side in exactly this shape
-// (see UploadImage/GenerateImage/UploadFile below), so a key that does
-// not match cannot be authorized and must not be served. (#159)
-func orgIDFromKey(key string) (string, bool) {
+// The project segment, not the org segment, is the authorization anchor.
+// That is deliberate and was a review finding: keys embed the org ID at
+// upload time and are never rewritten, but TransferProject moves a project
+// between orgs with a single UPDATE (a shipped, staff-only feature).
+// Anchoring on the key's org would then fail in both directions at once —
+// the org a project was moved AWAY from would keep reading every file,
+// and the org that now owns it could read none of them. The project ID is
+// stable across a transfer; the owning org is resolved from the database,
+// where it is actually true.
+//
+// The full shape is still required. Only keys built server-side in exactly
+// this form are ever written (see UploadImage/GenerateImage/UploadFile
+// below), so anything else cannot be authorized and must not be served —
+// checking the shape is what makes "the UUID in position 3 is the project"
+// a fact rather than a guess.
+//
+// Both UUIDs are parsed rather than string-matched because Postgres' uuid
+// type accepts uppercase, braces and unhyphenated spellings, so an
+// unvalidated segment could be a different string from the canonical ID it
+// resolves to. (#159)
+func projectIDFromKey(key string) (string, bool) {
 	parts := strings.Split(key, "/")
-	if len(parts) < 2 || parts[0] != "orgs" {
+	if len(parts) < 5 || parts[0] != "orgs" || parts[2] != "projects" {
 		return "", false
 	}
-	id, err := uuid.Parse(parts[1])
+	if _, err := uuid.Parse(parts[1]); err != nil {
+		return "", false
+	}
+	projectID, err := uuid.Parse(parts[3])
 	if err != nil {
 		return "", false
 	}
-	return id.String(), true
+	return projectID.String(), true
 }
 
 // ServeFile proxies a file from S3 to a caller authorized to read it.
@@ -113,6 +128,15 @@ func orgIDFromKey(key string) (string, bool) {
 // download via Content-Disposition. Stored content type is never trusted
 // for non-image paths. (#24)
 func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
+	// Set before any branch so EVERY refusal below carries it, including
+	// the ones that return through http.Error. Cloudflare's documented
+	// default for a response with no Cache-Control is to cache a 404 for
+	// 3 minutes, and these URLs end in extensions on its default
+	// cacheable list — so one anonymous request against a leaked URL
+	// would otherwise pin a refusal at the edge and lock that attachment
+	// for legitimate members. The two success branches overwrite this.
+	w.Header().Set("Cache-Control", "no-store")
+
 	key := strings.TrimPrefix(r.URL.Path, "/files/")
 	if key == "" {
 		http.Error(w, "Not found", http.StatusNotFound)
@@ -142,15 +166,18 @@ func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	orgID, ok := orgIDFromKey(key)
+	projectID, ok := projectIDFromKey(key)
 	if !ok {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
-	if authErr := authorizeOrgAccess(r.Context(), h.db, user, orgID); authErr != nil {
-		// respondAuthzError keeps the two cases apart: a cross-tenant or
-		// missing org is a 404, while a database fault is a logged 500
-		// rather than being flattened into "not found" (#128).
+	// authorizeProjectAccess loads the project and checks membership of the
+	// org that owns it NOW — the same two queries every upload handler
+	// already runs. A deleted project correctly becomes 404 for everyone.
+	if authErr := authorizeProjectAccess(r.Context(), h.db, user, projectID); authErr != nil {
+		// respondAuthzError keeps the two cases apart: cross-tenant or
+		// missing is a 404, while a database fault is a logged 500 rather
+		// than being flattened into "not found" (#128).
 		respondAuthzError(w, authErr, "Not found")
 		return
 	}
