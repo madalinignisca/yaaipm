@@ -276,11 +276,6 @@ func main() {
 	// Static files (content-hashed URLs get immutable cache headers)
 	r.Handle("/static/*", http.StripPrefix("/static/", manifest.Handler()))
 
-	// File proxy (public but keys are UUIDs — no listing)
-	if fileH != nil {
-		r.Get("/files/*", fileH.ServeFile)
-	}
-
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -321,6 +316,17 @@ func main() {
 
 		r.Post("/logout", authH.Logout)
 		r.Get("/", dashH.Dashboard)
+
+		// File proxy. This MUST stay inside this group. It was previously
+		// registered on the root router, above, where the only middleware
+		// is Recover/SecurityHeaders/Logging — so every client attachment
+		// was readable by anyone holding the URL, with no session at all
+		// (#159). ServeFile additionally re-checks the user and the key's
+		// org prefix, so moving it back out fails its tests rather than
+		// silently re-opening the hole.
+		if fileH != nil {
+			r.Get("/files/*", fileH.ServeFile)
+		}
 
 		// Account settings
 		r.Get("/account/settings", accountH.AccountSettingsPage)

@@ -73,7 +73,8 @@ jobs:
             09-rbac-journeys.spec.js \
             10-image-modal.spec.js \
             11-debate.spec.js \
-            12-debate-fake.spec.js
+            12-debate-fake.spec.js \
+            14-files-auth.spec.js
 
       - name: App logs on failure
         if: failure()

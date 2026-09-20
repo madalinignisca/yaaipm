@@ -79,8 +79,52 @@ func (f *fakeObjectStore) seedAttachment(t *testing.T, key, contentType, body st
 
 // ── ServeFile behavior tests ──────────────────────────────────────────
 
-func callServeFile(h *FileHandler, key string) *httptest.ResponseRecorder {
+// serveFileFixture builds a real org + project and a member who may read
+// its files, and returns the handler, the store, the key prefix for that
+// project, and the user.
+//
+// These #24 tests need a live database now, which they did not before
+// #159. That is the authorization fix working as intended: ServeFile
+// resolves the owning org through projects.org_id on every request, so
+// there is no role that skips the lookup. Using a real project here also
+// means these tests exercise the whole chain rather than a short-circuit.
+//
+// They remain CONTENT-TYPE tests — what they assert is disposition and
+// Content-Type handling. The authorization behavior is covered in
+// files_authz_test.go.
+func serveFileFixture(t *testing.T) (*FileHandler, *fakeObjectStore, string, *models.User) {
+	t.Helper()
+	ctx := context.Background()
+
+	pool := testutil.SetupTestDB(t)
+	db := models.NewDB(pool)
+	fake := newFakeObjectStore()
+
+	org, err := db.CreateOrg(ctx, "XSS Org", "xss-org")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := db.CreateProject(ctx, org.ID, "XSS Proj", "xss-proj")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	user, err := db.CreateUser(ctx, "xss-member@test.com", "x", "Member", "client")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.AddOrgMember(ctx, user.ID, org.ID, "member"); err != nil {
+		t.Fatalf("add org member: %v", err)
+	}
+
+	prefix := "orgs/" + org.ID + "/projects/" + proj.ID
+	return &FileHandler{s3: fake, db: db}, fake, prefix, user
+}
+
+func callServeFile(h *FileHandler, user *models.User, key string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "/files/"+key, http.NoBody)
+	if user != nil {
+		req = req.WithContext(context.WithValue(req.Context(), middleware.UserContextKey, user))
+	}
 	rec := httptest.NewRecorder()
 	h.ServeFile(rec, req)
 	return rec
@@ -91,12 +135,11 @@ func callServeFile(h *FileHandler, key string) *httptest.ResponseRecorder {
 // script-capable content type. ServeFile must force the browser to
 // download it instead of rendering, and must strip the stored CT.
 func TestServeFileForcesDownloadForHTMLAttachment(t *testing.T) {
-	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/attachments/" + "deadbeef.html"
+	h, fake, prefix, user := serveFileFixture(t)
+	key := prefix + "/attachments/" + "deadbeef.html"
 	fake.seedAttachment(t, key, "text/html", "<script>alert('xss')</script>")
 
-	h := &FileHandler{s3: fake}
-	rec := callServeFile(h, key)
+	rec := callServeFile(h, user, key)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -116,12 +159,11 @@ func TestServeFileForcesDownloadForHTMLAttachment(t *testing.T) {
 // TestServeFileForcesDownloadForSVGAttachment — SVG is script-capable.
 // Even when the path is /attachments/*, SVG must not be served inline.
 func TestServeFileForcesDownloadForSVGAttachment(t *testing.T) {
-	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/attachments/logo.svg"
+	h, fake, prefix, user := serveFileFixture(t)
+	key := prefix + "/attachments/logo.svg"
 	fake.seedAttachment(t, key, "image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>")
 
-	h := &FileHandler{s3: fake}
-	rec := callServeFile(h, key)
+	rec := callServeFile(h, user, key)
 
 	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
 		t.Errorf("Content-Type = %q, want application/octet-stream", got)
@@ -135,12 +177,11 @@ func TestServeFileForcesDownloadForSVGAttachment(t *testing.T) {
 // /images/ namespace (where PNG/JPEG/GIF/WEBP get served inline),
 // SVG must NOT be served inline because it can contain script.
 func TestServeFileForcesDownloadForSVGInImagesPath(t *testing.T) {
-	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/images/chart.svg"
+	h, fake, prefix, user := serveFileFixture(t)
+	key := prefix + "/images/chart.svg"
 	fake.seedAttachment(t, key, "image/svg+xml", "<svg><script>alert(1)</script></svg>")
 
-	h := &FileHandler{s3: fake}
-	rec := callServeFile(h, key)
+	rec := callServeFile(h, user, key)
 
 	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
 		t.Errorf("Content-Type = %q, want application/octet-stream (SVG never inline)", got)
@@ -154,12 +195,11 @@ func TestServeFileForcesDownloadForSVGInImagesPath(t *testing.T) {
 // in the /images/ namespace with a safe stored CT must still be
 // served inline so the rich-text editor can render it in <img>.
 func TestServeFileRendersSafeImageInline(t *testing.T) {
-	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/images/photo.png"
+	h, fake, prefix, user := serveFileFixture(t)
+	key := prefix + "/images/photo.png"
 	fake.seedAttachment(t, key, "image/png", "\x89PNG\r\n\x1a\nfake")
 
-	h := &FileHandler{s3: fake}
-	rec := callServeFile(h, key)
+	rec := callServeFile(h, user, key)
 
 	if got := rec.Header().Get("Content-Type"); got != "image/png" {
 		t.Errorf("Content-Type = %q, want image/png", got)
@@ -176,12 +216,11 @@ func TestServeFileRendersSafeImageInline(t *testing.T) {
 // claims "image/png" but the file is in the attachments namespace, the
 // serve path must force download. Path decides, not content type.
 func TestServeFileIgnoresUntrustedStoredCT(t *testing.T) {
-	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/attachments/fake.png"
+	h, fake, prefix, user := serveFileFixture(t)
+	key := prefix + "/attachments/fake.png"
 	fake.seedAttachment(t, key, "image/png", "<script>alert('xss')</script>")
 
-	h := &FileHandler{s3: fake}
-	rec := callServeFile(h, key)
+	rec := callServeFile(h, user, key)
 
 	if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
 		t.Errorf("attachments path must force octet-stream regardless of stored CT, got %q", got)
@@ -191,9 +230,8 @@ func TestServeFileIgnoresUntrustedStoredCT(t *testing.T) {
 // TestServeFileReturnsNotFoundForMissingKey is a sanity check that the
 // force-download logic does not accidentally turn 404s into 200s.
 func TestServeFileReturnsNotFoundForMissingKey(t *testing.T) {
-	fake := newFakeObjectStore()
-	h := &FileHandler{s3: fake}
-	rec := callServeFile(h, "orgs/o1/projects/p1/attachments/missing.bin")
+	h, _, prefix, user := serveFileFixture(t)
+	rec := callServeFile(h, user, prefix+"/attachments/missing.bin")
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", rec.Code)
@@ -207,18 +245,16 @@ func TestServeFileReturnsNotFoundForMissingKey(t *testing.T) {
 // seed a fake object at the literal traversal-shaped key and verify
 // that ServeFile still rejects it WITHOUT serving the content.
 func TestServeFileRejectsPathTraversal(t *testing.T) {
-	fake := newFakeObjectStore()
+	h, fake, prefix, user := serveFileFixture(t)
 	// Seed an object at a literal "..-shaped" key. S3 keys are opaque
 	// strings so this is legal at the storage layer — the point of
-	// the handler check is to refuse to forward such keys.
-	traversalKey := "orgs/o1/../../secret.bin"
+	// the handler check is to refuse to forward such keys. The request
+	// carries an authorized user, so a 404 here proves the traversal
+	// check fired and not merely that the caller lacked a session.
+	traversalKey := prefix + "/../../secret.bin"
 	fake.seedAttachment(t, traversalKey, "application/octet-stream", "SECRET")
 
-	h := &FileHandler{s3: fake}
-
-	req := httptest.NewRequest(http.MethodGet, "/files/"+traversalKey, http.NoBody)
-	rec := httptest.NewRecorder()
-	h.ServeFile(rec, req)
+	rec := callServeFile(h, user, traversalKey)
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404 for path-traversal-shaped key, got %d", rec.Code)

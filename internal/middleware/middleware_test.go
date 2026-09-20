@@ -242,3 +242,34 @@ func TestRecoverMiddleware(t *testing.T) {
 		t.Errorf("expected 500, got %d", rec.Code)
 	}
 }
+
+// An auth redirect is a per-session decision and must never be storable by
+// a shared cache. This became load-bearing when /files/* moved behind this
+// middleware (#159): those URLs end in .pdf/.docx/.zip/.png, which are on
+// Cloudflare's default cacheable-extension list, and Cloudflare's
+// documented default for a response carrying no Cache-Control is to cache
+// a 303 for 20 minutes. One anonymous request against a leaked attachment
+// URL would otherwise pin "go to /login" at the edge and bounce every
+// legitimate member for twenty minutes — while they are already signed in.
+func TestAuthMiddlewareRedirectsAreNotCacheable(t *testing.T) {
+	pool := testutil.SetupTestDB(t)
+	sessions := auth.NewSessionStore(pool)
+	db := models.NewDB(pool)
+
+	handler := AuthMiddleware(sessions, db)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for _, path := range []string{"/", "/files/orgs/x/projects/y/attachments/z.pdf"} {
+		req := httptest.NewRequest(http.MethodGet, path, http.NoBody)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: expected 303, got %d", path, rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want %q — a cached auth redirect locks the URL for everyone", path, cc, "no-store")
+		}
+	}
+}
