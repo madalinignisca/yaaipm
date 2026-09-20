@@ -79,8 +79,24 @@ func (f *fakeObjectStore) seedAttachment(t *testing.T, key, contentType, body st
 
 // ── ServeFile behavior tests ──────────────────────────────────────────
 
+// testOrgID is the org segment used by the #24 content-type tests below.
+// It must parse as a UUID because ServeFile now treats that segment as
+// the authorization anchor (#159).
+const testOrgID = "11111111-1111-4111-8111-111111111111"
+
+// callServeFile invokes ServeFile with a STAFF user in context.
+//
+// Staff short-circuits authorizeOrgAccess before any membership query, so
+// these tests need no database — which is what makes them cheap. Read that
+// as a deliberate scope choice, NOT as authorization coverage: every test
+// reached through this helper is about content-type and disposition
+// handling, and would pass just as well if the org check were deleted.
+// The authorization behavior is covered in files_authz_test.go, whose
+// users are role "client" precisely so the membership check actually runs.
 func callServeFile(h *FileHandler, key string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "/files/"+key, http.NoBody)
+	staff := &models.User{ID: "00000000-0000-4000-8000-000000000001", Role: roleStaff}
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserContextKey, staff))
 	rec := httptest.NewRecorder()
 	h.ServeFile(rec, req)
 	return rec
@@ -92,7 +108,7 @@ func callServeFile(h *FileHandler, key string) *httptest.ResponseRecorder {
 // download it instead of rendering, and must strip the stored CT.
 func TestServeFileForcesDownloadForHTMLAttachment(t *testing.T) {
 	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/attachments/" + "deadbeef.html"
+	key := "orgs/" + testOrgID + "/projects/p1/attachments/" + "deadbeef.html"
 	fake.seedAttachment(t, key, "text/html", "<script>alert('xss')</script>")
 
 	h := &FileHandler{s3: fake}
@@ -117,7 +133,7 @@ func TestServeFileForcesDownloadForHTMLAttachment(t *testing.T) {
 // Even when the path is /attachments/*, SVG must not be served inline.
 func TestServeFileForcesDownloadForSVGAttachment(t *testing.T) {
 	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/attachments/logo.svg"
+	key := "orgs/" + testOrgID + "/projects/p1/attachments/logo.svg"
 	fake.seedAttachment(t, key, "image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>")
 
 	h := &FileHandler{s3: fake}
@@ -136,7 +152,7 @@ func TestServeFileForcesDownloadForSVGAttachment(t *testing.T) {
 // SVG must NOT be served inline because it can contain script.
 func TestServeFileForcesDownloadForSVGInImagesPath(t *testing.T) {
 	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/images/chart.svg"
+	key := "orgs/" + testOrgID + "/projects/p1/images/chart.svg"
 	fake.seedAttachment(t, key, "image/svg+xml", "<svg><script>alert(1)</script></svg>")
 
 	h := &FileHandler{s3: fake}
@@ -155,7 +171,7 @@ func TestServeFileForcesDownloadForSVGInImagesPath(t *testing.T) {
 // served inline so the rich-text editor can render it in <img>.
 func TestServeFileRendersSafeImageInline(t *testing.T) {
 	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/images/photo.png"
+	key := "orgs/" + testOrgID + "/projects/p1/images/photo.png"
 	fake.seedAttachment(t, key, "image/png", "\x89PNG\r\n\x1a\nfake")
 
 	h := &FileHandler{s3: fake}
@@ -177,7 +193,7 @@ func TestServeFileRendersSafeImageInline(t *testing.T) {
 // serve path must force download. Path decides, not content type.
 func TestServeFileIgnoresUntrustedStoredCT(t *testing.T) {
 	fake := newFakeObjectStore()
-	key := "orgs/o1/projects/p1/attachments/fake.png"
+	key := "orgs/" + testOrgID + "/projects/p1/attachments/fake.png"
 	fake.seedAttachment(t, key, "image/png", "<script>alert('xss')</script>")
 
 	h := &FileHandler{s3: fake}
@@ -193,7 +209,7 @@ func TestServeFileIgnoresUntrustedStoredCT(t *testing.T) {
 func TestServeFileReturnsNotFoundForMissingKey(t *testing.T) {
 	fake := newFakeObjectStore()
 	h := &FileHandler{s3: fake}
-	rec := callServeFile(h, "orgs/o1/projects/p1/attachments/missing.bin")
+	rec := callServeFile(h, "orgs/"+testOrgID+"/projects/p1/attachments/missing.bin")
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", rec.Code)

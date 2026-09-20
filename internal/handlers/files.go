@@ -69,11 +69,49 @@ func NewFileHandler(s3 objectStore, db *models.DB, gemini *ai.GeminiClient, cfg 
 	return &FileHandler{s3: s3, db: db, gemini: gemini, cfg: cfg}
 }
 
-// ServeFile proxies a file from S3. Files in the /images/ namespace whose
-// stored content type is on the safe allowlist are served inline so the
-// rich-text editor can render them; everything else (attachments, SVG,
-// HTML, unknown) is forced to download via Content-Disposition. Stored
-// content type is never trusted for non-image paths. (#24)
+// orgIDFromKey extracts the owning org from an object key of the shape
+// orgs/<orgID>/projects/<projectID>/{images,attachments}/<file>.
+//
+// The org segment is the authorization anchor, so it is taken from the
+// key rather than from anything the caller states separately, and it is
+// parsed as a UUID before use: Postgres' uuid type accepts uppercase,
+// braces and unhyphenated spellings, so an unvalidated segment could be
+// a different string from the canonical org ID it resolves to. Every key
+// this application writes is built server-side in exactly this shape
+// (see UploadImage/GenerateImage/UploadFile below), so a key that does
+// not match cannot be authorized and must not be served. (#159)
+func orgIDFromKey(key string) (string, bool) {
+	parts := strings.Split(key, "/")
+	if len(parts) < 2 || parts[0] != "orgs" {
+		return "", false
+	}
+	id, err := uuid.Parse(parts[1])
+	if err != nil {
+		return "", false
+	}
+	return id.String(), true
+}
+
+// ServeFile proxies a file from S3 to a caller authorized to read it.
+//
+// Until #159 this handler did no authorization of any kind: it took the
+// key straight from the URL and fetched it, and the route was registered
+// outside the protected group, so any unauthenticated caller holding a
+// URL could read any client's attachment. Keys are three UUIDs and so are
+// not guessable, but a URL is not a credential — it leaks through logs
+// (middleware logs r.URL.Path on every request), browser history and
+// shared links, and removing someone from an org revoked nothing.
+//
+// Authorization happens BEFORE the object is fetched, so response timing
+// cannot be used to probe which keys exist, and every refusal is an
+// identical 404 — matching the convention in authz.go, where "not yours"
+// and "does not exist" are deliberately indistinguishable (#122, #127).
+//
+// Files in the /images/ namespace whose stored content type is on the
+// safe allowlist are served inline so the rich-text editor can render
+// them; everything else (attachments, SVG, HTML, unknown) is forced to
+// download via Content-Disposition. Stored content type is never trusted
+// for non-image paths. (#24)
 func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/files/")
 	if key == "" {
@@ -92,6 +130,31 @@ func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The route is registered inside the authenticated group, so a nil
+	// user cannot occur in the current wiring. The check stays as the
+	// guard for the exact defect #159 was: a future edit that moves this
+	// route back out of that group would otherwise silently re-open the
+	// handler to the world. 404 rather than 401 keeps every refusal on
+	// this path identical.
+	user := middleware.GetUser(r)
+	if user == nil {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	orgID, ok := orgIDFromKey(key)
+	if !ok {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+	if authErr := authorizeOrgAccess(r.Context(), h.db, user, orgID); authErr != nil {
+		// respondAuthzError keeps the two cases apart: a cross-tenant or
+		// missing org is a 404, while a database fault is a logged 500
+		// rather than being flattened into "not found" (#128).
+		respondAuthzError(w, authErr, "Not found")
+		return
+	}
+
 	body, storedCT, err := h.s3.Get(r.Context(), key)
 	if err != nil {
 		http.Error(w, "Not found", http.StatusNotFound)
@@ -102,16 +165,28 @@ func (h *FileHandler) ServeFile(w http.ResponseWriter, r *http.Request) {
 	// Always set nosniff so the browser cannot promote an
 	// application/octet-stream response to a renderable type.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 
 	if isImageKey(key) && safeInlineImageTypes[storedCT] {
 		// Safe inline image. Pin the CT to the allowlisted value.
 		w.Header().Set("Content-Type", storedCT)
+		// private, not public: this response is now authorized per-user,
+		// and the zone is behind Cloudflare. A shared cache keyed on the
+		// URL would serve a stored copy to the NEXT caller without the
+		// origin — and therefore without the authorization check above —
+		// ever being consulted. Keys are immutable and content-addressed
+		// by UUID, so the browser may still cache aggressively. (#159)
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	} else {
 		// Anything else is untrusted. Force download under a generic
 		// content type so the browser never executes it as script.
 		w.Header().Set("Content-Type", safeDownloadCT)
 		w.Header().Set("Content-Disposition", "attachment")
+		// no-store, not merely private: attachments are the sensitive
+		// half of this handler, and DeleteAttachment removes the S3
+		// object but can purge nothing already cached. Without this, a
+		// deleted file stays readable from disk caches for a year, which
+		// is a right-to-erasure problem and not just a staleness one.
+		w.Header().Set("Cache-Control", "private, no-store")
 	}
 
 	_, _ = io.Copy(w, body)
