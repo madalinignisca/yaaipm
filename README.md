@@ -79,7 +79,7 @@ Auto-deploys to test env → Client reviews → Staff merges to production
 
 - **Backend:** Go with server-side rendering (no heavy JS frameworks)
 - **Frontend:** HTMX + Alpine.js — fast, lightweight, no build step
-- **Storage:** PostgreSQL + S3 (MinIO-compatible)
+- **Storage:** PostgreSQL + S3-compatible object storage (RustFS in tests, Ceph RGW in production)
 - **Infra:** Kubernetes (k3s), container-based deployments
 - **Domain:** `smart.madalin.me` with TLS
 

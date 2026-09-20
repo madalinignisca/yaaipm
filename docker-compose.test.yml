@@ -15,30 +15,74 @@ services:
     tmpfs:
       - /var/lib/postgresql/data
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+  # RustFS replaces MinIO as the S3-compatible store for tests.
+  #
+  # The immediate trigger was MinIO's Docker Hub repositories being removed —
+  # both minio/minio and minio/mc now answer "repository does not exist", which
+  # broke the E2E job on every PR while the dev VM kept working from images it
+  # had cached a year earlier. RustFS publishes to Docker Hub, quay.io AND
+  # ghcr.io, so the same single-registry failure has two fallbacks:
+  #   quay.io/rustfs/rustfs:1.0.0   ghcr.io/rustfs/rustfs:1.0.0
+  #
+  # Pinned, not :latest. Pinning would NOT have prevented the MinIO outage (the
+  # repository was deleted, it did not drift), but it is the same reasoning as
+  # .golangci-version in #120: the version CI resolves should never depend on
+  # the day it runs.
+  #
+  # Only the portable S3 surface is used — PutObject/GetObject/DeleteObject via
+  # aws-sdk-go-v2 with path-style addressing — so this stays valid against Ceph
+  # RGW in production. Nothing RustFS-specific reaches the application.
+  rustfs:
+    image: rustfs/rustfs:1.0.0
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_ADDRESS: ":9000"
+      # No web console in tests; nothing reads it and it only opens a port.
+      RUSTFS_CONSOLE_ENABLE: "false"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      # RustFS serves a real readiness endpoint on the S3 port, so unlike
+      # MinIO's `mc ready` this needs no client binary in the image.
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
       interval: 2s
       timeout: 5s
-      retries: 10
+      retries: 15
     tmpfs:
-      - /data
+      # RustFS runs as uid 10001, NOT root. A bare `tmpfs: - /data` mounts
+      # root-owned and the server dies on boot with
+      # "Local disk initialization failed: Permission denied (os error 13)",
+      # which reads like a RustFS bug rather than a mount-ownership problem.
+      # /logs needs the same or it degrades to stdout logging with a warning.
+      - /data:uid=10001,gid=10001
+      - /logs:uid=10001,gid=10001
 
-  minio-init:
-    image: minio/mc:latest
+  # RustFS does not auto-create buckets: PutObject against a missing bucket
+  # returns NoSuchBucket (verified), so the bucket must exist before the app
+  # starts. The image ships busybox and curl but no S3 client, hence a separate
+  # one-shot container instead of MinIO's `mc`.
+  #
+  # Note what is NOT here: the MinIO setup ended with
+  # `mc anonymous set download`, making the test bucket world-readable. That is
+  # deliberately dropped. Production's bucket is private and the application
+  # proxies every file through /files/* using its own credentials (#159), so an
+  # anonymous-read test bucket made the test environment strictly more
+  # permissive than production — the one direction a test environment must
+  # never differ.
+  rustfs-init:
+    image: amazon/aws-cli:2.31.11
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
+    # head-bucket first so a re-run is idempotent, but a genuine failure to
+    # create still exits non-zero rather than being swallowed by `|| true`.
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin &&
-      mc mb local/forgedesk-test --ignore-existing &&
-      mc anonymous set download local/forgedesk-test
+      aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket forgedesk-test 2>/dev/null ||
+      aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket forgedesk-test
       "
 
   migrate:
@@ -57,7 +101,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      minio-init:
+      rustfs-init:
         condition: service_completed_successfully
     environment:
       DATABASE_URL: postgres://testuser:testpass@postgres:5432/forgedesk_test?sslmode=disable
@@ -66,9 +110,9 @@ services:
       LISTEN_ADDR: ":8080"
       APP_URL: "http://localhost:8081"
       WEBAUTHN_RPID: "localhost"
-      S3_ENDPOINT: "http://minio:9000"
-      S3_ACCESS_KEY_ID: "minioadmin"
-      S3_SECRET_ACCESS_KEY: "minioadmin"
+      S3_ENDPOINT: "http://rustfs:9000"
+      S3_ACCESS_KEY_ID: "rustfsadmin"
+      S3_SECRET_ACCESS_KEY: "rustfsadmin"
       S3_REGION: "us-east-1"
       S3_PUBLIC_BUCKET: "forgedesk-test"
       S3_FORCE_PATH_STYLE: "true"
