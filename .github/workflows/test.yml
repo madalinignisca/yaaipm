@@ -17,7 +17,7 @@ jobs:
     # it is not fast. Cap the job so a hung container cannot hold the runner.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
